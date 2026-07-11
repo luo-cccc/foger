@@ -1,0 +1,321 @@
+import { useApi } from "./use-api";
+
+type Lang = "zh" | "en";
+
+const strings = {
+  // Header
+  "nav.books": { zh: "书籍", en: "Books" },
+  "nav.newBook": { zh: "新建书籍", en: "New Book" },
+  "nav.createSection": { zh: "开始创作", en: "Start Creating" },
+  "nav.myBooks": { zh: "我的创作", en: "My Works" },
+  "nav.createNovel": { zh: "长篇小说", en: "Long Novel" },
+  "nav.createContinuation": { zh: "续写创作", en: "Continuation" },
+  "nav.config": { zh: "模型配置", en: "Model Config" },
+  "nav.projectSettings": { zh: "项目设置", en: "Project Settings" },
+  "nav.connected": { zh: "已连接", en: "Connected" },
+  "nav.disconnected": { zh: "未连接", en: "Disconnected" },
+
+  // Dashboard
+  "dash.title": { zh: "书籍列表", en: "Books" },
+  "dash.noBooks": { zh: "还没有书", en: "No books yet" },
+  "dash.createFirst": { zh: "创建第一本书开始写作", en: "Create your first book to get started" },
+  "dash.writeNext": { zh: "写下一章", en: "Write Next" },
+  "dash.writing": { zh: "写作中...", en: "Writing..." },
+  "dash.stats": { zh: "统计", en: "Stats" },
+  "dash.chapters": { zh: "章", en: "chapters" },
+  "dash.recentEvents": { zh: "最近事件", en: "Recent Events" },
+  "dash.writingProgress": { zh: "写作进度", en: "Writing Progress" },
+
+  // Book Detail
+  "book.writeNext": { zh: "写下一章", en: "Write Next" },
+  "book.draftOnly": { zh: "仅草稿", en: "Draft Only" },
+  "book.approveAll": { zh: "全部通过", en: "Approve All" },
+  "book.analytics": { zh: "数据分析", en: "Analytics" },
+  "book.noChapters": { zh: "暂无章节，点击「写下一章」开始", en: 'No chapters yet. Click "Write Next" to start.' },
+  "book.approve": { zh: "通过", en: "Approve" },
+  "book.reject": { zh: "驳回", en: "Reject" },
+  "book.words": { zh: "字", en: "words" },
+
+  // Chapter Reader
+  "reader.backToList": { zh: "返回列表", en: "Back to List" },
+  "reader.approve": { zh: "通过", en: "Approve" },
+  "reader.reject": { zh: "驳回", en: "Reject" },
+  "reader.chapterList": { zh: "章节列表", en: "Chapter List" },
+  "reader.characters": { zh: "字符", en: "characters" },
+  "reader.edit": { zh: "编辑", en: "Edit" },
+  "reader.preview": { zh: "预览", en: "Preview" },
+
+  // Book Create
+  "create.title": { zh: "创建书籍", en: "Create Book" },
+  "create.bookTitle": { zh: "书名", en: "Title" },
+  "create.language": { zh: "语言", en: "Language" },
+  "create.genre": { zh: "题材", en: "Genre" },
+  "create.wordsPerChapter": { zh: "每章字数", en: "Words / Chapter" },
+  "create.targetChapters": { zh: "目标章数", en: "Target Chapters" },
+  "create.creating": { zh: "创建中...", en: "Creating..." },
+  "create.submit": { zh: "创建书籍", en: "Create Book" },
+  "create.titleRequired": { zh: "请输入书名", en: "Title is required" },
+  "create.genreRequired": { zh: "请选择题材", en: "Genre is required" },
+  "create.placeholder": { zh: "请输入书名...", en: "Book title..." },
+
+  // Analytics
+  "analytics.title": { zh: "数据分析", en: "Analytics" },
+  "analytics.totalChapters": { zh: "总章数", en: "Total Chapters" },
+  "analytics.totalWords": { zh: "总字数", en: "Total Words" },
+  "analytics.avgWords": { zh: "平均字数/章", en: "Avg Words/Chapter" },
+  "analytics.statusDist": { zh: "状态分布", en: "Status Distribution" },
+
+  // Breadcrumb
+  "bread.books": { zh: "书籍", en: "Books" },
+  "bread.newBook": { zh: "新建书籍", en: "New Book" },
+  "bread.config": { zh: "配置", en: "Config" },
+  "bread.home": { zh: "首页", en: "Home" },
+  "bread.chapter": { zh: "第{n}章", en: "Chapter {n}" },
+  "bread.film": { zh: "剧情树", en: "Story Tree" },
+
+  // Config
+  "config.title": { zh: "项目配置", en: "Project Config" },
+  "config.project": { zh: "项目名", en: "Project" },
+  "config.language": { zh: "语言", en: "Language" },
+  "config.provider": { zh: "提供方", en: "Provider" },
+  "config.model": { zh: "模型", en: "Model" },
+  "config.editHint": { zh: "通过 CLI 编辑配置：", en: "Edit via CLI:" },
+
+  // Sidebar
+  "nav.system": { zh: "系统", en: "System" },
+  "nav.daemon": { zh: "守护进程", en: "Daemon" },
+  "nav.logs": { zh: "日志", en: "Logs" },
+  "nav.running": { zh: "运行中", en: "Running" },
+  "nav.agentOnline": { zh: "代理在线", en: "Agent Online" },
+  "nav.agentOffline": { zh: "代理离线", en: "Agent Offline" },
+  "nav.tools": { zh: "工具", en: "Tools" },
+  "nav.history": { zh: "会话记录", en: "Sessions" },
+  "nav.import": { zh: "导入", en: "Import" },
+  "nav.doctor": { zh: "环境诊断", en: "Doctor" },
+
+  // Book Detail extras
+  "book.deleteBook": { zh: "删除书籍", en: "Delete Book" },
+  "book.confirmDelete": { zh: "确认删除此书及所有章节？", en: "Delete this book and all chapters?" },
+  "book.settings": { zh: "书籍设置", en: "Book Settings" },
+  "book.status": { zh: "状态", en: "Status" },
+  "book.drafting": { zh: "草稿中...", en: "Drafting..." },
+  "book.pipelineWriting": { zh: "后台正在写作，本页会在完成后自动刷新。", en: "Background writing is running. This page will refresh automatically when it finishes." },
+  "book.pipelineDrafting": { zh: "后台正在生成草稿，本页会在完成后自动刷新。", en: "Background drafting is running. This page will refresh automatically when it finishes." },
+  "book.pipelineFailed": { zh: "后台任务失败", en: "Background job failed" },
+  "book.save": { zh: "保存", en: "Save" },
+  "book.saving": { zh: "保存中...", en: "Saving..." },
+  "book.rewrite": { zh: "重写", en: "Rewrite" },
+  "book.audit": { zh: "审计", en: "Audit" },
+  "book.export": { zh: "导出", en: "Export" },
+  "book.approvedOnly": { zh: "仅已通过", en: "Approved Only" },
+  "book.manuscriptTitle": { zh: "章节标题", en: "Manuscript Title" },
+  "book.curate": { zh: "操作", en: "Actions" },
+  "book.spotFix": { zh: "精修", en: "Spot Fix" },
+  "book.polish": { zh: "打磨", en: "Polish" },
+  "book.rework": { zh: "重作", en: "Rework" },
+  "book.antiDetect": { zh: "反检测", en: "Anti-Detect" },
+  "book.statusActive": { zh: "进行中", en: "Active" },
+  "book.statusPaused": { zh: "已暂停", en: "Paused" },
+  "book.statusOutlining": { zh: "大纲中", en: "Outlining" },
+  "book.statusCompleted": { zh: "已完成", en: "Completed" },
+  "book.statusDropped": { zh: "已放弃", en: "Dropped" },
+  "book.truthFiles": { zh: "真相文件", en: "Truth Files" },
+  "book.evaluate": { zh: "质量评估", en: "Evaluate" },
+  "book.consolidate": { zh: "归并记忆", en: "Consolidate" },
+  "book.reviseFoundation": { zh: "重修设定", en: "Revise Foundation" },
+  "book.planNext": { zh: "计划", en: "Plan" },
+  "book.composeNext": { zh: "组装", en: "Compose" },
+  "book.repairState": { zh: "修复状态", en: "Repair State" },
+
+  // Import
+  "import.title": { zh: "导入工具", en: "Import Tools" },
+  "import.chapters": { zh: "导入章节", en: "Import Chapters" },
+  "import.canon": { zh: "导入母本", en: "Import Canon" },
+  "import.selectTarget": { zh: "选择目标书籍...", en: "Select target book..." },
+  "import.splitRegex": { zh: "分割正则（可选）", en: "Split regex (optional)" },
+  "import.pasteChapters": { zh: "粘贴章节文本...", en: "Paste chapter text..." },
+  "import.selectSource": { zh: "选择源（母本）...", en: "Select source (parent)..." },
+  "import.selectDerivative": { zh: "选择目标（衍生）...", en: "Select target (derivative)..." },
+  "import.pasteMaterial": { zh: "粘贴原作文本/设定/角色资料...", en: "Paste source material..." },
+  "import.importing": { zh: "导入中...", en: "Importing..." },
+  "import.creating": { zh: "创建中...", en: "Creating..." },
+
+  // Doctor
+  "doctor.title": { zh: "环境诊断", en: "Environment Check" },
+  "doctor.recheck": { zh: "重新检查", en: "Re-check" },
+  "doctor.inkosJson": { zh: "inkos.json 配置", en: "inkos.json configuration" },
+  "doctor.projectEnv": { zh: "项目 .env 文件", en: "Project .env file" },
+  "doctor.globalEnv": { zh: "全局 ~/.inkos/.env", en: "Global ~/.inkos/.env" },
+  "doctor.booksDir": { zh: "书籍目录", en: "Books directory" },
+  "doctor.llmApi": { zh: "LLM API 连接", en: "LLM API connectivity" },
+  "doctor.connected": { zh: "已连接", en: "Connected" },
+  "doctor.failed": { zh: "失败", en: "Failed" },
+  "doctor.allPassed": { zh: "所有检查通过 — 环境健康", en: "All checks passed — environment is healthy" },
+  "doctor.someFailed": { zh: "部分检查失败 — 请查看配置", en: "Some checks failed — review configuration" },
+
+  // Genre extras
+  "genre.createNew": { zh: "创建新题材", en: "Create New Genre" },
+  "genre.name": { zh: "名称", en: "Name" },
+  "genre.editGenre": { zh: "编辑", en: "Edit" },
+  "genre.deleteGenre": { zh: "删除", en: "Delete" },
+  "genre.confirmDelete": { zh: "确认删除此题材？", en: "Delete this genre?" },
+  "genre.chapterTypes": { zh: "章节类型", en: "Chapter Types" },
+  "genre.fatigueWords": { zh: "疲劳词", en: "Fatigue Words" },
+  "genre.numericalSystem": { zh: "数值系统", en: "Numerical System" },
+  "genre.powerScaling": { zh: "力量等级", en: "Power Scaling" },
+  "genre.eraResearch": { zh: "时代研究", en: "Era Research" },
+  "genre.pacingRule": { zh: "节奏规则", en: "Pacing Rule" },
+  "genre.rules": { zh: "规则", en: "Rules" },
+  "genre.saveChanges": { zh: "保存更改", en: "Save Changes" },
+  "genre.cancel": { zh: "取消", en: "Cancel" },
+  "genre.copyToProject": { zh: "复制到项目", en: "Copy to Project" },
+  "genre.selectHint": { zh: "选择题材查看详情", en: "Select a genre to view details" },
+  "genre.commaSeparated": { zh: "逗号分隔", en: "comma-separated" },
+  "genre.rulesMd": { zh: "规则（Markdown）", en: "Rules (Markdown)" },
+
+  // Config extras
+  "config.modelRouting": { zh: "模型路由", en: "Model Routing" },
+  "config.agent": { zh: "代理", en: "Agent" },
+  "config.baseUrl": { zh: "基础 URL", en: "Base URL" },
+  "config.default": { zh: "默认", en: "default" },
+  "config.optional": { zh: "可选", en: "optional" },
+  "config.saveOverrides": { zh: "保存路由", en: "Save Overrides" },
+  "config.save": { zh: "保存", en: "Save" },
+  "config.saving": { zh: "保存中...", en: "Saving..." },
+  "config.cancel": { zh: "取消", en: "Cancel" },
+  "config.edit": { zh: "编辑", en: "Edit" },
+  "config.enabled": { zh: "启用", en: "Enabled" },
+  "config.disabled": { zh: "禁用", en: "Disabled" },
+
+  // Project Settings
+  "settings.title": { zh: "项目设置", en: "Project Settings" },
+  "settings.subtitle": { zh: "集中管理写作运行时的项目级开关，不替代模型服务商配置。", en: "Manage project-level runtime switches without replacing model service configuration." },
+  "settings.inputGovernance": { zh: "输入治理", en: "Input Governance" },
+  "settings.inputGovernanceHint": { zh: "控制 planner/composer 对用户意图、约束和上下文的组装方式。", en: "Controls how planner/composer assemble user intent, constraints, and context." },
+  "settings.modelOverrides": { zh: "Agent 模型路由", en: "Agent Model Routing" },
+  "settings.modelOverridesHint": { zh: "为每个 agent 指定模型（贵模型写正文、便宜模型审稿等）。服务商、密钥和基础 URL 仍在模型配置页管理。", en: "Route each agent to a model (e.g. premium model for drafting, cheaper for review). Providers, keys, and base URLs stay in Model Config." },
+  "settings.notify": { zh: "通知渠道", en: "Notification Channels" },
+  "settings.notifyHint": { zh: "配置 Telegram、飞书、企微或 webhook 等后台通知渠道。", en: "Configure Telegram, Feishu, WeCom, or webhook notifications for background jobs." },
+  "settings.detection": { zh: "AI 检测配置", en: "AI Detection Config" },
+  "settings.detectionHint": { zh: "配置外部 AIGC 检测服务、阈值和自动改写策略；关闭即不配置检测。", en: "Configure an external AIGC detection service, threshold, and auto-rewrite policy; turn off to clear it." },
+  "settings.openModelConfig": { zh: "打开模型配置", en: "Open Model Config" },
+  "settings.saved": { zh: "已保存", en: "Saved" },
+  "settings.globalDefaultModel": { zh: "全局默认模型", en: "Global Default Model" },
+  "settings.globalDefaultModelHint": { zh: "Chat、书籍操作和 CLI 未指定模型时使用这一组默认服务与模型。", en: "Used by Chat, book actions, and CLI paths when no explicit model is selected." },
+  "settings.effectiveModelRoute": { zh: "当前生效", en: "Effective" },
+  "settings.modelSource": { zh: "模型来源", en: "model source" },
+  "settings.serviceId": { zh: "服务 ID（如 kkaiapi）", en: "service id (e.g. kkaiapi)" },
+  "settings.noOverrides": { zh: "暂无模型路由，所有 agent 使用默认模型。", en: "No overrides — every agent uses the default model." },
+  "settings.agentName": { zh: "agent（如 writer / architect）", en: "agent (e.g. writer / architect)" },
+  "settings.modelId": { zh: "模型 ID", en: "model id" },
+  "settings.addOverride": { zh: "添加路由", en: "Add override" },
+  "settings.phase7Agents": { zh: "Phase 7 结构化 agent", en: "Phase 7 structured agents" },
+  "settings.noChannels": { zh: "暂无通知渠道。", en: "No channels yet." },
+  "settings.addChannel": { zh: "添加渠道", en: "Add channel" },
+  "settings.detectionEnable": { zh: "启用检测配置", en: "Enable detection config" },
+  "settings.detectionProvider": { zh: "检测服务商", en: "Provider" },
+  "settings.detectionApiKeyEnv": { zh: "API Key 环境变量名", en: "API key env var" },
+  "settings.detectionApiUrl": { zh: "检测 API 地址", en: "Detection API URL" },
+  "settings.detectionThreshold": { zh: "阈值", en: "Threshold" },
+  "settings.detectionMaxRetries": { zh: "最大重试", en: "Max retries" },
+  "settings.detectionAutoRewrite": { zh: "命中后自动反检测改写", en: "Auto anti-detect rewrite on hit" },
+  "settings.chatUi": { zh: "对话界面", en: "Chat Interface" },
+  "settings.chatUiHint": { zh: "控制对话页里操作详情的展示方式。该偏好保存在当前浏览器，不写入项目配置。", en: "Controls how operation details render on the chat page. Stored in this browser, not in project config." },
+  "settings.toolDetailsDefaultOpen": { zh: "操作详情默认展开", en: "Expand operation details by default" },
+  "settings.toolDetailsDefaultOpenHint": { zh: "关闭后，对话中的「查看操作结果」默认收起，仍可手动展开。", en: "When off, \"view result\" blocks in chat start collapsed; you can still expand them manually." },
+
+  // Truth Files extras
+  "truth.title": { zh: "真相文件", en: "Truth Files" },
+  "truth.edit": { zh: "编辑", en: "Edit" },
+  "truth.chars": { zh: "字", en: "chars" },
+  "truth.save": { zh: "保存", en: "Save" },
+  "truth.saving": { zh: "保存中...", en: "Saving..." },
+  "truth.cancel": { zh: "取消", en: "Cancel" },
+  "truth.empty": { zh: "暂无文件", en: "No truth files" },
+  "truth.noFiles": { zh: "暂无文件", en: "No truth files" },
+  "truth.notFound": { zh: "文件未找到", en: "File not found" },
+  "truth.selectFile": { zh: "选择文件查看内容", en: "Select a file to view" },
+  "truth.selectHint": { zh: "选择文件查看内容", en: "Select a file to view" },
+  "truth.filesView": { zh: "文件视图", en: "Files" },
+  "truth.overview": { zh: "治理概览", en: "Overview" },
+  "truth.noOverview": { zh: "还没有可汇总的运行时治理产物。开始规划或写作后，这里会出现章级与卷级概览。", en: "No runtime governance artifacts to summarize yet. Chapter and volume overview cards will appear after planning or writing starts." },
+  "truth.openFile": { zh: "打开文件", en: "Open File" },
+  "truth.runtimeArtifacts": { zh: "概览卡片", en: "Overview Cards" },
+  "truth.latestChapter": { zh: "最新章节", en: "Latest Chapter" },
+  "truth.latestVolume": { zh: "最新卷", en: "Latest Volume" },
+  "truth.runtimeFiles": { zh: "运行时文件", en: "Runtime Files" },
+  "truth.volumeGroup": { zh: "卷级治理", en: "Volume Governance" },
+  "truth.chapterGroup": { zh: "章节治理", en: "Chapter Governance" },
+  "truth.volumeGroupHint": { zh: "查看当前卷目标、进度、叙事弧与卷级供给是否闭环。", en: "Review the active volume's goals, progress, current arc, and supply loop together." },
+  "truth.chapterGroupHint": { zh: "查看最新章节的写作意图、上下文组装、规则栈与治理追踪。", en: "Review the latest chapter's intent, context assembly, rule stack, and governance trace together." },
+  "truth.coverageComplete": { zh: "链路完整", en: "Coverage Complete" },
+  "truth.coveragePartial": { zh: "链路缺口", en: "Coverage Partial" },
+  "truth.missingArtifacts": { zh: "缺失产物", en: "Missing Artifacts" },
+
+  // Dashboard
+  "dash.subtitle": { zh: "管理你的文学宇宙和 AI 辅助草稿。", en: "Manage your literary universe and AI-assisted drafts." },
+
+  // Chapter Reader extras
+  "reader.openingManuscript": { zh: "打开书稿中...", en: "Opening manuscript..." },
+  "reader.manuscriptPage": { zh: "书稿页", en: "Manuscript Page" },
+  "reader.minRead": { zh: "分钟阅读", en: "min read" },
+  "reader.endOfChapter": { zh: "本章完", en: "End of Chapter" },
+
+  // Daemon Control
+  "daemon.title": { zh: "守护进程控制", en: "Daemon Control" },
+  "daemon.running": { zh: "运行中", en: "Running" },
+  "daemon.stopped": { zh: "已停止", en: "Stopped" },
+  "daemon.start": { zh: "启动", en: "Start" },
+  "daemon.stop": { zh: "停止", en: "Stop" },
+  "daemon.starting": { zh: "启动中...", en: "Starting..." },
+  "daemon.stopping": { zh: "停止中...", en: "Stopping..." },
+  "daemon.waitingEvents": { zh: "等待事件...", en: "Waiting for events..." },
+  "daemon.startHint": { zh: "启动守护进程查看事件", en: "Start the daemon to see events" },
+  "daemon.eventLog": { zh: "事件日志", en: "Event Log" },
+
+  // Config extras (labels)
+  "config.temperature": { zh: "温度", en: "Temperature" },
+  "config.maxTokens": { zh: "最大令牌数", en: "Max Tokens" },
+  "config.stream": { zh: "流式输出", en: "Stream" },
+  "config.chinese": { zh: "中文", en: "Chinese" },
+  "config.english": { zh: "英文", en: "English" },
+
+  // BookCreate extras
+  "create.platform": { zh: "平台", en: "Platform" },
+
+  // Common
+  "common.save": { zh: "保存", en: "Save" },
+  "common.cancel": { zh: "取消", en: "Cancel" },
+  "common.delete": { zh: "删除", en: "Delete" },
+  "common.edit": { zh: "编辑", en: "Edit" },
+  "common.error": { zh: "错误", en: "Error" },
+  "common.loading": { zh: "加载中...", en: "Loading..." },
+  "common.refresh": { zh: "刷新", en: "Refresh" },
+  "common.enterCommand": { zh: "输入指令...", en: "Enter command..." },
+  "chapter.readyForReview": { zh: "待审核", en: "Ready for Review" },
+  "chapter.approved": { zh: "已通过", en: "Approved" },
+  "chapter.drafted": { zh: "草稿", en: "Drafted" },
+  "chapter.needsRevision": { zh: "需修订", en: "Needs Revision" },
+  "chapter.imported": { zh: "已导入", en: "Imported" },
+  "chapter.auditFailed": { zh: "审计失败", en: "Audit Failed" },
+  "chapter.label": { zh: "第{n}章", en: "Chapter {n}" },
+  "common.exportSuccess": { zh: "已导出到项目目录", en: "Exported to project directory" },
+  "common.exportFormat": { zh: "导出格式", en: "Export format" },
+  "logs.title": { zh: "日志", en: "Logs" },
+  "logs.empty": { zh: "暂无日志", en: "No log entries yet" },
+  "logs.showingRecent": { zh: "当前展示最近日志记录。", en: "Showing recent log entries." },
+} as const;
+
+export type StringKey = keyof typeof strings;
+export type TFunction = (key: StringKey) => string;
+
+export function useI18n() {
+  const { data } = useApi<{ language: string }>("/project");
+  const lang: Lang = data?.language === "en" ? "en" : "zh";
+
+  function t(key: StringKey): string {
+    return strings[key][lang];
+  }
+
+  return { t, lang };
+}
