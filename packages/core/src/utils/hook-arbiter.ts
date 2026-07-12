@@ -5,7 +5,11 @@ import {
   type RuntimeStateDelta,
 } from "../models/runtime-state.js";
 import { normalizeHookId } from "./story-markdown.js";
-import { evaluateHookAdmission } from "./hook-governance.js";
+import {
+  evaluateHookAdmission,
+  normalizeHookFamily,
+  normalizeHookTypeLabel,
+} from "./hook-governance.js";
 import { resolveHookPayoffTiming } from "./hook-lifecycle.js";
 
 export interface HookArbiterDecision {
@@ -16,7 +20,7 @@ export interface HookArbiterDecision {
 }
 
 interface PendingHookCandidate extends NewHookCandidate {
-  readonly preferredHookId?: string;
+  readonly sourceHookId?: string;
 }
 
 export function arbitrateRuntimeStateDeltaHooks(params: {
@@ -30,15 +34,18 @@ export function arbitrateRuntimeStateDeltaHooks(params: {
   const workingHooks = params.hooks.map((hook) => ({ ...hook }));
   const knownHookIds = new Set(workingHooks.map((hook) => hook.hookId));
   const upsertsById = new Map<string, HookRecord>();
-  const mentions = new Set(delta.hookOps.mention);
-  const resolves = uniqueStrings(delta.hookOps.resolve);
-  const defers = uniqueStrings(delta.hookOps.defer);
+  const mentions = new Set(delta.hookOps.mention.map((hookId) => resolveKnownHookId(hookId, workingHooks)));
+  const resolves = uniqueStrings(delta.hookOps.resolve.map((hookId) => resolveKnownHookId(hookId, workingHooks)));
+  const defers = uniqueStrings(delta.hookOps.defer.map((hookId) => resolveKnownHookId(hookId, workingHooks)));
   const fallbackCandidates: PendingHookCandidate[] = [];
   const decisions: HookArbiterDecision[] = [];
+  const hookIdRewrites = new Map<string, string>();
 
   for (const hook of delta.hookOps.upsert) {
-    if (knownHookIds.has(hook.hookId)) {
-      const existing = workingHooks.find((candidate) => candidate.hookId === hook.hookId)!;
+    const resolvedHookId = resolveKnownHookId(hook.hookId, workingHooks);
+    if (knownHookIds.has(resolvedHookId)) {
+      const existing = workingHooks.find((candidate) => candidate.hookId === resolvedHookId)!;
+      recordHookIdRewrite(hookIdRewrites, hook.hookId, existing.hookId);
       // An explicit upsert for an existing id is a lifecycle update. Reject it
       // only when the model also changes the hook family/type; novelty in the
       // payoff or notes is expected during legitimate advancement.
@@ -52,12 +59,16 @@ export function arbitrateRuntimeStateDeltaHooks(params: {
         decisions.push({
           action: "rejected",
           reason: "existing_id_identity_conflict",
-          hookId: hook.hookId,
+          hookId: existing.hookId,
           candidate,
         });
         continue;
       }
-      const normalized = { ...hook };
+      const normalized = {
+        ...hook,
+        hookId: existing.hookId,
+        type: normalizeHookTypeLabel(hook.type),
+      };
       upsertsById.set(normalized.hookId, normalized);
       replaceWorkingHook(workingHooks, normalized);
       continue;
@@ -67,11 +78,15 @@ export function arbitrateRuntimeStateDeltaHooks(params: {
       type: hook.type,
       expectedPayoff: hook.expectedPayoff,
       notes: hook.notes,
-      preferredHookId: hook.hookId,
+      sourceHookId: hook.hookId,
     });
   }
 
-  for (const candidate of [...fallbackCandidates, ...delta.newHookCandidates]) {
+  const pendingCandidates: PendingHookCandidate[] = [
+    ...fallbackCandidates,
+    ...delta.newHookCandidates,
+  ];
+  for (const candidate of pendingCandidates) {
     const activeHooks = workingHooks.filter((hook) => hook.status !== "resolved");
     const admission = evaluateHookAdmission({
       candidate,
@@ -100,6 +115,7 @@ export function arbitrateRuntimeStateDeltaHooks(params: {
             hookId: matched.hookId,
             candidate,
           });
+          recordHookIdRewrite(hookIdRewrites, candidate.sourceHookId, matched.hookId);
           continue;
         }
 
@@ -114,6 +130,7 @@ export function arbitrateRuntimeStateDeltaHooks(params: {
           hookId: matched.hookId,
           candidate,
         });
+        recordHookIdRewrite(hookIdRewrites, candidate.sourceHookId, matched.hookId);
         continue;
       }
 
@@ -141,6 +158,7 @@ export function arbitrateRuntimeStateDeltaHooks(params: {
       hookId: created.hookId,
       candidate,
     });
+    recordHookIdRewrite(hookIdRewrites, candidate.sourceHookId, created.hookId);
   }
 
   const resolvedDelta = RuntimeStateDeltaSchema.parse({
@@ -156,6 +174,12 @@ export function arbitrateRuntimeStateDeltaHooks(params: {
       defer: defers,
     },
     newHookCandidates: [],
+    chapterSummary: delta.chapterSummary
+      ? {
+          ...delta.chapterSummary,
+          hookActivity: rewriteHookIdReferences(delta.chapterSummary.hookActivity, hookIdRewrites),
+        }
+      : undefined,
   });
 
   return {
@@ -171,7 +195,7 @@ function mergeCandidateIntoExistingHook(
 ): HookRecord {
   return {
     ...existing,
-    type: preferRicherText(existing.type, candidate.type),
+    type: normalizeHookTypeLabel(existing.type) || normalizeHookTypeLabel(candidate.type),
     status: existing.status === "resolved" ? "resolved" : "progressing",
     lastAdvancedChapter: Math.max(existing.lastAdvancedChapter, chapter),
     expectedPayoff: preferRicherText(existing.expectedPayoff, candidate.expectedPayoff),
@@ -190,9 +214,9 @@ function createCanonicalHook(params: {
   readonly existingIds: ReadonlySet<string>;
 }): HookRecord {
   return {
-    hookId: buildCanonicalHookId(params.candidate, params.existingIds),
+    hookId: buildDerivedHookId(params.existingIds),
     startChapter: params.chapter,
-    type: params.candidate.type.trim(),
+    type: normalizeHookTypeLabel(params.candidate.type),
     status: "open",
     lastAdvancedChapter: params.chapter,
     expectedPayoff: params.candidate.expectedPayoff.trim(),
@@ -201,44 +225,51 @@ function createCanonicalHook(params: {
   };
 }
 
-function buildCanonicalHookId(
-  candidate: PendingHookCandidate,
-  existingIds: ReadonlySet<string>,
-): string {
-  const preferred = normalizeHookId(candidate.preferredHookId);
-  if (preferred && !existingIds.has(preferred)) {
-    return preferred;
+function buildDerivedHookId(existingIds: ReadonlySet<string>): string {
+  let maxSequence = 0;
+  for (const hookId of existingIds) {
+    const match = normalizeHookId(hookId).match(/^D-?0*(\d+)$/i);
+    if (!match) continue;
+    maxSequence = Math.max(maxSequence, Number.parseInt(match[1]!, 10));
   }
-
-  const base = slugifyHookStem([
-    candidate.type,
-    candidate.expectedPayoff,
-    candidate.notes,
-  ].join(" "));
-  let next = base;
-  let suffix = 2;
-
-  while (existingIds.has(next)) {
-    next = `${base}-${suffix}`;
-    suffix += 1;
-  }
-
-  return next;
+  return `D${String(maxSequence + 1).padStart(3, "0")}`;
 }
 
-function slugifyHookStem(value: string): string {
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  const englishTerms = (normalized.match(/[a-z0-9]{3,}/g) ?? [])
-    .filter((term) => !STOP_WORDS.has(term))
-    .slice(0, 5);
-  const chineseTerms = (normalized.match(/[\u4e00-\u9fff]{2,6}/g) ?? []).slice(0, 3);
-  const stem = [...englishTerms, ...chineseTerms].join("-").slice(0, 64).replace(/-+$/g, "");
-  return stem || "hook";
+function resolveKnownHookId(value: string, hooks: ReadonlyArray<HookRecord>): string {
+  const normalized = normalizeHookId(value);
+  const exact = hooks.find((hook) => hook.hookId === normalized);
+  if (exact) return exact.hookId;
+
+  const comparisonKey = hookIdComparisonKey(normalized);
+  if (!comparisonKey) return normalized;
+  const matches = hooks.filter((hook) => hookIdComparisonKey(hook.hookId) === comparisonKey);
+  return matches.length === 1 ? matches[0]!.hookId : normalized;
+}
+
+function hookIdComparisonKey(value: string): string {
+  return normalizeHookId(value).toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, "");
+}
+
+function recordHookIdRewrite(
+  rewrites: Map<string, string>,
+  sourceHookId: string | undefined,
+  targetHookId: string,
+): void {
+  const source = normalizeHookId(sourceHookId);
+  if (!source || source === targetHookId) return;
+  rewrites.set(source, targetHookId);
+}
+
+function rewriteHookIdReferences(value: string, rewrites: ReadonlyMap<string, string>): string {
+  let rewritten = value;
+  for (const [source, target] of rewrites) {
+    rewritten = rewritten.replace(new RegExp(escapeRegExp(source), "gi"), target);
+  }
+  return rewritten;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function isPureRestatement(candidate: NewHookCandidate, existing: HookRecord): boolean {
@@ -278,7 +309,7 @@ function replaceWorkingHook(workingHooks: HookRecord[], hook: HookRecord): void 
 }
 
 function normalizeHookType(value: string): string {
-  return value.trim().toLowerCase();
+  return normalizeHookFamily(value);
 }
 
 function sortHooks(left: HookRecord, right: HookRecord): number {

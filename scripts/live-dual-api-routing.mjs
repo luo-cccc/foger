@@ -9,6 +9,7 @@ import {
   createLLMClient,
   deriveBookIdFromTitle,
   loadProjectConfig,
+  summarizeLLMCallTelemetry,
 } from "../packages/core/dist/index.js";
 
 // ── CLI ────────────────────────────────────────────────────────────────────
@@ -21,13 +22,33 @@ const { values: args } = parseArgs({
     "timeout-ms": { type: "string", default: "300000" },
     "output":     { type: "string", default: ".tmp-dual-api-routing/reports" },
     "project-dir":{ type: "string", default: ".tmp-dual-api-routing" },
+    "recovery-mode": { type: "string", default: "repair-then-resync" },
+    "max-retry-rate": { type: "string", default: "0.2" },
+    "max-timeout-rate": { type: "string", default: "0" },
+    "max-fallbacks": { type: "string", default: "0" },
+    "min-hard-range-rate": { type: "string", default: "0.8" },
   },
 });
 
 const CHAPTER_COUNT = Math.max(1, Number(args.chapters) || 5);
-const WORDS_PER_CHAPTER = Math.max(100, Number(args.words) || 1000);
+const WORDS_PER_CHAPTER = Math.max(1000, Number(args.words) || 1000);
 const ROUTE_MODE = args["route-mode"];
 const TIMEOUT_MS = Math.max(5000, Number(args["timeout-ms"]) || 300000);
+const RECOVERY_MODE = args["recovery-mode"];
+const RECOVERY_MODES = new Set(["none", "repair", "resync", "repair-then-resync"]);
+if (!RECOVERY_MODES.has(RECOVERY_MODE)) {
+  throw new Error(`Invalid --recovery-mode: ${RECOVERY_MODE}`);
+}
+
+function boundedRateArg(name, fallback) {
+  const value = Number(args[name]);
+  return Number.isFinite(value) && value >= 0 && value <= 1 ? value : fallback;
+}
+
+const MAX_RETRY_RATE = boundedRateArg("max-retry-rate", 0.2);
+const MAX_TIMEOUT_RATE = boundedRateArg("max-timeout-rate", 0);
+const MIN_HARD_RANGE_RATE = boundedRateArg("min-hard-range-rate", 0.8);
+const MAX_FALLBACKS = Math.max(0, Number(args["max-fallbacks"]) || 0);
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const projectRoot = join(repoRoot, args["project-dir"]);
@@ -101,6 +122,8 @@ function buildConfig() {
 
 /** @type {import("../packages/core/dist/index.js").LLMCallTelemetry[]} */
 const allTelemetry = [];
+/** @type {import("../packages/core/dist/index.js").PipelineDiagnostic[]} */
+const allDiagnostics = [];
 
 function makePipelineConfig(config, root, logFile) {
   const makeLogger = (tag) => ({
@@ -132,6 +155,7 @@ function makePipelineConfig(config, root, logFile) {
     ].join("\n"),
     logger: makeLogger("inkos"),
     onCallTelemetry: (t) => allTelemetry.push(t),
+    onPipelineDiagnostic: (diagnostic) => allDiagnostics.push(diagnostic),
     defaultTimeoutMs: TIMEOUT_MS,
   };
 }
@@ -182,26 +206,119 @@ async function listDirs(path) {
   }
 }
 
-/** Build a telemetry summary grouped by agent+phase. */
-function buildTelemetrySummary(records) {
-  const byAgent = {};
-  let timeouts = 0;
-  let errors = 0;
-  for (const t of records) {
-    const key = `${t.agent}:${t.phase}`;
-    if (!byAgent[key]) byAgent[key] = { calls: 0, totalDurationMs: 0, timeouts: 0, errors: 0 };
-    byAgent[key].calls++;
-    byAgent[key].totalDurationMs += t.durationMs;
-    if (t.status === "timeout") { byAgent[key].timeouts++; timeouts++; }
-    if (t.status === "error") { byAgent[key].errors++; errors++; }
+function summarizeDiagnostics(records) {
+  const byKind = {};
+  for (const diagnostic of records) {
+    byKind[diagnostic.kind] = (byKind[diagnostic.kind] ?? 0) + 1;
   }
   return {
-    totalCalls: records.length,
-    totalDurationMs: records.reduce((sum, t) => sum + t.durationMs, 0),
-    timeouts,
-    errors,
-    byAgent,
+    total: records.length,
+    fallbackCount: records.filter((diagnostic) => diagnostic.kind.endsWith("fallback")).length,
+    byKind,
   };
+}
+
+function buildLengthReport(lengthTelemetry, warnings = []) {
+  if (!lengthTelemetry) return null;
+  const deviation = lengthTelemetry.finalCount - lengthTelemetry.target;
+  return {
+    ...lengthTelemetry,
+    deviation,
+    deviationPercent: Number(((deviation / lengthTelemetry.target) * 100).toFixed(2)),
+    absoluteDeviationPercent: Number((Math.abs(deviation / lengthTelemetry.target) * 100).toFixed(2)),
+    withinSoftRange: lengthTelemetry.finalCount >= lengthTelemetry.softMin
+      && lengthTelemetry.finalCount <= lengthTelemetry.softMax,
+    withinHardRange: lengthTelemetry.finalCount >= lengthTelemetry.hardMin
+      && lengthTelemetry.finalCount <= lengthTelemetry.hardMax,
+    warningCount: warnings.length,
+  };
+}
+
+function summarizeChapterLengths(chapters) {
+  const lengths = chapters.map((chapter) => chapter.length).filter(Boolean);
+  const withinSoftRange = lengths.filter((length) => length.withinSoftRange).length;
+  const withinHardRange = lengths.filter((length) => length.withinHardRange).length;
+  return {
+    chapters: lengths.length,
+    withinSoftRange,
+    withinHardRange,
+    softRangeRate: lengths.length === 0 ? null : withinSoftRange / lengths.length,
+    hardRangeRate: lengths.length === 0 ? null : withinHardRange / lengths.length,
+    normalizedChapters: lengths.filter((length) => length.normalizeApplied).length,
+    warningCount: lengths.reduce((sum, length) => sum + length.warningCount, 0),
+    averageAbsoluteDeviationPercent: lengths.length === 0
+      ? null
+      : Number((lengths.reduce((sum, length) => sum + length.absoluteDeviationPercent, 0) / lengths.length).toFixed(2)),
+  };
+}
+
+function buildQualityGate(report) {
+  const telemetry = report.telemetrySummary;
+  const retryRate = telemetry.calls === 0 ? 0 : telemetry.retries / telemetry.calls;
+  const timeoutRate = telemetry.calls === 0 ? 0 : telemetry.statuses.timeout / telemetry.calls;
+  const hardRangeRate = report.lengthSummary.hardRangeRate;
+  const fallbackCount = report.diagnosticSummary.fallbackCount;
+  const unrecoveredStateDegraded = report.chapters.filter((chapter) => chapter.status === "state-degraded").length;
+  const checks = {
+    retryRate: { actual: retryRate, maximum: MAX_RETRY_RATE, passed: retryRate <= MAX_RETRY_RATE },
+    timeoutRate: { actual: timeoutRate, maximum: MAX_TIMEOUT_RATE, passed: timeoutRate <= MAX_TIMEOUT_RATE },
+    fallbackCount: { actual: fallbackCount, maximum: MAX_FALLBACKS, passed: fallbackCount <= MAX_FALLBACKS },
+    hardRangeRate: {
+      actual: hardRangeRate,
+      minimum: MIN_HARD_RANGE_RATE,
+      passed: hardRangeRate !== null && hardRangeRate >= MIN_HARD_RANGE_RATE,
+    },
+    unrecoveredStateDegraded: { actual: unrecoveredStateDegraded, maximum: 0, passed: unrecoveredStateDegraded === 0 },
+  };
+  return {
+    passed: Object.values(checks).every((check) => check.passed),
+    thresholds: {
+      maxRetryRate: MAX_RETRY_RATE,
+      maxTimeoutRate: MAX_TIMEOUT_RATE,
+      maxFallbacks: MAX_FALLBACKS,
+      minHardRangeRate: MIN_HARD_RANGE_RATE,
+    },
+    checks,
+  };
+}
+
+async function runRecoveryAttempt({ pipeline, operation, bookId, chapterNumber, statusBefore }) {
+  const startedAt = new Date().toISOString();
+  const started = Date.now();
+  const telemetryStart = allTelemetry.length;
+  const diagnosticStart = allDiagnostics.length;
+  try {
+    const result = operation === "repair"
+      ? await pipeline.repairChapterState(bookId, chapterNumber)
+      : await pipeline.resyncChapterArtifacts(bookId, chapterNumber);
+    return {
+      result,
+      report: {
+        operation,
+        startedAt,
+        durationMs: Date.now() - started,
+        statusBefore,
+        statusAfter: result.status,
+        succeeded: result.status !== "state-degraded",
+        telemetry: summarizeLLMCallTelemetry(allTelemetry.slice(telemetryStart)),
+        diagnostics: allDiagnostics.slice(diagnosticStart),
+      },
+    };
+  } catch (error) {
+    return {
+      report: {
+        operation,
+        startedAt,
+        durationMs: Date.now() - started,
+        statusBefore,
+        statusAfter: "error",
+        succeeded: false,
+        error: error instanceof Error ? error.message : String(error),
+        telemetry: summarizeLLMCallTelemetry(allTelemetry.slice(telemetryStart)),
+        diagnostics: allDiagnostics.slice(diagnosticStart),
+      },
+    };
+  }
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -224,13 +341,14 @@ async function main() {
   );
 
   const report = {
-    reportVersion: "1.0.0",
+    reportVersion: "2.0.0",
     startedAt: new Date().toISOString(),
     config: {
       routeMode: ROUTE_MODE,
       chapters: CHAPTER_COUNT,
       wordsPerChapter: WORDS_PER_CHAPTER,
       timeoutMs: TIMEOUT_MS,
+      recoveryMode: RECOVERY_MODE,
     },
     routing: {
       default: { service: openrouterServiceId, model: openrouterModel },
@@ -240,6 +358,7 @@ async function main() {
     routingProbe: {},
     chapters: [],
     health: {},
+    diagnostics: allDiagnostics,
     warnings: [],
   };
   const reportPath = join(reportDir, `dual-api-routing-${ROUTE_MODE}-live-report.json`);
@@ -330,26 +449,55 @@ async function main() {
     for (let i = 0; i < CHAPTER_COUNT; i++) {
       const chStart = Date.now();
       const beforeCount = allTelemetry.length;
-      const result = await pipeline.writeNextChapter(bookId, WORDS_PER_CHAPTER);
-      const chDuration = Date.now() - chStart;
-      const chTelemetry = allTelemetry.slice(beforeCount);
-
-      report.chapters.push({
+      const beforeDiagnostics = allDiagnostics.length;
+      let result = await pipeline.writeNextChapter(bookId, WORDS_PER_CHAPTER);
+      const chapterReport = {
         chapterNumber: result.chapterNumber,
         title: result.title,
         wordCount: result.wordCount,
         auditPassed: result.auditResult.passed,
         issueCount: result.auditResult.issues.length,
         revised: result.revised,
+        initialStatus: result.status,
         status: result.status,
-        durationMs: chDuration,
-        telemetry: buildTelemetrySummary(chTelemetry),
-      });
+        durationMs: Date.now() - chStart,
+        length: buildLengthReport(result.lengthTelemetry, result.lengthWarnings),
+        recovery: { mode: RECOVERY_MODE, attempts: [] },
+      };
+      report.chapters.push(chapterReport);
+      await flushReport();
+
       if (result.status === "state-degraded") {
         report.warnings.push(`state-degraded after chapter ${result.chapterNumber}`);
-        break;
+        const operations = RECOVERY_MODE === "repair-then-resync"
+          ? ["repair", "resync"]
+          : RECOVERY_MODE === "none" ? [] : [RECOVERY_MODE];
+        for (const operation of operations) {
+          const attempt = await runRecoveryAttempt({
+            pipeline,
+            operation,
+            bookId,
+            chapterNumber: result.chapterNumber,
+            statusBefore: result.status,
+          });
+          chapterReport.recovery.attempts.push(attempt.report);
+          if (attempt.result) result = attempt.result;
+          chapterReport.status = result.status;
+          await flushReport();
+          if (result.status !== "state-degraded") break;
+        }
       }
+      chapterReport.wordCount = result.wordCount;
+      chapterReport.auditPassed = result.auditResult.passed;
+      chapterReport.issueCount = result.auditResult.issues.length;
+      chapterReport.revised = result.revised;
+      chapterReport.status = result.status;
+      chapterReport.durationMs = Date.now() - chStart;
+      chapterReport.length = buildLengthReport(result.lengthTelemetry, result.lengthWarnings);
+      chapterReport.telemetry = summarizeLLMCallTelemetry(allTelemetry.slice(beforeCount));
+      chapterReport.diagnostics = allDiagnostics.slice(beforeDiagnostics);
       await flushReport();
+      if (result.status === "state-degraded") break;
     }
 
     // ── Health checks ────────────────────────────────────────────────────────
@@ -365,9 +513,13 @@ async function main() {
       snapshots: await listDirs(join(bookRoot, "story", "snapshots")),
     };
 
-    report.telemetrySummary = buildTelemetrySummary(allTelemetry);
+    report.telemetrySummary = summarizeLLMCallTelemetry(allTelemetry);
+    report.diagnosticSummary = summarizeDiagnostics(allDiagnostics);
+    report.lengthSummary = summarizeChapterLengths(report.chapters);
+    report.qualityGate = buildQualityGate(report);
     report.finishedAt = new Date().toISOString();
     await flushReport();
+    if (!report.qualityGate.passed) process.exitCode = 1;
 
     console.log(JSON.stringify({
       smoke: {

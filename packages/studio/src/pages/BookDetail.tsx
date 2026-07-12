@@ -8,6 +8,16 @@ import { deriveBookActivity, shouldRefetchBookView } from "../hooks/use-book-act
 import { localizeKnownRuntimeMessage } from "../lib/error-copy";
 import { getPipelineFailureAction, type PipelineFailureStage } from "../lib/pipeline-failure-advice";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { Button } from "../components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../components/ui/dialog";
+import { Textarea } from "../components/ui/textarea";
 import {
   ChevronLeft,
   Zap,
@@ -28,7 +38,8 @@ import {
   Trash2,
   Save,
   Hand,
-  Settings2
+  Settings2,
+  Square,
 } from "lucide-react";
 
 interface ChapterMeta {
@@ -56,6 +67,13 @@ interface BookData {
 type ReviseMode = "spot-fix" | "polish" | "rewrite" | "rework" | "anti-detect";
 type ExportFormat = "txt" | "md" | "epub";
 type BookStatus = "active" | "paused" | "outlining" | "completed" | "dropped";
+type BookPromptAction =
+  | { readonly kind: "rewrite"; readonly chapterNum: number }
+  | { readonly kind: "revise"; readonly chapterNum: number; readonly mode: ReviseMode }
+  | { readonly kind: "resync"; readonly chapterNum: number }
+  | { readonly kind: "revise-foundation" }
+  | { readonly kind: "plan" }
+  | { readonly kind: "compose" };
 type ChapterRecovery =
   | { readonly kind: "none" }
   | { readonly kind: "committed-cleanup"; readonly chapterNumber: number }
@@ -72,9 +90,38 @@ interface Nav {
 
 function pipelineFailureStageLabel(stage: PipelineFailureStage, language?: string): string {
   const labels = language === "en"
-    ? { write: "Writing", draft: "Drafting", rewrite: "Rewriting", revise: "Revising", audit: "Auditing" }
-    : { write: "写作", draft: "草稿", rewrite: "重写", revise: "修订", audit: "审计" };
+    ? { write: "Writing", draft: "Drafting", rewrite: "Rewriting", revise: "Revising", audit: "Auditing", "repair-state": "Repairing state", resync: "Resyncing state" }
+    : { write: "写作", draft: "草稿", rewrite: "重写", revise: "修订", audit: "审计", "repair-state": "修复状态", resync: "同步状态" };
   return labels[stage];
+}
+
+function getBookPromptCopy(action: BookPromptAction, english: boolean) {
+  switch (action.kind) {
+    case "rewrite":
+      return english
+        ? { title: `Rewrite chapter ${action.chapterNum}`, description: "Add an optional brief for this run only. Leave it blank to use the existing focus.", placeholder: "Rewrite direction or constraints", confirm: "Start rewrite", required: false }
+        : { title: `重写第 ${action.chapterNum} 章`, description: "可选：输入这次重写要遵循的补充想法，留空则沿用现有 focus。", placeholder: "重写方向或约束", confirm: "开始重写", required: false };
+    case "revise":
+      return english
+        ? { title: `Revise chapter ${action.chapterNum}`, description: "Add an optional brief for this revision. Leave it blank to use the existing focus.", placeholder: "Revision direction or constraints", confirm: "Start revision", required: false }
+        : { title: `修订第 ${action.chapterNum} 章`, description: "可选：输入这次修订要遵循的补充想法，留空则沿用现有 focus。", placeholder: "修订方向或约束", confirm: "开始修订", required: false };
+    case "resync":
+      return english
+        ? { title: `Sync chapter ${action.chapterNum}`, description: "Add optional guidance for interpreting the edited chapter body. Leave it blank to sync directly from the text.", placeholder: "Sync guidance", confirm: "Start sync", required: false }
+        : { title: `同步第 ${action.chapterNum} 章`, description: "可选：输入同步已编辑正文时要遵循的补充说明，留空则直接按正文同步。", placeholder: "同步说明", confirm: "开始同步", required: false };
+    case "revise-foundation":
+      return english
+        ? { title: "Revise book foundation", description: "This rewrites the book foundation and does not directly change chapter text.", placeholder: "Required revision feedback", confirm: "Revise foundation", required: true }
+        : { title: "重修基础设定", description: "此操作会重写书籍基础设定，不直接修改章节正文。", placeholder: "请输入重修反馈（必填）", confirm: "重修设定", required: true };
+    case "plan":
+      return english
+        ? { title: "Plan next chapter", description: "Optionally provide extra context for planning the next chapter.", placeholder: "Planning context", confirm: "Create plan", required: false }
+        : { title: "规划下一章", description: "可选：提供下一章规划时要参考的补充说明。", placeholder: "规划补充说明", confirm: "生成规划", required: false };
+    case "compose":
+      return english
+        ? { title: "Compose next chapter", description: "Optionally provide extra context for composing the next chapter.", placeholder: "Composition context", confirm: "Compose chapter", required: false }
+        : { title: "组装下一章", description: "可选：提供下一章组装时要参考的补充说明。", placeholder: "组装补充说明", confirm: "开始组装", required: false };
+  }
 }
 
 function translateChapterStatus(status: string, t: TFunction): string {
@@ -127,6 +174,10 @@ export function BookDetail({
   const [exportApprovedOnly, setExportApprovedOnly] = useState(false);
   const [bookActionPending, setBookActionPending] = useState<string | null>(null);
   const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null);
+  const [cancelRequestPending, setCancelRequestPending] = useState(false);
+  const [promptAction, setPromptAction] = useState<BookPromptAction | null>(null);
+  const [promptValue, setPromptValue] = useState("");
+  const [promptSubmitting, setPromptSubmitting] = useState(false);
   // Auto (pipeline self-reviews) vs manual (write the draft and stop; you
   // run audit / revise / approve as checkpoint actions). This is scoped to
   // the current book, with project-level mode as the inherited default.
@@ -139,6 +190,7 @@ export function BookDetail({
   const activity = useMemo(() => deriveBookActivity(sse.messages, bookId), [bookId, sse.messages]);
   const writing = writeRequestPending || activity.writing;
   const drafting = draftRequestPending || activity.drafting;
+  const longOperationActive = activity.activeOperation !== null;
   const latestPersistedChapter = data?.chapters.reduce(
     (latest, chapter) => Math.max(latest, chapter.number),
     0,
@@ -184,7 +236,41 @@ export function BookDetail({
       setDraftRequestPending(false);
       refetch();
     }
+    if (recent.event === "repair-state:complete") {
+      setRecoveryNotice(
+        data?.book.language === "en"
+          ? "Chapter state repair completed."
+          : "章节状态修复已完成。",
+      );
+    }
+    if (recent.event === "resync:complete") {
+      setRecoveryNotice(
+        data?.book.language === "en"
+          ? "Chapter truth and state sync completed."
+          : "章节真相与状态同步已完成。",
+      );
+    }
+    if (recent.event.endsWith(":cancelled")) {
+      setCancelRequestPending(false);
+      setRecoveryNotice(
+        data?.book.language === "en"
+          ? "Operation cancelled. The previous durable chapter state was preserved."
+          : "操作已取消，已保留取消前的持久化章节状态。",
+      );
+    }
   });
+
+  const handleCancelOperation = async () => {
+    const operation = activity.activeOperation;
+    if (!operation || operation.cancelling || cancelRequestPending) return;
+    setCancelRequestPending(true);
+    try {
+      await fetchJson(`/books/${bookId}/operations/${operation.requestId}/cancel`, { method: "POST" });
+    } catch (e) {
+      setCancelRequestPending(false);
+      alert(e instanceof Error ? e.message : "Cancel failed");
+    }
+  };
 
   const handleWriteNext = async () => {
     setWriteRequestPending(true);
@@ -237,73 +323,21 @@ export function BookDetail({
     }
   };
 
-  const handleRewrite = async (chapterNum: number) => {
-    const brief = window.prompt(
-      data?.book.language === "en"
-        ? "Optional rewrite brief for this run only. Leave blank to use existing focus."
-        : "可选：输入这次重写要遵循的补充想法。留空则沿用现有 focus。",
-      "",
-    );
-    if (brief === null) return;
-    setRewritingChapters((prev) => [...prev, chapterNum]);
-    try {
-      await fetchJson(`/books/${bookId}/rewrite/${chapterNum}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ brief: brief.trim() || undefined }),
-      });
-      refetch();
-    } catch (e) {
-      alert(e instanceof Error ? e.message : "Rewrite failed");
-    } finally {
-      setRewritingChapters((prev) => prev.filter((n) => n !== chapterNum));
-    }
+  const openPrompt = (action: BookPromptAction) => {
+    setPromptValue("");
+    setPromptAction(action);
   };
 
-  const handleRevise = async (chapterNum: number, mode: ReviseMode) => {
-    const brief = window.prompt(
-      data?.book.language === "en"
-        ? "Optional revise brief for this run only. Leave blank to use existing focus."
-        : "可选：输入这次修订要遵循的补充想法。留空则沿用现有 focus。",
-      "",
-    );
-    if (brief === null) return;
-    setRevisingChapters((prev) => [...prev, chapterNum]);
-    try {
-      await fetchJson(`/books/${bookId}/revise/${chapterNum}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode, brief: brief.trim() || undefined }),
-      });
-      refetch();
-    } catch (e) {
-      alert(e instanceof Error ? e.message : "Revision failed");
-    } finally {
-      setRevisingChapters((prev) => prev.filter((n) => n !== chapterNum));
-    }
+  const handleRewrite = (chapterNum: number) => {
+    openPrompt({ kind: "rewrite", chapterNum });
   };
 
-  const handleSync = async (chapterNum: number) => {
-    const brief = window.prompt(
-      data?.book.language === "en"
-        ? "Optional sync brief for interpreting the edited chapter body. Leave blank to sync directly from the text."
-        : "可选：输入这次同步时要遵循的补充说明。留空则直接按正文同步。",
-      "",
-    );
-    if (brief === null) return;
-    setSyncingChapters((prev) => [...prev, chapterNum]);
-    try {
-      await fetchJson(`/books/${bookId}/resync/${chapterNum}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ brief: brief.trim() || undefined }),
-      });
-      refetch();
-    } catch (e) {
-      alert(e instanceof Error ? e.message : "Sync failed");
-    } finally {
-      setSyncingChapters((prev) => prev.filter((n) => n !== chapterNum));
-    }
+  const handleRevise = (chapterNum: number, mode: ReviseMode) => {
+    openPrompt({ kind: "revise", chapterNum, mode });
+  };
+
+  const handleSync = (chapterNum: number) => {
+    openPrompt({ kind: "resync", chapterNum });
   };
 
   const handleSaveSettings = async () => {
@@ -388,69 +422,119 @@ export function BookDetail({
     });
   };
 
-  const handleReviseFoundation = async () => {
-    const feedback = window.prompt(
-      data?.book.language === "en"
-        ? "Foundation revision feedback. This rewrites the book foundation, not chapter body."
-        : "输入重修基础设定的反馈。此操作会重写基础设定，不直接改正文。",
-      "",
-    );
-    if (!feedback?.trim()) return;
-    await runBookAction("revise-foundation", async () => {
-      await fetchJson(`/books/${bookId}/foundation/revise`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ feedback }),
-      });
-      return data?.book.language === "en" ? "Foundation revised." : "基础设定已重修。";
-    });
+  const handleReviseFoundation = () => {
+    openPrompt({ kind: "revise-foundation" });
   };
 
-  const handlePlan = async () => {
-    const context = window.prompt(
-      data?.book.language === "en"
-        ? "Optional planning context for the next chapter."
-        : "可选：下一章规划补充说明。",
-      "",
-    );
-    if (context === null) return;
-    await runBookAction("plan", async () => {
-      const result = await fetchJson<{ chapterNumber?: number; title?: string }>(`/books/${bookId}/plan`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ context: context.trim() || undefined }),
-      });
-      return data?.book.language === "en"
-        ? `Planned chapter ${result.chapterNumber ?? "?"}: ${result.title ?? ""}`
-        : `已计划第 ${result.chapterNumber ?? "?"} 章：${result.title ?? ""}`;
-    });
+  const handlePlan = () => {
+    openPrompt({ kind: "plan" });
   };
 
-  const handleCompose = async () => {
-    const context = window.prompt(
-      data?.book.language === "en"
-        ? "Optional compose context for the next chapter."
-        : "可选：下一章组装补充说明。",
-      "",
-    );
-    if (context === null) return;
-    await runBookAction("compose", async () => {
-      const result = await fetchJson<{ chapterNumber?: number; title?: string }>(`/books/${bookId}/compose`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ context: context.trim() || undefined }),
-      });
-      return data?.book.language === "en"
-        ? `Composed chapter ${result.chapterNumber ?? "?"}: ${result.title ?? ""}`
-        : `已组装第 ${result.chapterNumber ?? "?"} 章：${result.title ?? ""}`;
-    });
+  const handleCompose = () => {
+    openPrompt({ kind: "compose" });
   };
 
   const handleRepairState = async (chapterNum: number) => {
-    await runBookAction(`repair-state-${chapterNum}`, async () => {
+    setBookActionPending(`repair-state-${chapterNum}`);
+    try {
       await fetchJson(`/books/${bookId}/repair-state/${chapterNum}`, { method: "POST" });
-      return data?.book.language === "en" ? `Chapter ${chapterNum} state repaired.` : `第 ${chapterNum} 章状态已修复。`;
-    });
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "State repair failed");
+    } finally {
+      setBookActionPending(null);
+    }
+  };
+
+  const handlePromptSubmit = async () => {
+    const action = promptAction;
+    if (!action || promptSubmitting) return;
+    const value = promptValue.trim();
+    if (action.kind === "revise-foundation" && !value) return;
+
+    setPromptSubmitting(true);
+    try {
+      switch (action.kind) {
+        case "rewrite":
+          setRewritingChapters((prev) => [...prev, action.chapterNum]);
+          await fetchJson(`/books/${bookId}/rewrite/${action.chapterNum}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ brief: value || undefined }),
+          });
+          break;
+        case "revise":
+          setRevisingChapters((prev) => [...prev, action.chapterNum]);
+          await fetchJson(`/books/${bookId}/revise/${action.chapterNum}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ mode: action.mode, brief: value || undefined }),
+          });
+          refetch();
+          break;
+        case "resync":
+          setSyncingChapters((prev) => [...prev, action.chapterNum]);
+          await fetchJson(`/books/${bookId}/resync/${action.chapterNum}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ brief: value || undefined }),
+          });
+          break;
+        case "revise-foundation":
+          setBookActionPending("revise-foundation");
+          await fetchJson(`/books/${bookId}/foundation/revise`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ feedback: value }),
+          });
+          alert(data?.book.language === "en" ? "Foundation revised." : "基础设定已重修。");
+          refetch();
+          break;
+        case "plan": {
+          setBookActionPending("plan");
+          const result = await fetchJson<{ chapterNumber?: number; title?: string }>(`/books/${bookId}/plan`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ context: value || undefined }),
+          });
+          alert(data?.book.language === "en"
+            ? `Planned chapter ${result.chapterNumber ?? "?"}: ${result.title ?? ""}`
+            : `已计划第 ${result.chapterNumber ?? "?"} 章：${result.title ?? ""}`);
+          refetch();
+          break;
+        }
+        case "compose": {
+          setBookActionPending("compose");
+          const result = await fetchJson<{ chapterNumber?: number; title?: string }>(`/books/${bookId}/compose`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ context: value || undefined }),
+          });
+          alert(data?.book.language === "en"
+            ? `Composed chapter ${result.chapterNumber ?? "?"}: ${result.title ?? ""}`
+            : `已组装第 ${result.chapterNumber ?? "?"} 章：${result.title ?? ""}`);
+          refetch();
+          break;
+        }
+      }
+      setPromptAction(null);
+      setPromptValue("");
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Action failed");
+    } finally {
+      if (action.kind === "rewrite") {
+        setRewritingChapters((prev) => prev.filter((n) => n !== action.chapterNum));
+      }
+      if (action.kind === "revise") {
+        setRevisingChapters((prev) => prev.filter((n) => n !== action.chapterNum));
+      }
+      if (action.kind === "resync") {
+        setSyncingChapters((prev) => prev.filter((n) => n !== action.chapterNum));
+      }
+      if (["revise-foundation", "plan", "compose"].includes(action.kind)) {
+        setBookActionPending(null);
+      }
+      setPromptSubmitting(false);
+    }
   };
 
   if (loading) return (
@@ -472,6 +556,7 @@ export function BookDetail({
   const currentStatus = settingsStatus ?? (book.status as BookStatus);
 
   const exportHref = `/api/v1/books/${bookId}/export?format=${exportFormat}${exportApprovedOnly ? "&approvedOnly=true" : ""}`;
+  const promptCopy = promptAction ? getBookPromptCopy(promptAction, book.language === "en") : null;
 
   return (
     <div className="space-y-8 fade-in">
@@ -519,7 +604,7 @@ export function BookDetail({
         <div className="flex flex-wrap gap-2">
           <button
             onClick={handleWriteNext}
-            disabled={writing || drafting || continuationBlocked}
+            disabled={writing || drafting || longOperationActive || continuationBlocked}
             title={latestChapter?.status === "audit-failed"
               ? (book.language === "en"
                   ? `Chapter ${latestChapter.number} failed audit. Revise or rewrite it before continuing.`
@@ -537,7 +622,7 @@ export function BookDetail({
           </button>
           <button
             onClick={handleDraft}
-            disabled={writing || drafting || continuationBlocked}
+            disabled={writing || drafting || longOperationActive || continuationBlocked}
             className="flex items-center gap-2 px-5 py-2.5 text-sm font-bold bg-secondary text-foreground rounded-xl hover:bg-secondary/80 transition-all border border-border/50 disabled:opacity-50"
           >
             {drafting ? <div className="w-4 h-4 border-2 border-muted-foreground/20 border-t-muted-foreground rounded-full animate-spin" /> : <Wand2 size={16} />}
@@ -564,7 +649,7 @@ export function BookDetail({
         </div>
       </div>
 
-      {(writing || drafting || activity.lastFailure) && (
+      {(writing || drafting || activity.activeOperation || activity.lastFailure) && (
         <div
           data-testid={activity.lastFailure ? "pipeline-failure-notice" : undefined}
           className={`rounded-2xl border px-4 py-3 text-sm ${
@@ -623,6 +708,27 @@ export function BookDetail({
                   {data?.book.language === "en" ? "Open Doctor" : "打开诊断"}
                 </button>
               </div>
+            </div>
+          ) : activity.activeOperation ? (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span>
+                {pipelineFailureStageLabel(activity.activeOperation.kind, data?.book.language)}
+                {activity.activeOperation.cancelling || cancelRequestPending
+                  ? (data?.book.language === "en" ? " · cancelling and restoring state" : " · 正在取消并恢复状态")
+                  : (data?.book.language === "en" ? " · operation in progress" : " · 操作执行中")}
+              </span>
+              <button
+                type="button"
+                data-testid="cancel-book-operation"
+                onClick={() => void handleCancelOperation()}
+                disabled={activity.activeOperation.cancelling || cancelRequestPending}
+                className="inline-flex items-center gap-1.5 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/20 disabled:opacity-50"
+              >
+                <Square size={12} fill="currentColor" />
+                {activity.activeOperation.cancelling || cancelRequestPending
+                  ? (data?.book.language === "en" ? "Cancelling" : "正在取消")
+                  : (data?.book.language === "en" ? "Cancel" : "取消")}
+              </button>
             </div>
           ) : writing ? (
             <span>{t("book.pipelineWriting")}</span>
@@ -877,7 +983,7 @@ export function BookDetail({
                       </button>
                       <button
                         onClick={() => handleRewrite(ch.number)}
-                        disabled={rewritingChapters.includes(ch.number)}
+                        disabled={rewritingChapters.includes(ch.number) || longOperationActive}
                         className="p-2 rounded-lg bg-secondary text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all shadow-sm disabled:opacity-50"
                         title={t("book.rewrite")}
                       >
@@ -887,7 +993,7 @@ export function BookDetail({
                       </button>
                       <button
                         onClick={() => handleSync(ch.number)}
-                        disabled={syncingChapters.includes(ch.number) || ch.number !== latestPersistedChapter}
+                        disabled={syncingChapters.includes(ch.number) || longOperationActive || ch.number !== latestPersistedChapter}
                         className="p-2 rounded-lg bg-secondary text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all shadow-sm disabled:opacity-50"
                         title={data?.book.language === "en" ? "Sync truth/state from edited chapter" : "根据已编辑章节同步 truth/state"}
                       >
@@ -898,7 +1004,8 @@ export function BookDetail({
                       {ch.status === "state-degraded" && (
                         <button
                           onClick={() => handleRepairState(ch.number)}
-                          disabled={bookActionPending === `repair-state-${ch.number}`}
+                          data-testid={`repair-state-${ch.number}`}
+                          disabled={bookActionPending === `repair-state-${ch.number}` || longOperationActive}
                           className="p-2 rounded-lg bg-amber-500/10 text-amber-600 hover:bg-amber-500 hover:text-white transition-all shadow-sm disabled:opacity-50"
                           title={t("book.repairState")}
                         >
@@ -908,7 +1015,7 @@ export function BookDetail({
                         </button>
                       )}
                       <select
-                        disabled={revisingChapters.includes(ch.number)}
+                        disabled={revisingChapters.includes(ch.number) || longOperationActive}
                         value=""
                         onChange={(e) => {
                           const mode = e.target.value as ReviseMode;
@@ -955,6 +1062,54 @@ export function BookDetail({
         onConfirm={handleDeleteBook}
         onCancel={() => setConfirmDeleteOpen(false)}
       />
+      <Dialog
+        open={promptAction !== null}
+        onOpenChange={(open) => {
+          if (!open && !promptSubmitting) {
+            setPromptAction(null);
+            setPromptValue("");
+          }
+        }}
+      >
+        <DialogContent showCloseButton={!promptSubmitting} className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{promptCopy?.title}</DialogTitle>
+            <DialogDescription>{promptCopy?.description}</DialogDescription>
+          </DialogHeader>
+          <Textarea
+            autoFocus
+            data-testid="book-action-prompt-input"
+            value={promptValue}
+            onChange={(event) => setPromptValue(event.target.value)}
+            placeholder={promptCopy?.placeholder}
+            disabled={promptSubmitting}
+            className="min-h-28 resize-y"
+          />
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setPromptAction(null);
+                setPromptValue("");
+              }}
+              disabled={promptSubmitting}
+            >
+              {book.language === "en" ? "Cancel" : "取消"}
+            </Button>
+            <Button
+              type="button"
+              data-testid="book-action-prompt-submit"
+              onClick={() => void handlePromptSubmit()}
+              disabled={promptSubmitting || Boolean(promptCopy?.required && !promptValue.trim())}
+            >
+              {promptSubmitting
+                ? (book.language === "en" ? "Submitting" : "正在提交")
+                : promptCopy?.confirm}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

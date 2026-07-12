@@ -64,6 +64,53 @@ const BOOK: BookConfig = {
 };
 
 describe("validateChapterTruthPersistence", () => {
+  it("retries settlement when PASS still reports missing truth updates", async () => {
+    const validator = {
+      validate: vi.fn()
+        .mockResolvedValueOnce(createValidationResult({
+          passed: true,
+          warnings: [{
+            category: "missing_hook_update",
+            description: "H001 advanced in the body but stayed unchanged in truth.",
+          }],
+        }))
+        .mockResolvedValueOnce(createValidationResult()),
+    };
+    const writer = {
+      settleChapterState: vi.fn().mockResolvedValue(createWriterOutput({
+        updatedState: "recovered state",
+        updatedHooks: "recovered hooks",
+      })),
+    };
+
+    const result = await validateChapterTruthPersistence({
+      writer,
+      validator,
+      book: BOOK,
+      bookDir: "/tmp/book",
+      chapterNumber: 2,
+      title: "Test Chapter",
+      content: "H001 advances in chapter 2.",
+      persistenceOutput: createWriterOutput({
+        updatedState: "stale state",
+        updatedHooks: "stale hooks",
+      }),
+      auditResult: createAuditResult(),
+      previousTruth: {
+        oldState: "old state",
+        oldHooks: "old hooks",
+        oldLedger: "old ledger",
+      },
+      language: "en",
+      logWarn: vi.fn(),
+      logger: { warn: vi.fn() },
+    });
+
+    expect(writer.settleChapterState).toHaveBeenCalledTimes(1);
+    expect(result.chapterStatus).toBeNull();
+    expect(result.persistenceOutput.updatedHooks).toBe("recovered hooks");
+  });
+
   it("uses recovered settlement output when retry succeeds", async () => {
     const validator = {
       validate: vi.fn()

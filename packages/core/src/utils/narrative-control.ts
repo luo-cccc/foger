@@ -43,10 +43,9 @@ export function sanitizeNarrativeControlText(
  * Render a ChapterMemo + optional ChapterIntent into a sanitized narrative
  * control block for the writer / reviser prompt.
  *
- * Phase 4: the memo body already contains the 7 required section headings
- * (当前任务 / 读者此刻在等什么 / 该兑现的 / 日常过渡 / 关键抉择 / 章尾 / 不要做)
- * produced by the planner LLM. We emit them at top level so the writer sees
- * each section as its own task-unit instead of one flattened "memo" block.
+ * The memo body contains the populated planning contract produced by the
+ * planner LLM. We emit its headings at top level so the writer sees each
+ * commitment as its own task-unit instead of one flattened "memo" block.
  */
 export function renderMemoAsNarrativeBlock(
   memo: ChapterMemo,
@@ -68,13 +67,7 @@ export function renderMemoAsNarrativeBlock(
     sections.push(`## ${isEn ? "Thread Refs" : "关联线索"}\n${threads}`);
   }
 
-  if (memo.isGoldenOpening) {
-    sections.push(
-      `## ${isEn ? "Golden Opening" : "黄金开场"}\n- ${isEn ? "This is a golden opening chapter — prioritize hook-dense, high-tempo pacing." : "本章是黄金开场章——优先钩子密集、高节奏。"}`,
-    );
-  }
-
-  // Emit the 7-section memo body at top level so each heading is a task.
+  // Emit the populated memo body at top level so each heading is a task.
   if (memo.body.trim().length > 0) {
     sections.push(s(memo.body));
   }

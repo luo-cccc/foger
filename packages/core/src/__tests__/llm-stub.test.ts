@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { isLlmStubEnabled, stubChatCompletion } from "../agent/llm-stub.js";
+import { chatCompletion, type LLMCallTelemetry, type LLMClient } from "../llm/provider.js";
 
 describe("llm-stub", () => {
   const previousStubEnv = process.env.INKOS_AGENT_LLM_STUB;
@@ -84,5 +85,58 @@ describe("llm-stub", () => {
     expect(response.content).toContain("=== DIMENSION: 5 ===");
     expect(response.content).toContain("=== OVERALL ===");
     expect(response.content).toContain("Passed: yes");
+  });
+
+  it("returns a valid verdict for state validator prompts", () => {
+    const response = stubChatCompletion(
+      [
+        {
+          role: "system",
+          content: "You are a continuity validator for a novel writing system. First line: exactly PASS or FAIL.",
+        },
+        {
+          role: "user",
+          content: "## State Card Changes\nupdated\n## Hooks Pool Changes\nupdated",
+        },
+      ],
+      "stub-model",
+    );
+
+    expect(response.content).toBe("PASS");
+  });
+
+  it("emits the normal provider telemetry contract in stub mode", async () => {
+    process.env.INKOS_AGENT_LLM_STUB = "1";
+    const records: LLMCallTelemetry[] = [];
+    const client = {
+      provider: "openai",
+      service: "openrouter",
+      configSource: "studio",
+      apiFormat: "chat",
+      stream: false,
+      defaults: { temperature: 0.7, maxTokens: 1024, thinkingBudget: 0, extra: {} },
+    } as LLMClient;
+
+    await chatCompletion(client, "stub-model", [{ role: "user", content: "outline" }], {
+      agentName: "planner",
+      callPhase: "plan",
+      onCallTelemetry: (telemetry) => records.push(telemetry),
+    });
+
+    expect(records).toEqual([
+      expect.objectContaining({
+        agent: "planner",
+        phase: "plan",
+        service: "openrouter",
+        model: "stub-model",
+        attemptCount: 1,
+        retryCount: 0,
+        status: "success",
+        promptAssembly: expect.objectContaining({
+          totalChars: 7,
+          estimatedTokens: expect.any(Number),
+        }),
+      }),
+    ]);
   });
 });

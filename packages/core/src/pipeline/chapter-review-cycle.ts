@@ -30,6 +30,14 @@ export interface ChapterReviewCycleResult {
   readonly normalizeApplied: boolean;
 }
 
+export interface ChapterReviewEvaluation {
+  readonly auditResult: AuditResult;
+  readonly aiTellCount: number;
+  readonly blockingCount: number;
+  readonly criticalCount: number;
+  readonly revisionBlockingIssues: ReadonlyArray<AuditIssue>;
+}
+
 const DEFAULT_MAX_REVIEW_ITERATIONS = 1;
 const PASS_SCORE_THRESHOLD = 85;
 const NET_IMPROVEMENT_EPSILON = 3;
@@ -68,21 +76,10 @@ export async function runChapterReviewCycle(params: {
       },
     ) => Promise<ReviseOutput>;
   };
-  readonly auditor: {
-    auditChapter: (
-      bookDir: string,
-      chapterContent: string,
-      chapterNumber: number,
-      genre?: string,
-      options?: {
-        temperature?: number;
-        chapterIntent?: string;
-        chapterMemo?: ChapterMemo;
-        contextPackage?: ContextPackage;
-        ruleStack?: RuleStack;
-      },
-    ) => Promise<AuditResult>;
-  };
+  readonly evaluateChapter: (
+    content: string,
+    options?: { readonly temperature?: number },
+  ) => Promise<ChapterReviewEvaluation>;
   readonly normalizeDraftLengthIfNeeded: (chapterContent: string) => Promise<{
     content: string;
     wordCount: number;
@@ -95,13 +92,6 @@ export async function runChapterReviewCycle(params: {
     left: ChapterReviewCycleUsage,
     right?: ChapterReviewCycleUsage,
   ) => ChapterReviewCycleUsage;
-  readonly analyzeAITells: (content: string) => { issues: ReadonlyArray<AuditIssue> };
-  readonly analyzeSensitiveWords: (content: string) => {
-    found: ReadonlyArray<{ severity: string }>;
-    issues: ReadonlyArray<AuditIssue>;
-  };
-  /** Re-run deterministic post-write checks (chapter-ref, paragraph shape, etc.) on any content. */
-  readonly runPostWriteChecks?: (content: string) => ReadonlyArray<AuditIssue>;
   readonly maxReviewIterations?: number;
   readonly logWarn: (message: { zh: string; en: string }) => void;
   readonly logStage: (message: { zh: string; en: string }) => void;
@@ -110,23 +100,6 @@ export async function runChapterReviewCycle(params: {
   let normalizeApplied = false;
   let finalContent = params.initialOutput.content;
   let finalWordCount = params.initialOutput.wordCount;
-
-  // Convert initial deterministic post-write findings into AuditIssues as a
-  // fallback when runPostWriteChecks isn't provided.
-  const initialPostWriteIssues: ReadonlyArray<AuditIssue> = [
-    ...params.initialOutput.postWriteErrors.map((violation) => ({
-      severity: "critical" as const,
-      category: violation.rule,
-      description: violation.description,
-      suggestion: violation.suggestion,
-    })),
-    ...params.initialOutput.postWriteWarnings.map((violation) => ({
-      severity: "warning" as const,
-      category: violation.rule,
-      description: violation.description,
-      suggestion: violation.suggestion,
-    })),
-  ];
 
   // ---------------------------------------------------------------------------
   // Length normalization: dedicated step, only runs for clear hard-range drift.
@@ -160,48 +133,12 @@ export async function runChapterReviewCycle(params: {
     content: string,
     options?: { temperature?: number },
   ): Promise<{ auditResult: AuditResult; score: number; lengthInRange: boolean }> => {
-    const llmAudit = await params.auditor.auditChapter(
-      params.bookDir,
-      content,
-      params.chapterNumber,
-      params.book.genre,
-      params.reducedControlInput
-        ? { ...params.reducedControlInput, ...(options ?? {}) }
-        : options,
-    );
-    totalUsage = params.addUsage(totalUsage, llmAudit.tokenUsage);
-    const aiTellsResult = params.analyzeAITells(content);
-    const sensitiveResult = params.analyzeSensitiveWords(content);
-    const hasBlockedWords = sensitiveResult.found.some((item) => item.severity === "block");
+    const evaluation = await params.evaluateChapter(content, options);
+    const auditResult = evaluation.auditResult;
+    totalUsage = params.addUsage(totalUsage, auditResult.tokenUsage);
     const wordCount = countChapterLength(content, params.lengthSpec.countingMode);
     const lengthInRange = !isOutsideHardRange(wordCount, params.lengthSpec);
-
-    // Deterministic post-write checks: run every round, not just the first.
-    // If runPostWriteChecks is provided, use it; otherwise fall back to initial postWriteErrors.
-    const postWriteIssues = params.runPostWriteChecks
-      ? params.runPostWriteChecks(content)
-      : initialPostWriteIssues;
-
-    const allIssues: AuditIssue[] = [
-      ...llmAudit.issues,
-      ...aiTellsResult.issues,
-      ...sensitiveResult.issues,
-      ...postWriteIssues,
-    ];
-
-    // Length is NOT added to reviser issues — normalize handles it as a dedicated step.
-    // lengthInRange is only used in isPassed() as a hard gate.
-
-    const hasPostWriteCritical = postWriteIssues.some((i) => i.severity === "critical");
-    const auditResult: AuditResult = {
-      passed: (hasBlockedWords || hasPostWriteCritical) ? false : llmAudit.passed,
-      issues: allIssues,
-      summary: llmAudit.summary,
-      parseFailed: llmAudit.parseFailed,
-      overallScore: llmAudit.overallScore,
-    };
-
-    const score = llmAudit.overallScore ?? 0;
+    const score = auditResult.overallScore ?? 0;
 
     return { auditResult, score, lengthInRange };
   };

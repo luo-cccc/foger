@@ -40,6 +40,9 @@ export interface LLMCallTelemetry {
   readonly stream: boolean;
   readonly phase: string;
   readonly durationMs: number;
+  readonly attemptCount: number;
+  readonly retryCount: number;
+  readonly promptAssembly: LLMPromptAssemblyTelemetry;
   readonly status: "success" | "timeout" | "error" | "partial";
   readonly usage: {
     readonly promptTokens: number;
@@ -51,6 +54,42 @@ export interface LLMCallTelemetry {
   readonly partialContent?: string;
   readonly timeoutMs?: number;
   readonly timestamp: string;
+}
+
+export type LLMPromptSourceTier = "system" | "verbatim" | "semantic" | "compressible" | "dynamic";
+
+export interface LLMPromptSourceInput {
+  readonly source: string;
+  readonly content: string;
+  readonly tier?: LLMPromptSourceTier;
+  readonly stable?: boolean;
+  readonly selected?: boolean;
+  readonly compressed?: boolean;
+}
+
+export interface LLMPromptAssemblyTelemetry {
+  readonly totalChars: number;
+  readonly estimatedTokens: number;
+  readonly messages: ReadonlyArray<{
+    readonly role: LLMMessage["role"];
+    readonly chars: number;
+    readonly estimatedTokens: number;
+    readonly contentHash: string;
+  }>;
+  readonly sources: ReadonlyArray<{
+    readonly source: string;
+    readonly chars: number;
+    readonly estimatedTokens: number;
+    readonly contentHash: string;
+    readonly tier: LLMPromptSourceTier;
+    readonly stable: boolean;
+    readonly selected: boolean;
+    readonly compressed: boolean;
+  }>;
+  readonly duplicateSourceGroups: ReadonlyArray<{
+    readonly contentHash: string;
+    readonly sources: ReadonlyArray<string>;
+  }>;
 }
 
 export type OnCallTelemetry = (telemetry: LLMCallTelemetry) => void;
@@ -382,6 +421,54 @@ export function estimateTextTokens(text: string): number {
   return Math.ceil(cjk + nonCjk / 4);
 }
 
+function fingerprintText(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function buildPromptAssemblyTelemetry(
+  messages: ReadonlyArray<LLMMessage>,
+  promptSources: ReadonlyArray<LLMPromptSourceInput> = [],
+): LLMPromptAssemblyTelemetry {
+  const messageTelemetry = messages.map((message) => ({
+    role: message.role,
+    chars: message.content.length,
+    estimatedTokens: estimateTextTokens(message.content),
+    contentHash: fingerprintText(message.content),
+  }));
+  const sources = promptSources.map((source) => ({
+    source: source.source,
+    chars: source.content.length,
+    estimatedTokens: estimateTextTokens(source.content),
+    contentHash: fingerprintText(source.content),
+    tier: source.tier ?? "dynamic",
+    stable: source.stable ?? false,
+    selected: source.selected ?? true,
+    compressed: source.compressed ?? false,
+  }));
+  const sourcesByHash = new Map<string, string[]>();
+  for (const source of sources) {
+    if (source.chars === 0) continue;
+    const group = sourcesByHash.get(source.contentHash) ?? [];
+    group.push(source.source);
+    sourcesByHash.set(source.contentHash, group);
+  }
+
+  return {
+    totalChars: messageTelemetry.reduce((sum, message) => sum + message.chars, 0),
+    estimatedTokens: messageTelemetry.reduce((sum, message) => sum + message.estimatedTokens, 0),
+    messages: messageTelemetry,
+    sources,
+    duplicateSourceGroups: [...sourcesByHash.entries()]
+      .filter(([, group]) => group.length > 1)
+      .map(([contentHash, group]) => ({ contentHash, sources: group })),
+  };
+}
+
 function estimateJsonTokens(value: unknown): number {
   try {
     return estimateTextTokens(JSON.stringify(value) ?? "");
@@ -637,11 +724,15 @@ function isRetryableLLMError(error: unknown): boolean {
 
 async function withTransientLLMRetry<T>(
   run: () => Promise<T>,
-  options?: { readonly enabled?: boolean },
+  options?: {
+    readonly enabled?: boolean;
+    readonly onAttempt?: (attemptCount: number) => void;
+  },
 ): Promise<T> {
   const enabled = options?.enabled ?? true;
   let lastError: unknown;
   for (let attempt = 0; attempt <= TRANSIENT_LLM_RETRIES; attempt++) {
+    options?.onAttempt?.(attempt + 1);
     try {
       return await run();
     } catch (error) {
@@ -1258,10 +1349,37 @@ export async function chatCompletion(
     readonly agentName?: string;
     // P0: phase label for telemetry (e.g. "writer:write", "auditor:audit").
     readonly callPhase?: string;
+    /** External operation cancellation, independent from the per-call timeout. */
+    readonly signal?: AbortSignal;
+    /** Optional source attribution for prompt-cost and duplication diagnostics. */
+    readonly promptSources?: ReadonlyArray<LLMPromptSourceInput>;
   },
 ): Promise<LLMResponse> {
-  if (isLlmStubEnabled()) return Promise.resolve(stubChatCompletion(messages, model));
+  throwIfSignalAborted(options?.signal);
   const startedAt = Date.now();
+  const promptAssembly = buildPromptAssemblyTelemetry(messages, options?.promptSources);
+  if (isLlmStubEnabled()) {
+    await waitForLlmStubDelay(options?.signal);
+    throwIfSignalAborted(options?.signal);
+    const result = stubChatCompletion(messages, model);
+    options?.onCallTelemetry?.({
+      agent: options?.agentName ?? options?.callPhase ?? "unknown",
+      model,
+      service: client.service ?? "unknown",
+      apiFormat: client.apiFormat,
+      stream: client.stream,
+      phase: options?.callPhase ?? "unknown",
+      durationMs: Date.now() - startedAt,
+      attemptCount: 1,
+      retryCount: 0,
+      promptAssembly,
+      status: "success",
+      usage: result.usage,
+      ...(options?.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+      timestamp: new Date(startedAt).toISOString(),
+    });
+    return result;
+  }
   // C1 (v2.0.0)：删除 maxTokensCap 机制。per-call 显式传的 maxTokens 永远不被裁剪。
   const resolved = {
     temperature: clampTemperatureForModel(
@@ -1277,6 +1395,7 @@ export async function chatCompletion(
   const errorCtx = { baseUrl: client._piModel?.baseUrl ?? "(unknown)", model, service: client.service };
 
   const timeoutMs = options?.timeoutMs;
+  let attemptCount = 0;
 
   const emitTelemetry = (
     status: LLMCallTelemetry["status"],
@@ -1293,6 +1412,9 @@ export async function chatCompletion(
       stream: client.stream,
       phase: options?.callPhase ?? "unknown",
       durationMs: Date.now() - startedAt,
+      attemptCount,
+      retryCount: Math.max(0, attemptCount - 1),
+      promptAssembly,
       status,
       usage,
       ...(errorMessage ? { errorMessage } : {}),
@@ -1306,9 +1428,12 @@ export async function chatCompletion(
   try {
     const result = await withTransientLLMRetry(
       async () => {
-        const controller = timeoutMs ? new AbortController() : undefined;
-        const timer = timeoutMs ? setTimeout(() => controller?.abort(), timeoutMs) : undefined;
+        const timeoutController = timeoutMs ? new AbortController() : undefined;
+        const timer = timeoutMs ? setTimeout(() => timeoutController?.abort(), timeoutMs) : undefined;
+        const combinedSignal = combineAbortSignals(options?.signal, timeoutController?.signal);
+        const signal = combinedSignal.signal;
         try {
+          throwIfSignalAborted(signal);
           assertWithinContextWindow({
             piModel: resolvePiModel(client, model),
             model,
@@ -1324,7 +1449,7 @@ export async function chatCompletion(
               onStreamProgress,
               onTextDelta,
               true,
-              controller?.signal,
+              signal,
             );
           }
           return chatCompletionViaPiAi(
@@ -1334,21 +1459,27 @@ export async function chatCompletion(
             resolved,
             onStreamProgress,
             onTextDelta,
-            controller?.signal,
+            signal,
           );
         } catch (error) {
-          if (timeoutMs && controller?.signal.aborted && !(error instanceof CallTimeoutError)) {
+          if (timeoutMs && timeoutController?.signal.aborted && !(error instanceof CallTimeoutError)) {
             const partialContent = error instanceof PartialResponseError ? error.partialContent : "";
             throw new CallTimeoutError(partialContent, timeoutMs);
           }
           throw error;
         } finally {
           if (timer) clearTimeout(timer);
+          combinedSignal.cleanup();
         }
       },
       // Retrying after UI text deltas have been emitted can duplicate visible
       // text; callers can also opt out (e.g. fast-fail diagnostics).
-      { enabled: (options?.retry ?? true) && !onTextDelta },
+      {
+        enabled: (options?.retry ?? true) && !onTextDelta,
+        onAttempt: (count) => {
+          attemptCount = count;
+        },
+      },
     );
     emitTelemetry("success", result.usage);
     return result;
@@ -1376,6 +1507,56 @@ export async function chatCompletion(
     );
     throw wrapped;
   }
+}
+
+function throwIfSignalAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  throw new DOMException("Operation cancelled", "AbortError");
+}
+
+async function waitForLlmStubDelay(signal: AbortSignal | undefined): Promise<void> {
+  const raw = process.env.INKOS_AGENT_LLM_STUB_DELAY_MS?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return;
+  const delayMs = Number(raw);
+  if (!Number.isSafeInteger(delayMs) || delayMs <= 0) return;
+
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason instanceof Error ? signal.reason : new DOMException("Operation cancelled", "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function combineAbortSignals(
+  external: AbortSignal | undefined,
+  timeout: AbortSignal | undefined,
+): { readonly signal?: AbortSignal; readonly cleanup: () => void } {
+  if (!external) return { signal: timeout, cleanup: () => undefined };
+  if (!timeout) return { signal: external, cleanup: () => undefined };
+  const controller = new AbortController();
+  const abort = (signal: AbortSignal) => {
+    if (!controller.signal.aborted) controller.abort(signal.reason);
+  };
+  const onExternalAbort = () => abort(external);
+  const onTimeoutAbort = () => abort(timeout);
+  if (external.aborted) abort(external);
+  else external.addEventListener("abort", onExternalAbort, { once: true });
+  if (timeout.aborted) abort(timeout);
+  else timeout.addEventListener("abort", onTimeoutAbort, { once: true });
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      external.removeEventListener("abort", onExternalAbort);
+      timeout.removeEventListener("abort", onTimeoutAbort);
+    },
+  };
 }
 
 // === pi-ai Unified Implementation ===

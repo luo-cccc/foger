@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isProtectedContextSource } from "../utils/context-assembly.js";
+import { getContextSourceTier, isProtectedContextSource } from "../utils/context-assembly.js";
 
 /**
  * Contract guard for the protected context-source list.
@@ -16,15 +16,18 @@ import { isProtectedContextSource } from "../utils/context-assembly.js";
 
 // Every governance runtime source the Composer injects. Keep in sync with the
 // `source: "runtime/..."` entries produced in agents/composer.ts.
-const GOVERNANCE_RUNTIME_SOURCES = [
+const VERBATIM_RUNTIME_SOURCES = [
   "runtime/chapter_memo",
   "runtime/chapter_claim_brief",
   "runtime/canon_validator",
   "runtime/pre_write_claim_gate",
+  "runtime/volume_gate",
+] as const;
+
+const SEMANTIC_RUNTIME_SOURCES = [
   "runtime/current_arc",
   "runtime/volume_contract",
   "runtime/volume_progress",
-  "runtime/volume_gate",
 ] as const;
 
 // Derived/summary sources that are intentionally compressible — recent titles,
@@ -36,20 +39,41 @@ const COMPRESSIBLE_DERIVED_SOURCES = [
 ] as const;
 
 describe("isProtectedContextSource contract", () => {
-  it("protects every governance runtime source", () => {
-    for (const source of GOVERNANCE_RUNTIME_SOURCES) {
+  it("keeps byte-sensitive governance sources verbatim", () => {
+    for (const source of VERBATIM_RUNTIME_SOURCES) {
       expect(isProtectedContextSource(source), `${source} must be protected`).toBe(true);
+      expect(getContextSourceTier(source)).toBe("verbatim");
+    }
+  });
+
+  it("allows binding semantic sources to be compiled without making them optional", () => {
+    for (const source of SEMANTIC_RUNTIME_SOURCES) {
+      expect(isProtectedContextSource(source), `${source} must not require verbatim retention`).toBe(false);
+      expect(getContextSourceTier(source)).toBe("semantic");
     }
   });
 
   it("keeps derived summary sources compressible", () => {
     for (const source of COMPRESSIBLE_DERIVED_SOURCES) {
       expect(isProtectedContextSource(source), `${source} must stay compressible`).toBe(false);
+      expect(getContextSourceTier(source)).toBe("compressible");
     }
   });
 
   it("protects the hook-debt prefix variant", () => {
     expect(isProtectedContextSource("runtime/hook_debt#H001")).toBe(true);
+  });
+
+  it("treats selected state, hook, outline, and canon evidence as semantic", () => {
+    for (const source of [
+      "story/current_state.md#current-goal",
+      "story/pending_hooks.md#H001",
+      "story/outline/story_frame.md#world",
+      "story/outline/volume_map.md#volume-1",
+      "story/parent_canon.md",
+    ]) {
+      expect(getContextSourceTier(source)).toBe("semantic");
+    }
   });
 
   it("does not protect unknown sources by default", () => {

@@ -16,7 +16,7 @@ import {
 import {
   buildGovernedRuleStack,
   buildGovernedTrace,
-  isProtectedContextSource,
+  getContextSourceTier,
 } from "../utils/context-assembly.js";
 import { writeGovernedRuntimeArtifacts } from "../utils/runtime-writer.js";
 import { estimateTextTokens, type LLMClient } from "../llm/provider.js";
@@ -69,6 +69,7 @@ export interface CompressibleContextCompileRequest {
   readonly language: "zh" | "en";
   readonly maxInputTokens: number;
   readonly protectedEntries: ContextPackage["selectedContext"];
+  readonly semanticEntries: ContextPackage["selectedContext"];
   readonly compressibleEntries: ContextPackage["selectedContext"];
 }
 
@@ -366,25 +367,28 @@ async function applyContextBudgetIfNeeded(params: {
     return { contextPackage: params.contextPackage, notes: [] };
   }
 
-  const protectedEntries = selectedContext.filter((entry) => isProtectedContextSource(entry.source));
-  const compressibleEntries = selectedContext.filter((entry) => !isProtectedContextSource(entry.source));
+  const protectedEntries = selectedContext.filter((entry) => getContextSourceTier(entry.source) === "verbatim");
+  const semanticEntries = selectedContext.filter((entry) => getContextSourceTier(entry.source) === "semantic");
+  const compressibleEntries = selectedContext.filter((entry) => getContextSourceTier(entry.source) === "compressible");
   const protectedTokens = estimateSelectedContextTokens(protectedEntries);
+  const semanticTokens = estimateSelectedContextTokens(semanticEntries);
   if (protectedTokens > availableInputTokens) {
     params.onContextCompression?.({
       category: "story_context",
       phase: "error",
       message: "Protected context exceeds available input budget.",
       protectedTokens,
-      compressibleTokens: totalTokens - protectedTokens,
+      semanticTokens,
+      compressibleTokens: estimateSelectedContextTokens(compressibleEntries),
       budgetTokens: availableInputTokens,
       sources: protectedEntries.map((entry) => entry.source),
     });
     throw new Error(
       `Protected context exceeds available input budget (${protectedTokens}/${availableInputTokens} tokens). ` +
-      "InkOS will not compress protected author intent, current focus, hard state, or active hook evidence.",
+      "InkOS will not rewrite verbatim author direction, chapter memos, claim gates, or hook seed evidence.",
     );
   }
-  if (compressibleEntries.length === 0) {
+  if (semanticEntries.length === 0 && compressibleEntries.length === 0) {
     return { contextPackage: params.contextPackage, notes: ["context-over-budget-no-compressible-entries"] };
   }
   if (!params.compiler) {
@@ -393,13 +397,14 @@ async function applyContextBudgetIfNeeded(params: {
       phase: "error",
       message: "Context exceeds available input budget but no compiler was provided.",
       protectedTokens,
+      semanticTokens,
       compressibleTokens: estimateSelectedContextTokens(compressibleEntries),
       budgetTokens: availableInputTokens,
-      sources: compressibleEntries.map((entry) => entry.source),
+      sources: [...semanticEntries, ...compressibleEntries].map((entry) => entry.source),
     });
     throw new Error(
       `Context exceeds available input budget (${totalTokens}/${availableInputTokens} tokens), ` +
-      "but no compressible context compiler was provided.",
+      "but no semantic context compiler was provided.",
     );
   }
 
@@ -409,9 +414,10 @@ async function applyContextBudgetIfNeeded(params: {
     category: "story_context",
     phase: "start",
     protectedTokens,
+    semanticTokens,
     compressibleTokens,
     budgetTokens: compileBudget,
-    sources: compressibleEntries.map((entry) => entry.source),
+    sources: [...semanticEntries, ...compressibleEntries].map((entry) => entry.source),
   });
   let compiled: string;
   try {
@@ -421,6 +427,7 @@ async function applyContextBudgetIfNeeded(params: {
       language: params.language,
       maxInputTokens: compileBudget,
       protectedEntries,
+      semanticEntries,
       compressibleEntries,
     })).trim();
   } catch (error) {
@@ -429,9 +436,10 @@ async function applyContextBudgetIfNeeded(params: {
       phase: "error",
       message: error instanceof Error ? error.message : String(error),
       protectedTokens,
+      semanticTokens,
       compressibleTokens,
       budgetTokens: compileBudget,
-      sources: compressibleEntries.map((entry) => entry.source),
+      sources: [...semanticEntries, ...compressibleEntries].map((entry) => entry.source),
     });
     throw error;
   }
@@ -439,21 +447,23 @@ async function applyContextBudgetIfNeeded(params: {
     params.onContextCompression?.({
       category: "story_context",
       phase: "error",
-      message: "Compressible context compiler returned empty output.",
+        message: "Semantic context compiler returned empty output.",
       protectedTokens,
+      semanticTokens,
       compressibleTokens,
       budgetTokens: compileBudget,
-      sources: compressibleEntries.map((entry) => entry.source),
+      sources: [...semanticEntries, ...compressibleEntries].map((entry) => entry.source),
     });
-    throw new Error("Compressible context compiler returned empty output.");
+    throw new Error("Semantic context compiler returned empty output.");
   }
   params.onContextCompression?.({
     category: "story_context",
     phase: "end",
     protectedTokens,
+    semanticTokens,
     compressibleTokens,
     budgetTokens: compileBudget,
-    sources: compressibleEntries.map((entry) => entry.source),
+    sources: [...semanticEntries, ...compressibleEntries].map((entry) => entry.source),
   });
 
   return {
@@ -462,18 +472,20 @@ async function applyContextBudgetIfNeeded(params: {
       selectedContext: [
         ...protectedEntries,
         {
-          source: "runtime/compiled-compressible-context",
-          reason: "Semantic compilation of lower-priority context after protected context exceeded the input budget.",
+          source: "runtime/compiled-context",
+          reason: "Semantic compilation of binding semantic context and lower-priority context after the input budget was exceeded.",
           excerpt: compiled,
         },
       ],
     }),
-    notes: ["compiled-compressible-context"],
+    notes: ["compiled-context"],
     compression: {
-      compiledSource: "runtime/compiled-compressible-context",
+      compiledSource: "runtime/compiled-context",
       protectedSources: protectedEntries.map((entry) => entry.source),
+      semanticSources: semanticEntries.map((entry) => entry.source),
       compressedSources: compressibleEntries.map((entry) => entry.source),
       protectedTokens,
+      semanticTokens,
       compressibleTokens,
       budgetTokens: compileBudget,
     },
@@ -599,17 +611,18 @@ export class ComposerAgent extends BaseAgent {
   async compileCompressibleContext(request: CompressibleContextCompileRequest): Promise<string> {
     const isEn = request.language === "en";
     const protectedBlock = renderContextEntries(request.protectedEntries);
+    const semanticBlock = renderContextEntries(request.semanticEntries);
     const compressibleBlock = renderContextEntries(request.compressibleEntries);
     const system = isEn
       ? [
           "You are InkOS's semantic context compiler.",
-          "Only compile the COMPRESSIBLE CONTEXT. The PROTECTED CONTEXT is binding reference material and must not be rewritten, summarized as a substitute, or weakened.",
-          "Output concise Markdown with source pointers. Preserve names, unresolved promises, evidence, timing, and constraints that may affect the next chapter. Drop low-relevance noise.",
+          "Do not rewrite the VERBATIM CONTEXT. Compile the SEMANTIC CONTEXT without losing any fact, id, prohibition, precedence, or timing constraint. Summarize or omit low-relevance COMPRESSIBLE CONTEXT.",
+          "Output concise Markdown with source pointers. Exact prose is optional for semantic context, but its binding meaning is not.",
         ].join("\n")
       : [
           "你是 InkOS 的语义上下文编译器。",
-          "只能编译【可压缩上下文】。【受保护上下文】是绑定参照，不得改写、不得替代总结、不得削弱。",
-          "输出简洁 Markdown，保留来源指针。保留会影响下一章的人名、未兑现承诺、证据、时间点和约束，丢弃低相关噪声。",
+          "不得改写【原文保护上下文】。编译【语义保护上下文】时，任何事实、ID、禁令、优先级和时间约束都不能丢失；【可压缩上下文】可以按相关性概括或删除。",
+          "输出简洁 Markdown 并保留来源指针。语义保护内容可以换表达，但绑定含义不能削弱。",
         ].join("\n");
     const user = isEn
       ? [
@@ -617,10 +630,13 @@ export class ComposerAgent extends BaseAgent {
           `Goal: ${request.goal}`,
           `Target budget for compiled context: <= ${request.maxInputTokens} estimated input tokens`,
           "",
-          "## Protected Context (reference only, do not compile)",
+          "## Verbatim Context (reference only, do not compile)",
           protectedBlock || "(none)",
           "",
-          "## Compressible Context (compile this)",
+          "## Semantic Context (compile fully; preserve every binding meaning)",
+          semanticBlock || "(none)",
+          "",
+          "## Compressible Context (summarize by relevance)",
           compressibleBlock || "(none)",
         ].join("\n")
       : [
@@ -628,10 +644,13 @@ export class ComposerAgent extends BaseAgent {
           `目标：${request.goal}`,
           `压缩后目标预算：不超过 ${request.maxInputTokens} 估算输入 tokens`,
           "",
-          "## 受保护上下文（只作为参照，不要编译它）",
+          "## 原文保护上下文（只作为参照，不要编译）",
           protectedBlock || "（无）",
           "",
-          "## 可压缩上下文（只编译这一部分）",
+          "## 语义保护上下文（完整编译，绑定含义不得丢失）",
+          semanticBlock || "（无）",
+          "",
+          "## 可压缩上下文（按相关性概括）",
           compressibleBlock || "（无）",
         ].join("\n");
 
@@ -798,10 +817,13 @@ async function collectSelectedContext(
       ),
       excerpt: `${summary.heading} | ${summary.content}`,
     }));
+    const resolvedBaseEntries = entries
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+      .filter((entry) => factEntries.length === 0 || entry.source !== "story/current_state.md");
 
     return [
       ...chapterMemoEntry,
-      ...entries.filter((entry): entry is NonNullable<typeof entry> => entry !== null),
+      ...resolvedBaseEntries,
       ...outlineEntries,
       ...canonEntries.filter((entry): entry is NonNullable<typeof entry> => entry !== null),
       ...trailEntries,

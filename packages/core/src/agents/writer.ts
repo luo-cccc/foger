@@ -39,7 +39,7 @@ import { extractPOVFromOutline, filterMatrixByPOV, filterHooksByPOV } from "../u
 import { parseCreativeOutput } from "./writer-parser.js";
 import { buildRuntimeStateArtifacts, saveRuntimeStateSnapshot, type RuntimeStateArtifacts } from "../state/runtime-state-store.js";
 import type { RuntimeStateSnapshot } from "../state/state-reducer.js";
-import { chatCompletion, type LLMMessage } from "../llm/provider.js";
+import { chatCompletion, type LLMMessage, type LLMPromptSourceInput } from "../llm/provider.js";
 import { parsePendingHooksMarkdown } from "../utils/memory-retrieval.js";
 import { analyzeHookHealth } from "../utils/hook-health.js";
 import { buildEnglishVarianceBrief } from "../utils/long-span-fatigue.js";
@@ -49,6 +49,7 @@ import {
   renderNarrativeSelectedContext,
   sanitizeNarrativeEvidenceBlock,
 } from "../utils/narrative-control.js";
+import { getContextSourceTier } from "../utils/context-assembly.js";
 import { readFile, writeFile, mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -283,6 +284,36 @@ export class WriterAgent extends BaseAgent {
         })();
 
     const creativeTemperature = input.temperatureOverride ?? 0.7;
+    const creativePromptSources: LLMPromptSourceInput[] = input.contextPackage
+      ? [
+          ...input.contextPackage.selectedContext.map((entry) => ({
+            source: entry.source,
+            content: [entry.reason, entry.excerpt].filter(Boolean).join("\n"),
+            tier: getContextSourceTier(entry.source),
+            stable: isStableWriterPromptSource(entry.source),
+            selected: true,
+            compressed: entry.source === "runtime/compiled-compressible-context",
+          })),
+          {
+            source: "runtime/rule_stack",
+            content: JSON.stringify(input.ruleStack ?? {}),
+            tier: "semantic" as const,
+            stable: false,
+            selected: true,
+            compressed: false,
+          },
+          ...(input.externalContext?.trim()
+            ? [{
+                source: "runtime/chapter_user_instruction",
+                content: input.externalContext.trim(),
+                tier: "verbatim" as const,
+                stable: false,
+                selected: true,
+                compressed: false,
+              }]
+            : []),
+        ]
+      : [];
 
     this.logInfo(resolvedLanguage, {
       zh: `阶段 1：创作正文（第${chapterNumber}章）`,
@@ -294,7 +325,7 @@ export class WriterAgent extends BaseAgent {
         { role: "system", content: creativeSystemPrompt },
         { role: "user", content: creativeUserPrompt },
       ],
-      { temperature: creativeTemperature },
+      { temperature: creativeTemperature, promptSources: creativePromptSources },
     );
     const creativeUsage = creativeResponse.usage;
 
@@ -920,7 +951,9 @@ ${lengthRequirementBlock}
       DIRECTION_SOURCES.has(entry.source),
     );
     const otherEntries = params.contextPackage.selectedContext.filter((entry) =>
-      !DIRECTION_SOURCES.has(entry.source),
+      !DIRECTION_SOURCES.has(entry.source)
+        && entry.source !== "runtime/chapter_memo"
+        && !isGovernedSemanticEvidenceSource(entry.source),
     );
     const contextSections = renderNarrativeSelectedContext(otherEntries, language);
     const userDirectionBlock = directionEntries.length > 0
@@ -1115,12 +1148,14 @@ ${overrides}\n`;
     if (language === "en") {
       return `Requirements:
 - Target length: ${lengthSpec.target} words
-- Acceptable range: ${lengthSpec.softMin}-${lengthSpec.softMax} words`;
+- Acceptable range: ${lengthSpec.softMin}-${lengthSpec.softMax} words
+- Hard range: ${lengthSpec.hardMin}-${lengthSpec.hardMax} words`;
     }
 
     return `要求：
 - 目标字数：${lengthSpec.target}字
-- 允许区间：${lengthSpec.softMin}-${lengthSpec.softMax}字`;
+- 允许区间：${lengthSpec.softMin}-${lengthSpec.softMax}字
+- 硬区间：${lengthSpec.hardMin}-${lengthSpec.hardMax}字`;
   }
 
   private async loadRecentChapters(
@@ -1508,4 +1543,21 @@ ${overrides}\n`;
       .replace(/\s+/g, "_")
       .slice(0, 50);
   }
+}
+
+function isStableWriterPromptSource(source: string): boolean {
+  return source === "story/author_intent.md"
+    || source === "story/outline/story_frame.md"
+    || source.startsWith("story/outline/story_frame.md#")
+    || source === "story/outline/volume_map.md"
+    || source.startsWith("story/outline/volume_map.md#")
+    || source === "story/parent_canon.md";
+}
+
+function isGovernedSemanticEvidenceSource(source: string): boolean {
+  return source.startsWith("story/pending_hooks.md#")
+    || source.startsWith("runtime/hook_debt#")
+    || source.startsWith("story/chapter_summaries.md#")
+    || source.startsWith("story/volume_summaries.md#")
+    || source === "story/parent_canon.md";
 }

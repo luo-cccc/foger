@@ -15,6 +15,7 @@ const evaluateBookQualityMock = vi.fn();
 const reviseDraftMock = vi.fn();
 const resyncChapterArtifactsMock = vi.fn();
 const writeNextChapterMock = vi.fn();
+const writeDraftMock = vi.fn();
 const rewriteChapterMock = vi.fn();
 const rollbackToChapterMock = vi.fn();
 const saveChapterIndexMock = vi.fn();
@@ -218,6 +219,7 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     reviseDraft = reviseDraftMock;
     resyncChapterArtifacts = resyncChapterArtifactsMock;
     writeNextChapter = writeNextChapterMock;
+    writeDraft = writeDraftMock;
     rewriteChapter = rewriteChapterMock;
   }
 
@@ -391,6 +393,7 @@ describe("createStudioServer daemon lifecycle", () => {
     reviseDraftMock.mockReset();
     resyncChapterArtifactsMock.mockReset();
     writeNextChapterMock.mockReset();
+    writeDraftMock.mockReset();
     rollbackToChapterMock.mockReset();
     saveChapterIndexMock.mockReset();
     loadChapterIndexMock.mockReset();
@@ -445,6 +448,12 @@ describe("createStudioServer daemon lifecycle", () => {
       revised: false,
       status: "ready-for-review",
       auditResult: { passed: true, issues: [], summary: "rewritten" },
+    });
+    writeDraftMock.mockResolvedValue({
+      chapterNumber: 3,
+      title: "Draft Chapter",
+      wordCount: 1800,
+      filePath: join(root, "books", "demo-book", "chapters", "0003_Draft_Chapter.md"),
     });
     createLLMClientMock.mockReset();
     createLLMClientMock.mockReturnValue({});
@@ -2533,11 +2542,12 @@ describe("createStudioServer daemon lifecycle", () => {
       body: JSON.stringify({ brief: "Keep the confrontation focused." }),
     });
 
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({
       status: "rewriting",
       bookId: "demo-book",
       chapter: 2,
+      requestId: expect.any(String),
     });
     await vi.waitFor(() => {
       expect(rewriteChapterMock).toHaveBeenCalledWith(
@@ -2547,6 +2557,94 @@ describe("createStudioServer daemon lifecycle", () => {
         "Keep the confrontation focused.",
       );
     });
+  });
+
+  it("cancels an active book operation, suppresses completion, and permits a clean restart", async () => {
+    let resolveWrite: ((value: {
+      chapterNumber: number;
+      title: string;
+      wordCount: number;
+      revised: boolean;
+      status: string;
+      auditResult: { passed: boolean; issues: never[]; summary: string };
+    }) => void) | undefined;
+    writeNextChapterMock.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveWrite = resolve;
+    }));
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const eventsResponse = await app.request("http://localhost/api/v1/events");
+    const reader = eventsResponse.body?.getReader();
+    expect(reader).toBeDefined();
+    if (!reader) return;
+
+    const decoder = new TextDecoder();
+    let eventText = "";
+    const readUntil = async (marker: string) => {
+      while (!eventText.includes(marker)) {
+        const chunk = await reader.read();
+        if (chunk.done) throw new Error(`SSE stream ended before ${marker}`);
+        eventText += decoder.decode(chunk.value, { stream: true });
+      }
+    };
+
+    try {
+      await readUntil("event: ping");
+      const startResponse = await app.request("http://localhost/api/v1/books/demo-book/write-next", {
+        method: "POST",
+      });
+      expect(startResponse.status).toBe(202);
+      const startBody = await startResponse.json() as { requestId: string };
+      expect(startBody.requestId).toEqual(expect.any(String));
+
+      await vi.waitFor(() => {
+        expect(writeNextChapterMock).toHaveBeenCalledWith("demo-book", undefined);
+      });
+      const signal = (pipelineConfigs.at(-1) as { signal?: AbortSignal }).signal;
+      expect(signal?.aborted).toBe(false);
+
+      const competingResponse = await app.request("http://localhost/api/v1/books/demo-book/draft", {
+        method: "POST",
+      });
+      expect(competingResponse.status).toBe(409);
+      await expect(competingResponse.json()).resolves.toMatchObject({
+        error: { code: "BOOK_OPERATION_ACTIVE" },
+      });
+      expect(writeDraftMock).not.toHaveBeenCalled();
+
+      const cancelResponse = await app.request(
+        `http://localhost/api/v1/books/demo-book/operations/${startBody.requestId}/cancel`,
+        { method: "POST" },
+      );
+      expect(cancelResponse.status).toBe(202);
+      expect(signal?.aborted).toBe(true);
+
+      resolveWrite?.({
+        chapterNumber: 3,
+        title: "Cancelled result",
+        wordCount: 1800,
+        revised: false,
+        status: "ready-for-review",
+        auditResult: { passed: true, issues: [], summary: "ignored" },
+      });
+      await readUntil(`event: write:cancelled`);
+
+      const cancelRequestedAt = eventText.indexOf("event: write:cancel-requested");
+      const cancelledAt = eventText.indexOf("event: write:cancelled");
+      expect(cancelRequestedAt).toBeGreaterThan(-1);
+      expect(cancelledAt).toBeGreaterThan(cancelRequestedAt);
+      expect(eventText).toContain(startBody.requestId);
+      expect(eventText).not.toContain("event: write:complete");
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const restartResponse = await app.request("http://localhost/api/v1/books/demo-book/write-next", {
+        method: "POST",
+      });
+      expect(restartResponse.status).toBe(202);
+    } finally {
+      await reader.cancel();
+    }
   });
 
   it("rejects traversal-shaped session ids on destructive session routes", async () => {
@@ -2910,9 +3008,17 @@ describe("createStudioServer daemon lifecycle", () => {
       body: JSON.stringify({ brief: "以师债线为准同步状态。" }),
     });
 
-    expect(response.status).toBe(200);
-    expect(pipelineConfigs.at(-1)).toMatchObject({ externalContext: "以师债线为准同步状态。" });
-    expect(resyncChapterArtifactsMock).toHaveBeenCalledWith("demo-book", 3);
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({
+      status: "resyncing",
+      bookId: "demo-book",
+      chapter: 3,
+      requestId: expect.any(String),
+    });
+    await vi.waitFor(() => {
+      expect(pipelineConfigs.at(-1)).toMatchObject({ externalContext: "以师债线为准同步状态。" });
+      expect(resyncChapterArtifactsMock).toHaveBeenCalledWith("demo-book", 3);
+    });
   });
 
   it("loads INKOS_LLM_TIMEOUT_MS from project env into pipeline config", async () => {
@@ -2927,8 +3033,10 @@ describe("createStudioServer daemon lifecycle", () => {
       body: JSON.stringify({}),
     });
 
-    expect(response.status).toBe(200);
-    expect(pipelineConfigs.at(-1)).toMatchObject({ defaultTimeoutMs: 4321 });
+    expect(response.status).toBe(202);
+    await vi.waitFor(() => {
+      expect(pipelineConfigs.at(-1)).toMatchObject({ defaultTimeoutMs: 4321 });
+    });
   });
 
   it("routes export-save through the shared structured interaction runtime", async () => {
@@ -3377,10 +3485,12 @@ describe("createStudioServer daemon lifecycle", () => {
       body: JSON.stringify({}),
     });
 
-    expect(response.status).toBe(200);
-    expect(pipelineConfigs.at(-1)).toEqual(expect.objectContaining({
-      writingReviewRetries: 3,
-    }));
+    expect(response.status).toBe(202);
+    await vi.waitFor(() => {
+      expect(pipelineConfigs.at(-1)).toEqual(expect.objectContaining({
+        writingReviewRetries: 3,
+      }));
+    });
   });
 
   it("handles explicit chat chapter edits outside the InkOS writing agent", async () => {
@@ -4472,8 +4582,15 @@ describe("createStudioServer daemon lifecycle", () => {
     expect(composeChapterMock).toHaveBeenCalledWith("demo-book", "use the plan");
 
     const repairRes = await app.request("http://localhost/api/v1/books/demo-book/repair-state/3", { method: "POST" });
-    await expect(repairRes.json()).resolves.toMatchObject({ chapterNumber: 3, status: "ready-for-review" });
-    expect(repairChapterStateMock).toHaveBeenCalledWith("demo-book", 3);
+    expect(repairRes.status).toBe(202);
+    await expect(repairRes.json()).resolves.toMatchObject({
+      status: "repairing",
+      chapter: 3,
+      requestId: expect.any(String),
+    });
+    await vi.waitFor(() => {
+      expect(repairChapterStateMock).toHaveBeenCalledWith("demo-book", 3);
+    });
 
     const reviseFoundationRes = await app.request("http://localhost/api/v1/books/demo-book/foundation/revise", {
       method: "POST", headers: { "Content-Type": "application/json" },

@@ -1,15 +1,39 @@
 import type { SSEMessage } from "./use-sse";
 import type { PipelineFailureStage } from "../lib/pipeline-failure-advice";
 
-const START_EVENTS = new Set(["write:start", "draft:start"]);
-const TERMINAL_EVENTS = new Set(["write:complete", "write:error", "draft:complete", "draft:error"]);
+export type BookOperationKind = "write" | "draft" | "rewrite" | "repair-state" | "resync";
+
+const OPERATION_STARTS: Readonly<Record<string, BookOperationKind>> = {
+  "write:start": "write",
+  "draft:start": "draft",
+  "rewrite:start": "rewrite",
+  "repair-state:start": "repair-state",
+  "resync:start": "resync",
+};
+const START_EVENTS = new Set(Object.keys(OPERATION_STARTS));
+const TERMINAL_EVENTS = new Set(
+  Object.values(OPERATION_STARTS).flatMap((kind) => [
+    `${kind}:complete`,
+    `${kind}:error`,
+    `${kind}:cancelled`,
+  ]),
+);
 const BOOK_REFRESH_EVENTS = new Set([
   "write:complete",
   "write:error",
+  "write:cancelled",
   "draft:complete",
   "draft:error",
+  "draft:cancelled",
   "rewrite:complete",
   "rewrite:error",
+  "rewrite:cancelled",
+  "repair-state:complete",
+  "repair-state:error",
+  "repair-state:cancelled",
+  "resync:complete",
+  "resync:error",
+  "resync:cancelled",
   "revise:complete",
   "revise:error",
   "audit:complete",
@@ -22,10 +46,19 @@ const BOOK_COLLECTION_REFRESH_EVENTS = new Set([
   "book:error",
   "write:complete",
   "write:error",
+  "write:cancelled",
   "draft:complete",
   "draft:error",
+  "draft:cancelled",
   "rewrite:complete",
   "rewrite:error",
+  "rewrite:cancelled",
+  "repair-state:complete",
+  "repair-state:error",
+  "repair-state:cancelled",
+  "resync:complete",
+  "resync:error",
+  "resync:cancelled",
   "revise:complete",
   "revise:error",
   "audit:complete",
@@ -43,6 +76,11 @@ export interface BookActivity {
   readonly drafting: boolean;
   readonly lastError: string | null;
   readonly lastFailure: { readonly stage: PipelineFailureStage; readonly error: string } | null;
+  readonly activeOperation: {
+    readonly requestId: string;
+    readonly kind: BookOperationKind;
+    readonly cancelling: boolean;
+  } | null;
 }
 
 const FAILURE_STAGES: Readonly<Record<string, PipelineFailureStage>> = {
@@ -51,6 +89,8 @@ const FAILURE_STAGES: Readonly<Record<string, PipelineFailureStage>> = {
   "rewrite:error": "rewrite",
   "revise:error": "revise",
   "audit:error": "audit",
+  "repair-state:error": "repair-state",
+  "resync:error": "resync",
 };
 
 const COMPLETION_STAGES: Readonly<Record<string, PipelineFailureStage>> = {
@@ -59,6 +99,8 @@ const COMPLETION_STAGES: Readonly<Record<string, PipelineFailureStage>> = {
   "rewrite:complete": "rewrite",
   "revise:complete": "revise",
   "audit:complete": "audit",
+  "repair-state:complete": "repair-state",
+  "resync:complete": "resync",
 };
 
 export interface SidebarBookSummary {
@@ -122,11 +164,38 @@ export function deriveBookActivity(messages: ReadonlyArray<SSEMessage>, bookId: 
   let drafting = false;
   let lastError: string | null = null;
   let lastFailure: BookActivity["lastFailure"] = null;
+  let activeOperation: BookActivity["activeOperation"] = null;
 
   for (const message of messages) {
     if (getBookId(message) !== bookId) continue;
 
-    const data = message.data as { error?: unknown } | null;
+    const data = message.data as { error?: unknown; requestId?: unknown } | null;
+    const operationKind = OPERATION_STARTS[message.event];
+    if (operationKind && typeof data?.requestId === "string") {
+      activeOperation = { requestId: data.requestId, kind: operationKind, cancelling: false };
+      lastError = null;
+      lastFailure = null;
+    } else if (
+      message.event.endsWith(":cancel-requested")
+      && activeOperation
+      && data?.requestId === activeOperation.requestId
+    ) {
+      activeOperation = {
+        requestId: activeOperation.requestId,
+        kind: activeOperation.kind,
+        cancelling: true,
+      };
+    } else if (
+      TERMINAL_EVENTS.has(message.event)
+      && activeOperation
+      && (typeof data?.requestId !== "string" || data.requestId === activeOperation.requestId)
+    ) {
+      activeOperation = null;
+    }
+    if (TERMINAL_EVENTS.has(message.event)) {
+      if (message.event.startsWith("write:")) writing = false;
+      if (message.event.startsWith("draft:")) drafting = false;
+    }
 
     switch (message.event) {
       case "write:start":
@@ -172,7 +241,7 @@ export function deriveBookActivity(messages: ReadonlyArray<SSEMessage>, bookId: 
     }
   }
 
-  return { writing, drafting, lastError, lastFailure };
+  return { writing, drafting, lastError, lastFailure, activeOperation };
 }
 
 export function shouldRefetchBookView(message: SSEMessage, bookId: string): boolean {

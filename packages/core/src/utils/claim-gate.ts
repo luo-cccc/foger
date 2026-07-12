@@ -151,7 +151,10 @@ function runClaimGate(input: ClaimGateTextInput): ReadonlyArray<ClaimGateIssue> 
 function detectsProhibitedContent(text: string, claim: CanonClaim): boolean {
   const normalized = normalizeText(text);
   const targets = extractProhibitedTargets(claim);
-  if (targets.some((target) => containsUnnegatedTarget(normalized, target))) {
+  if (targets.some((target) =>
+    !prohibitionTargetRequiresContext(claim, target)
+    && containsUnnegatedTarget(normalized, target)
+  )) {
     return true;
   }
   return detectsSemanticProhibitionViolation(normalized, claim, targets);
@@ -166,6 +169,12 @@ function detectsSemanticProhibitionViolation(
   const scopeTerms = extractProhibitionScopeTerms(claim.content, targets);
   const scopeHit = scopeTerms.length === 0 || scopeTerms.some((term) => text.includes(term));
   if (!scopeHit) return false;
+
+  if (/(?:万能解释|解释一切|all-purpose explanation|explain everything)/iu.test(prohibition)) {
+    const subjectMentioned = targets.some((target) => containsUnnegatedTarget(text, target));
+    const usedAsUniversalExplanation = /(?:万能解释|解释一切|一切都(?:能|可以|可由).{0,12}解释|无需.{0,12}(?:逻辑|原理|机制|证据)|不需要.{0,12}(?:逻辑|原理|机制|证据)|all-purpose explanation|explain(?:s|ed)? everything|without.{0,18}(?:logic|mechanism|evidence))/iu.test(text);
+    if (subjectMentioned && usedAsUniversalExplanation) return true;
+  }
 
   if (/(?:打怪|升级|刷级|成长循环|progression|level(?:ing)?)/iu.test(prohibition)) {
     const progression = containsAnyUnnegatedTarget(text, [
@@ -198,6 +207,14 @@ function detectsSemanticProhibitionViolation(
   }
 
   return false;
+}
+
+function prohibitionTargetRequiresContext(claim: CanonClaim, target: string): boolean {
+  const content = normalizeText(claim.content);
+  const index = content.indexOf(target);
+  if (index < 0) return false;
+  const suffix = content.slice(index + target.length, index + target.length + 24);
+  return /^(?:\s|[”"'’])+?(?:作为|当作|当成|用作|用于|拿来|被当作|被视为|as\s+(?:an?\s+)?|used\s+as)/iu.test(suffix);
 }
 
 function extractProhibitionScopeTerms(content: string, targets: ReadonlyArray<string>): string[] {
@@ -314,18 +331,27 @@ function detectCharacterKnowledgeLeak(text: string, claim: CanonClaim): boolean 
 }
 
 function detectsInstitutionRuleBypass(text: string, claim: CanonClaim): boolean {
-  if (!textMentionsClaim(normalizeText(text), claim)) return false;
-  if (!hasBypassSignal(text)) return false;
-  return !hasGroundedException(text);
+  return bypassEvidenceSegments(text).some((segment) =>
+    textMentionsClaim(normalizeText(segment), claim)
+    && !hasGroundedException(segment)
+  );
 }
 
 function detectsHardRuleBypass(text: string, claim: CanonClaim): boolean {
-  if (!hasBypassSignal(text)) return false;
-  if (!mentionsRuleSubjectOrAction(text, claim)) return false;
-  if (claim.constraints.requiresCost.some((cost) => normalizeText(text).includes(normalizeText(cost)))) {
-    return false;
-  }
-  return !hasGroundedException(text);
+  return bypassEvidenceSegments(text).some((segment) => {
+    if (!mentionsRuleSubjectOrAction(segment, claim)) return false;
+    if (claim.constraints.requiresCost.some((cost) => normalizeText(segment).includes(normalizeText(cost)))) {
+      return false;
+    }
+    return !hasGroundedException(segment);
+  });
+}
+
+function bypassEvidenceSegments(text: string): string[] {
+  return text
+    .split(/(?<=[。！？.!?])|\r?\n+/u)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0 && hasBypassSignal(segment));
 }
 
 function hasBypassSignal(text: string): boolean {
@@ -334,7 +360,7 @@ function hasBypassSignal(text: string): boolean {
   // fire constantly in ordinary prose ("他直接推门而入") and produced critical
   // false positives on hard/institution rule bypass checks. Real bypasses in the
   // corpus pair a rule mention with an explicit circumvention verb below.
-  return /无视|绕过|越过|跳过|破例|例外|失效|失灵|作废|不再生效|无需|没有(?:任何)?代价|不必(?:付出|承担)|bypass(?:es|ed)?|ignore(?:s|d)?|without\s+(?:any\s+)?cost|no\s+cost/i.test(text);
+  return /无视|绕过|越过|跳过|破例|例外|失效|失灵|作废|不再生效|无需(?:遵守|遵循|服从|执行|支付|承担|付出)|没有(?:任何)?代价|不必(?:遵守|遵循|服从|执行|支付|付出|承担)|bypass(?:es|ed)?|ignore(?:s|d)?|without\s+(?:any\s+)?cost|no\s+cost/i.test(text);
 }
 
 function hasGroundedException(text: string): boolean {

@@ -98,6 +98,17 @@ describe("parseMemo", () => {
     expect(memo.threadRefs).toEqual(["H03"]);
   });
 
+  it("normalizes accidental whitespace inside known Chinese headings", () => {
+    const raw = makeRaw().replace(
+      "## 日常/过渡承担什么任务",
+      "## 日常/过 渡承担什么任务",
+    );
+
+    const memo = parseMemo(raw, 12, false);
+
+    expect(memo.body).toContain("## 日常/过渡承担什么任务");
+  });
+
   it("keeps long goal semantics in the memo body while deriving a short display goal", () => {
     const longGoal = "把异常钉成实证".repeat(10);
     const memo = parseMemo(makeRaw({ goal: longGoal }), 12, false);

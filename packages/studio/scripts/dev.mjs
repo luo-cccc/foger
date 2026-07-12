@@ -15,7 +15,10 @@ const e2eClientPort = e2e ? requiredE2eEnv("INKOS_STUDIO_CLIENT_PORT") : undefin
 
 const env = {
   ...process.env,
-  ...(e2e ? { INKOS_AGENT_LLM_STUB: "1" } : {}),
+  ...(e2e ? {
+    INKOS_AGENT_LLM_STUB: "1",
+    INKOS_AGENT_LLM_STUB_DELAY_MS: process.env.INKOS_AGENT_LLM_STUB_DELAY_MS ?? "150",
+  } : {}),
   INKOS_STUDIO_PORT: e2eApiPort ?? process.env.INKOS_STUDIO_PORT ?? "4569",
   INKOS_PROJECT_ROOT: e2eProjectRoot ?? process.env.INKOS_PROJECT_ROOT ?? "../..",
 };
@@ -56,8 +59,7 @@ function start(command, args, options = {}) {
   child.on("exit", (code, signal) => {
     logE2e(`[studio-dev] exit ${command}: code=${code} signal=${signal}`);
     if (shuttingDown) return;
-    if (code === 0 || signal) return;
-    shutdown(code ?? 1);
+    shutdown(code ?? (signal ? 1 : 0));
   });
   return child;
 }
@@ -76,11 +78,27 @@ function rebuildCoreDist() {
 }
 
 let shuttingDown = false;
+function terminateChildTree(child) {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  if (process.platform === "win32") {
+    try {
+      execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+    } catch {
+      // The process may have exited between the status check and taskkill.
+    }
+    return;
+  }
+  child.kill("SIGTERM");
+}
+
 function shutdown(code = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   for (const child of children) {
-    if (!child.killed) child.kill();
+    terminateChildTree(child);
   }
   setTimeout(() => process.exit(code), 100).unref();
 }
@@ -89,7 +107,7 @@ process.on("SIGINT", () => shutdown(130));
 process.on("SIGTERM", () => shutdown(143));
 process.on("exit", () => {
   for (const child of children) {
-    if (!child.killed) child.kill();
+    terminateChildTree(child);
   }
 });
 
@@ -109,7 +127,7 @@ if (!clientOnly) {
 }
 
 if (!serverOnly) {
-  start(bin("vite"), ["--host", "--port", clientPort, ...(e2e ? ["--strictPort"] : [])]);
+  start(bin("vite"), ["--host", "--port", clientPort, "--strictPort"]);
 }
 
 function logE2e(message) {

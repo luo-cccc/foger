@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { serve } from "@hono/node-server";
 import { gzipSync } from "node:zlib";
+import { randomUUID } from "node:crypto";
 import {
   StateManager,
   SessionIdSchema,
@@ -1912,6 +1913,14 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
   const app = new Hono();
   const state = new StateManager(root);
   let cachedConfig = initialConfig;
+  type StudioOperationKind = "write" | "draft" | "rewrite" | "repair-state" | "resync";
+  interface ActiveStudioOperation {
+    readonly requestId: string;
+    readonly bookId: string;
+    readonly kind: StudioOperationKind;
+    readonly controller: AbortController;
+  }
+  const activeBookOperations = new Map<string, ActiveStudioOperation>();
 
   // Structured error handler — ApiError returns typed JSON, others return 500
   app.onError((error, c) => {
@@ -1987,7 +1996,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
   }
 
   async function buildPipelineConfig(
-    overrides?: Partial<Pick<PipelineConfig, "externalContext" | "client" | "model">> & {
+    overrides?: Partial<Pick<PipelineConfig, "externalContext" | "client" | "model" | "signal">> & {
       readonly currentConfig?: ProjectConfig;
       readonly sessionIdForSSE?: string;
       readonly bookIdForSettings?: string;
@@ -2021,6 +2030,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
       projectRoot: root,
       defaultLLMConfig: currentConfig.llm,
       defaultTimeoutMs,
+      signal: overrides?.signal,
       foundationReviewRetries: currentConfig.foundation?.reviewRetries ?? 2,
       writingReviewRetries: currentConfig.writing?.reviewRetries ?? 1,
       chapterReviewMode,
@@ -2063,6 +2073,64 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
       },
       externalContext: overrides?.externalContext,
     };
+  }
+
+  function beginStudioOperation(bookId: string, kind: StudioOperationKind): ActiveStudioOperation {
+    const existing = activeBookOperations.get(bookId);
+    if (existing) {
+      throw new ApiError(409, "BOOK_OPERATION_ACTIVE", `Book "${bookId}" already has an active ${existing.kind} operation.`);
+    }
+    const operation: ActiveStudioOperation = {
+      requestId: randomUUID(),
+      bookId,
+      kind,
+      controller: new AbortController(),
+    };
+    activeBookOperations.set(bookId, operation);
+    broadcast(`${kind}:start`, { bookId, requestId: operation.requestId });
+    return operation;
+  }
+
+  function launchStudioOperation<T>(params: {
+    readonly operation: ActiveStudioOperation;
+    readonly run: () => Promise<T>;
+    readonly completeData: (result: T) => Record<string, unknown>;
+  }): void {
+    void params.run().then(
+      (result) => {
+        if (params.operation.controller.signal.aborted) {
+          broadcast(`${params.operation.kind}:cancelled`, {
+            bookId: params.operation.bookId,
+            requestId: params.operation.requestId,
+          });
+          return;
+        }
+        broadcast(`${params.operation.kind}:complete`, {
+          bookId: params.operation.bookId,
+          requestId: params.operation.requestId,
+          ...params.completeData(result),
+        });
+      },
+      (error) => {
+        if (params.operation.controller.signal.aborted) {
+          broadcast(`${params.operation.kind}:cancelled`, {
+            bookId: params.operation.bookId,
+            requestId: params.operation.requestId,
+          });
+          return;
+        }
+        broadcast(`${params.operation.kind}:error`, {
+          bookId: params.operation.bookId,
+          requestId: params.operation.requestId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    ).finally(() => {
+      const current = activeBookOperations.get(params.operation.bookId);
+      if (current?.requestId === params.operation.requestId) {
+        activeBookOperations.delete(params.operation.bookId);
+      }
+    });
   }
 
   // --- Books ---
@@ -2384,61 +2452,71 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
 
   // --- Actions ---
 
+  app.post("/api/v1/books/:id/operations/:requestId/cancel", async (c) => {
+    const id = c.req.param("id");
+    const requestId = c.req.param("requestId");
+    const operation = activeBookOperations.get(id);
+    if (!operation || operation.requestId !== requestId) {
+      return c.json({ error: "Active operation not found." }, 404);
+    }
+    if (!operation.controller.signal.aborted) {
+      operation.controller.abort(new DOMException("Operation cancelled by user", "AbortError"));
+      broadcast(`${operation.kind}:cancel-requested`, { bookId: id, requestId });
+    }
+    return c.json({ status: "cancelling", bookId: id, requestId }, 202);
+  });
+
   app.post("/api/v1/books/:id/write-next", async (c) => {
     const id = c.req.param("id");
     const body = await c.req.json<{ wordCount?: number }>().catch(() => ({ wordCount: undefined }));
-
-    broadcast("write:start", { bookId: id });
-
-    // Fire and forget — progress/completion/errors pushed via SSE
-    const pipeline = new PipelineRunner(await buildPipelineConfig({
-      bookIdForSettings: id,
-      bookIdForTelemetry: id,
-    }));
-    pipeline.writeNextChapter(id, body.wordCount).then(
-      (result) => {
-        broadcast("write:complete", {
-          bookId: id,
-          chapterNumber: result.chapterNumber,
-          status: result.status,
-          title: result.title,
-          wordCount: result.wordCount,
-          ...(result.operationId ? { operationId: result.operationId } : {}),
-          ...(result.recovery ? { recovery: result.recovery } : {}),
-        });
+    const operation = beginStudioOperation(id, "write");
+    launchStudioOperation({
+      operation,
+      run: async () => {
+        const pipeline = new PipelineRunner(await buildPipelineConfig({
+          bookIdForSettings: id,
+          bookIdForTelemetry: id,
+          signal: operation.controller.signal,
+        }));
+        return pipeline.writeNextChapter(id, body.wordCount);
       },
-      (e) => {
-        broadcast("write:error", { bookId: id, error: e instanceof Error ? e.message : String(e) });
-      },
-    );
+      completeData: (result) => ({
+        chapterNumber: result.chapterNumber,
+        status: result.status,
+        title: result.title,
+        wordCount: result.wordCount,
+        ...(result.operationId ? { operationId: result.operationId } : {}),
+        ...(result.recovery ? { recovery: result.recovery } : {}),
+      }),
+    });
 
-    return c.json({ status: "writing", bookId: id });
+    return c.json({ status: "writing", bookId: id, requestId: operation.requestId }, 202);
   });
 
   app.post("/api/v1/books/:id/draft", async (c) => {
     const id = c.req.param("id");
     const body = await c.req.json<{ wordCount?: number; context?: string }>().catch(() => ({ wordCount: undefined, context: undefined }));
 
-    broadcast("draft:start", { bookId: id });
-
-    const pipeline = new PipelineRunner(await buildPipelineConfig({ bookIdForTelemetry: id }));
-    pipeline.writeDraft(id, body.context, body.wordCount).then(
-      (result) => {
-        broadcast("draft:complete", {
-          bookId: id,
-          chapterNumber: result.chapterNumber,
-          title: result.title,
-          wordCount: result.wordCount,
-          ...(result.operationId ? { operationId: result.operationId } : {}),
-          ...(result.recovery ? { recovery: result.recovery } : {}),
-        });
+    const operation = beginStudioOperation(id, "draft");
+    launchStudioOperation({
+      operation,
+      run: async () => {
+        const pipeline = new PipelineRunner(await buildPipelineConfig({
+          bookIdForTelemetry: id,
+          signal: operation.controller.signal,
+        }));
+        return pipeline.writeDraft(id, body.context, body.wordCount);
       },
-      (e) => {
-        broadcast("draft:error", { bookId: id, error: e instanceof Error ? e.message : String(e) });
-      },
-    );
+      completeData: (result) => ({
+        chapterNumber: result.chapterNumber,
+        title: result.title,
+        wordCount: result.wordCount,
+        ...(result.operationId ? { operationId: result.operationId } : {}),
+        ...(result.recovery ? { recovery: result.recovery } : {}),
+      }),
+    });
 
-    return c.json({ status: "drafting", bookId: id });
+    return c.json({ status: "drafting", bookId: id, requestId: operation.requestId }, 202);
   });
 
   app.get("/api/v1/books/:id/eval", async (c) => {
@@ -2510,15 +2588,19 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
   app.post("/api/v1/books/:id/repair-state/:chapter", async (c) => {
     const id = c.req.param("id");
     const chapterNum = normalizePositiveIntegerParam(c.req.param("chapter"), "chapter number");
-    try {
-      const pipeline = new PipelineRunner(await buildPipelineConfig({ bookIdForTelemetry: id }));
-      const result = await pipeline.repairChapterState(id, chapterNum);
-      broadcast("repair-state:complete", { bookId: id, chapter: chapterNum });
-      return c.json(result);
-    } catch (e) {
-      broadcast("repair-state:error", { bookId: id, chapter: chapterNum, error: String(e) });
-      return c.json({ error: String(e) }, 500);
-    }
+    const operation = beginStudioOperation(id, "repair-state");
+    launchStudioOperation({
+      operation,
+      run: async () => {
+        const pipeline = new PipelineRunner(await buildPipelineConfig({
+          bookIdForTelemetry: id,
+          signal: operation.controller.signal,
+        }));
+        return pipeline.repairChapterState(id, chapterNum);
+      },
+      completeData: (result) => ({ chapter: chapterNum, status: result.status }),
+    });
+    return c.json({ status: "repairing", bookId: id, chapter: chapterNum, requestId: operation.requestId }, 202);
   });
 
   app.post("/api/v1/books/:id/foundation/revise", async (c) => {
@@ -4475,20 +4557,23 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
       .json<{ brief?: string }>()
       .catch(() => ({}));
 
-    broadcast("rewrite:start", { bookId: id, chapter: chapterNum });
-    try {
-      const pipeline = new PipelineRunner(await buildPipelineConfig({
-        externalContext: body.brief,
-        bookIdForTelemetry: id,
-      }));
-      executeCoreMutation({ state, pipeline }, {
+    const operation = beginStudioOperation(id, "rewrite");
+    launchStudioOperation({
+      operation,
+      run: async () => {
+        const pipeline = new PipelineRunner(await buildPipelineConfig({
+          externalContext: body.brief,
+          bookIdForTelemetry: id,
+          signal: operation.controller.signal,
+        }));
+        return executeCoreMutation({ state, pipeline }, {
         kind: "rewrite",
         bookId: id,
         chapterNumber: chapterNum,
         brief: body.brief,
-      }).then(
-        (result) => broadcast("rewrite:complete", {
-          bookId: id,
+        });
+      },
+      completeData: (result) => ({
           chapterNumber: result.chapterNumber,
           title: result.title,
           wordCount: result.wordCount,
@@ -4496,14 +4581,9 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
           discarded: result.discarded,
           ...(result.operationId ? { operationId: result.operationId } : {}),
           ...(result.recovery ? { recovery: result.recovery } : {}),
-        }),
-        (e) => broadcast("rewrite:error", { bookId: id, error: e instanceof Error ? e.message : String(e) }),
-      );
-      return c.json({ status: "rewriting", bookId: id, chapter: chapterNum });
-    } catch (e) {
-      broadcast("rewrite:error", { bookId: id, error: String(e) });
-      return c.json({ error: String(e) }, 500);
-    }
+      }),
+    });
+    return c.json({ status: "rewriting", bookId: id, chapter: chapterNum, requestId: operation.requestId }, 202);
   });
 
   app.post("/api/v1/books/:id/resync/:chapter", async (c) => {
@@ -4513,16 +4593,20 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
       .json<{ brief?: string }>()
       .catch(() => ({}));
 
-    try {
-      const pipeline = new PipelineRunner(await buildPipelineConfig({
-        externalContext: body.brief,
-        bookIdForTelemetry: id,
-      }));
-      const result = await pipeline.resyncChapterArtifacts(id, chapterNum);
-      return c.json(result);
-    } catch (e) {
-      return c.json({ error: String(e) }, 500);
-    }
+    const operation = beginStudioOperation(id, "resync");
+    launchStudioOperation({
+      operation,
+      run: async () => {
+        const pipeline = new PipelineRunner(await buildPipelineConfig({
+          externalContext: body.brief,
+          bookIdForTelemetry: id,
+          signal: operation.controller.signal,
+        }));
+        return pipeline.resyncChapterArtifacts(id, chapterNum);
+      },
+      completeData: (result) => ({ chapter: chapterNum, status: result.status }),
+    });
+    return c.json({ status: "resyncing", bookId: id, chapter: chapterNum, requestId: operation.requestId }, 202);
   });
 
   // --- Detect All chapters ---
@@ -4761,7 +4845,7 @@ export async function startStudioServer(
   root: string,
   port = 4567,
   options?: { readonly staticDir?: string; readonly hostname?: string },
-): Promise<void> {
+): Promise<ReturnType<typeof serve>> {
   const config = await loadProjectConfig(root, { consumer: "studio", requireApiKey: false });
 
   const app = createStudioServer(config, root);
@@ -4807,5 +4891,5 @@ export async function startStudioServer(
 
   const hostname = options?.hostname ?? (process.env.INKOS_STUDIO_HOST?.trim() || "127.0.0.1");
   console.log(`InkOS Studio running on http://${hostname}:${port}`);
-  serve({ fetch: app.fetch, port, hostname });
+  return serve({ fetch: app.fetch, port, hostname });
 }

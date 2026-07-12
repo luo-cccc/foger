@@ -65,7 +65,7 @@ export class LengthNormalizerAgent extends BaseAgent {
     lastWarning = firstAttempt.result.warning ?? lastWarning;
 
     const bestAfterFirst = bestAccepted ?? firstAttempt.result;
-    if (bestAfterFirst.accepted && !isOutsideHardRange(bestAfterFirst.finalCount, input.lengthSpec)) {
+    if (bestAfterFirst.accepted && !isOutsideSoftRange(bestAfterFirst.finalCount, input.lengthSpec)) {
       return {
         normalizedContent: bestAfterFirst.normalizedContent,
         finalCount: bestAfterFirst.finalCount,
@@ -83,7 +83,7 @@ export class LengthNormalizerAgent extends BaseAgent {
       ? firstAttempt.result.finalCount
       : originalCount;
 
-    if (isOutsideHardRange(strictSourceCount, input.lengthSpec)) {
+    if (isOutsideSoftRange(strictSourceCount, input.lengthSpec)) {
       const strictAttempt = await this.runNormalizationAttempt({
         input,
         chapterContent: strictSource,
@@ -104,7 +104,7 @@ export class LengthNormalizerAgent extends BaseAgent {
       finalCount,
       applied: normalizedContent !== input.chapterContent,
       mode,
-      warning: bestAccepted?.warning ?? lastWarning,
+      warning: bestAccepted ? bestAccepted.warning : lastWarning,
       tokenUsage: totalUsage,
     };
   }
@@ -191,7 +191,7 @@ export class LengthNormalizerAgent extends BaseAgent {
   private buildSystemPrompt(mode: LengthNormalizeMode, strict = false): string {
     const action = mode === "compress" ? "compress" : "expand";
     const strictLine = strict
-      ? "- This is the final correction pass. The output MUST land inside the hard range."
+      ? "- This is the final correction pass. The output MUST land inside the soft target range."
       : "";
 
     return [
@@ -218,11 +218,23 @@ export class LengthNormalizerAgent extends BaseAgent {
     const controlBlock = input.reducedControlBlock
       ? `\n## Reduced Control Block\n${input.reducedControlBlock}\n`
       : "";
+    const requiredDelta = mode === "compress"
+      ? Math.max(0, currentCount - input.lengthSpec.softMax)
+      : Math.max(0, input.lengthSpec.softMin - currentCount);
+    const targetRatio = currentCount > 0
+      ? Math.max(1, Math.round((input.lengthSpec.target / currentCount) * 100))
+      : 100;
     const strictBlock = strict
-      ? `\n## Hard Requirement
-- Final count MUST be between ${input.lengthSpec.hardMin} and ${input.lengthSpec.hardMax}
+      ? `\n## Strict Length Requirement
+- Final count MUST be between ${input.lengthSpec.softMin} and ${input.lengthSpec.softMax}
+- Never cross the hard bounds ${input.lengthSpec.hardMin}-${input.lengthSpec.hardMax}
+- ${mode === "compress"
+  ? `Delete at least ${requiredDelta} counted characters; keep about ${targetRatio}% of the current text`
+  : `Add at least ${requiredDelta} counted characters; reach about ${targetRatio}% of the current text`}
 - If compressing, remove recap, repeated emotion restatement, scenic filler, and duplicated action beats first
+- If compressing, merge repeated deductions and cut entire redundant beats; preserving every paragraph is forbidden
 - If expanding, add only concrete action, sensory detail, or causally necessary beats already implied by the scene
+- Before returning, silently recount and revise again until the soft range is satisfied
 `
       : "";
 
@@ -297,6 +309,12 @@ ${chapterContent}`;
     }
     if (!current || !current.accepted) {
       return candidate;
+    }
+
+    const currentInSoftRange = !isOutsideSoftRange(current.finalCount, lengthSpec);
+    const candidateInSoftRange = !isOutsideSoftRange(candidate.finalCount, lengthSpec);
+    if (candidateInSoftRange !== currentInSoftRange) {
+      return candidateInSoftRange ? candidate : current;
     }
 
     const currentInRange = !isOutsideHardRange(current.finalCount, lengthSpec);

@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { runChapterReviewCycle } from "../pipeline/chapter-review-cycle.js";
+import {
+  runChapterReviewCycle,
+  type ChapterReviewEvaluation,
+} from "../pipeline/chapter-review-cycle.js";
 import type { AuditResult, AuditIssue } from "../agents/continuity.js";
 import type { LengthSpec } from "../models/length-governance.js";
 
@@ -29,6 +32,30 @@ function createAuditResult(overrides?: Partial<AuditResult>): AuditResult {
   };
 }
 
+function createEvaluation(
+  auditChapter: (content: string, options?: { readonly temperature?: number }) => Promise<AuditResult>,
+  runPostWriteChecks: (content: string) => ReadonlyArray<AuditIssue> = () => [],
+): Parameters<typeof runChapterReviewCycle>[0]["evaluateChapter"] {
+  return async (content, options): Promise<ChapterReviewEvaluation> => {
+    const llmAudit = await auditChapter(content, options);
+    const postWriteIssues = runPostWriteChecks(content);
+    const revisionBlockingIssues = [...llmAudit.issues, ...postWriteIssues];
+    return {
+      auditResult: {
+        ...llmAudit,
+        passed: postWriteIssues.some((issue) => issue.severity === "critical")
+          ? false
+          : llmAudit.passed,
+        issues: revisionBlockingIssues,
+      },
+      aiTellCount: 0,
+      blockingCount: revisionBlockingIssues.filter((issue) => issue.severity === "warning" || issue.severity === "critical").length,
+      criticalCount: revisionBlockingIssues.filter((issue) => issue.severity === "critical").length,
+      revisionBlockingIssues,
+    };
+  };
+}
+
 const baseParams = {
   book: { genre: "xuanhuan" },
   bookDir: "/tmp/book",
@@ -42,8 +69,6 @@ const baseParams = {
     completionTokens: left.completionTokens + (right?.completionTokens ?? 0),
     totalTokens: left.totalTokens + (right?.totalTokens ?? 0),
   }),
-  analyzeAITells: () => ({ issues: [] as AuditIssue[] }),
-  analyzeSensitiveWords: () => ({ found: [] as Array<{ severity: "warn" | "block" }>, issues: [] as AuditIssue[] }),
   logWarn: () => undefined,
   logStage: () => undefined,
 } as const;
@@ -86,13 +111,14 @@ describe("runChapterReviewCycle v9", () => {
         postWriteWarnings: [],
       },
       createReviser: () => ({ reviseChapter }),
-      auditor: { auditChapter },
-      normalizeDraftLengthIfNeeded,
-      // Simulates: the reviser fixed the chapter-ref, so re-check returns empty
-      runPostWriteChecks: (content) =>
-        content === "b".repeat(200)
+      evaluateChapter: createEvaluation(
+        auditChapter,
+        // Simulates: the reviser fixed the chapter-ref, so re-check returns empty
+        (content) => content === "b".repeat(200)
           ? [{ severity: "critical" as const, category: "chapter-number-reference", description: "contains chapter ref", suggestion: "remove it" }]
           : [],
+      ),
+      normalizeDraftLengthIfNeeded,
     });
 
     // After repair, postWriteChecks on the revised content returns empty → issue gone
@@ -142,7 +168,7 @@ describe("runChapterReviewCycle v9", () => {
         postWriteWarnings: [],
       },
       createReviser: () => ({ reviseChapter }),
-      auditor: { auditChapter },
+      evaluateChapter: createEvaluation(auditChapter),
       normalizeDraftLengthIfNeeded,
       maxReviewIterations: 1,
     });
@@ -204,7 +230,7 @@ describe("runChapterReviewCycle v9", () => {
         postWriteWarnings: [],
       },
       createReviser: () => ({ reviseChapter }),
-      auditor: { auditChapter },
+      evaluateChapter: createEvaluation(auditChapter),
       normalizeDraftLengthIfNeeded,
       maxReviewIterations: 2,
     });
@@ -261,7 +287,7 @@ describe("runChapterReviewCycle v9", () => {
         postWriteWarnings: [],
       },
       createReviser: () => ({ reviseChapter }),
-      auditor: { auditChapter },
+      evaluateChapter: createEvaluation(auditChapter),
       normalizeDraftLengthIfNeeded,
       maxReviewIterations: 1,
     });
@@ -322,7 +348,7 @@ describe("runChapterReviewCycle v9", () => {
         postWriteWarnings: [],
       },
       createReviser: () => ({ reviseChapter }),
-      auditor: { auditChapter },
+      evaluateChapter: createEvaluation(auditChapter),
       normalizeDraftLengthIfNeeded,
     });
 
@@ -352,7 +378,7 @@ describe("runChapterReviewCycle v9", () => {
         postWriteWarnings: [],
       },
       createReviser: () => ({ reviseChapter }),
-      auditor: { auditChapter },
+      evaluateChapter: createEvaluation(auditChapter),
       normalizeDraftLengthIfNeeded,
     });
 
@@ -384,16 +410,17 @@ describe("runChapterReviewCycle v9", () => {
         postWriteWarnings: [],
       },
       createReviser: () => ({ reviseChapter }),
-      auditor: { auditChapter },
-      normalizeDraftLengthIfNeeded,
-      normalizePostWriteSurface: (content) => content.replace(/——+/g, "，"),
-      runPostWriteChecks: (content) =>
-        content.includes("——")
+      evaluateChapter: createEvaluation(
+        auditChapter,
+        (content) => content.includes("——")
           ? [{ severity: "critical" as const, category: "禁止破折号", description: "出现了破折号", suggestion: "用逗号断句" }]
           : [],
+      ),
+      normalizeDraftLengthIfNeeded,
+      normalizePostWriteSurface: (content) => content.replace(/——+/g, "，"),
     });
 
-    expect(auditChapter.mock.calls[0]?.[1]).not.toContain("——");
+    expect(auditChapter.mock.calls[0]?.[0]).not.toContain("——");
     expect(result.finalContent).not.toContain("——");
     expect(result.auditResult.passed).toBe(true);
     expect(reviseChapter).not.toHaveBeenCalled();

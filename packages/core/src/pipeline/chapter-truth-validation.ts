@@ -1,5 +1,10 @@
 import type { AuditIssue, AuditResult } from "../agents/continuity.js";
-import type { StateValidationAuthorityContext, ValidationResult, StateValidatorAgent } from "../agents/state-validator.js";
+import {
+  applyBlockingStateWarningPolicy,
+  type StateValidationAuthorityContext,
+  type ValidationResult,
+  type StateValidatorAgent,
+} from "../agents/state-validator.js";
 import type { WriteChapterOutput, WriterAgent } from "../agents/writer.js";
 import type { BookConfig } from "../models/book.js";
 import type { ContextPackage, RuleStack } from "../models/input-governance.js";
@@ -48,7 +53,7 @@ export async function validateChapterTruthPersistence(params: {
   let auditResult = params.auditResult;
 
   try {
-    validation = await params.validator.validate(
+    validation = applyBlockingStateWarningPolicy(await params.validator.validate(
       params.content,
       params.chapterNumber,
       params.previousTruth.oldState,
@@ -57,7 +62,7 @@ export async function validateChapterTruthPersistence(params: {
       persistenceOutput.updatedHooks,
       params.language,
       params.authorityContext,
-    );
+    ));
   } catch (error) {
     params.logger?.warn(`State validation error for chapter ${params.chapterNumber}: ${String(error)}`);
     const errorDescription = params.language === "en"

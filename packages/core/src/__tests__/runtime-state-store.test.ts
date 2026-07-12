@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,6 +8,7 @@ import {
   loadRuntimeStateSnapshot,
   loadSnapshotCurrentStateFacts,
 } from "../state/runtime-state-store.js";
+import { rewriteStructuredStateFromMarkdown } from "../state/state-bootstrap.js";
 
 describe("runtime-state-store memory helpers", () => {
   let root = "";
@@ -17,6 +18,48 @@ describe("runtime-state-store memory helpers", () => {
       await rm(root, { recursive: true, force: true });
       root = "";
     }
+  });
+
+  it("can rebuild a restored snapshot at an explicit chapter despite later chapter artifacts", async () => {
+    root = await mkdtemp(join(tmpdir(), "inkos-runtime-restored-state-"));
+    const bookDir = join(root, "book");
+    const storyDir = join(bookDir, "story");
+    const chaptersDir = join(bookDir, "chapters");
+    await mkdir(storyDir, { recursive: true });
+    await mkdir(chaptersDir, { recursive: true });
+    await Promise.all([
+      writeFile(join(chaptersDir, "index.json"), JSON.stringify([
+        { number: 1, title: "Ch1", status: "ready-for-review" },
+        { number: 2, title: "Ch2", status: "ready-for-review" },
+      ]), "utf-8"),
+      writeFile(join(chaptersDir, "0001_Ch1.md"), "# Chapter 1\n\nOne.", "utf-8"),
+      writeFile(join(chaptersDir, "0002_Ch2.md"), "# Chapter 2\n\nTwo.", "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), [
+        "| Field | Value |",
+        "| --- | --- |",
+        "| Current Chapter | 1 |",
+        "| Current Goal | Recover chapter one truth. |",
+      ].join("\n"), "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n", "utf-8"),
+      writeFile(join(storyDir, "chapter_summaries.md"), [
+        "| chapter | title | characters | events | stateChanges | hookActivity | mood | chapterType |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| 1 | Ch1 | Lin | One | Goal set | none | tense | mainline |",
+      ].join("\n"), "utf-8"),
+    ]);
+
+    await rewriteStructuredStateFromMarkdown({
+      bookDir,
+      fallbackChapter: 1,
+      authoritativeChapter: 1,
+    });
+    const manifest = JSON.parse(await readFile(join(storyDir, "state", "manifest.json"), "utf-8"));
+    const currentState = JSON.parse(await readFile(join(storyDir, "state", "current_state.json"), "utf-8"));
+    const summaries = JSON.parse(await readFile(join(storyDir, "state", "chapter_summaries.json"), "utf-8"));
+
+    expect(manifest.lastAppliedChapter).toBe(1);
+    expect(currentState.chapter).toBe(1);
+    expect(summaries.rows.at(-1)?.chapter).toBe(1);
   });
 
   it("prefers structured runtime state over stale markdown projections for narrative memory", async () => {
@@ -136,6 +179,7 @@ describe("runtime-state-store memory helpers", () => {
           "| --- | --- | --- | --- | --- | --- | --- |",
           "| dormant-seed | 1 | evidence | 未激活 | 0 | 后续揭开封条日期 | 休眠种子，不应当成正在进行 |",
           "| waiting-seed | 1 | evidence | 待启动 | 0 | 后续揭开压力曲线 | 未来种子，不应当成正在进行 |",
+          "| info-seed | 1 | 信息 | 待推进 | 0 | 后续解密身份名单 | 中文类型和状态别名应统一 |",
           "| confirmed-hit | 1 | evidence | confirmed_hit | 1 | 已确认压力曲线异常 | 本章已命中，不应退回 open |",
           "",
         ].join("\n"),
@@ -159,6 +203,7 @@ describe("runtime-state-store memory helpers", () => {
       expect.arrayContaining([
         expect.objectContaining({ hookId: "dormant-seed", status: "deferred" }),
         expect.objectContaining({ hookId: "waiting-seed", status: "deferred" }),
+        expect.objectContaining({ hookId: "info-seed", type: "information", status: "deferred" }),
         expect.objectContaining({ hookId: "confirmed-hit", status: "progressing" }),
       ]),
     );
@@ -414,6 +459,11 @@ describe("runtime-state-store memory helpers", () => {
             expectedPayoff: "Reveal how much the anonymous source already knew about the route and address.",
             notes: "This chapter adds the address angle to the anonymous source question.",
           },
+          {
+            type: "artifact",
+            expectedPayoff: "Reveal why the recovered seal responds only at midnight.",
+            notes: "A genuinely new artifact rule appears in this chapter.",
+          },
         ],
         notes: [],
         subplotOps: [],
@@ -427,11 +477,18 @@ describe("runtime-state-store memory helpers", () => {
         hookId: "anonymous-source-scope",
         lastAdvancedChapter: 12,
       }),
+      expect.objectContaining({
+        hookId: "D001",
+        type: "artifact",
+      }),
     ]);
-    expect(artifacts.snapshot.hooks.hooks).toHaveLength(1);
-    expect(artifacts.snapshot.hooks.hooks[0]).toEqual(expect.objectContaining({
-      hookId: "anonymous-source-scope",
-      lastAdvancedChapter: 12,
-    }));
+    expect(artifacts.snapshot.hooks.hooks).toHaveLength(2);
+    expect(artifacts.snapshot.hooks.hooks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ hookId: "D001", type: "artifact" }),
+      expect.objectContaining({
+        hookId: "anonymous-source-scope",
+        lastAdvancedChapter: 12,
+      }),
+    ]));
   });
 });

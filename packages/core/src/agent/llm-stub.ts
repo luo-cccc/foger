@@ -290,6 +290,10 @@ function looksLikeArchitectFoundationPrompt(joined: string): boolean {
   return /===\s*section:\s*story_frame\s*===|story_frame[\s\S]*volume_map[\s\S]*book_rules[\s\S]*pending_hooks|all \*\*5 section blocks in order\*\*/i.test(joined);
 }
 
+function looksLikeStateValidatorPrompt(joined: string): boolean {
+  return /continuity validator for a novel writing system|state card changes[\s\S]*hooks pool changes|first line:\s*exactly PASS or FAIL/i.test(joined);
+}
+
 /**
  * Deterministic replacement for the chatCompletion network call.
  * Returns contract-specific stubbed content for reviewer / architect prompts,
@@ -306,6 +310,8 @@ export function stubChatCompletion(
     content = FOUNDATION_REVIEW;
   } else if (looksLikeArchitectFoundationPrompt(joined)) {
     content = FOUNDATION_SECTIONS;
+  } else if (looksLikeStateValidatorPrompt(joined)) {
+    content = "PASS";
   } else if (/nodes|structure|outline/i.test(joined)) {
     content = STRUCTURE_JSON;
   }

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  loadPersistedGovernedChapterInput,
   loadPersistedPlan,
   savePersistedPlan,
 } from "../pipeline/persisted-governed-plan.js";
@@ -141,5 +142,27 @@ plannerInputs: []
     await savePersistedPlan(dir, plan);
     const loaded = await loadPersistedPlan(dir, 3);
     expect(loaded).toBeNull();
+  });
+
+  it("does not reuse a fallback memo left by an interrupted write", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "inkos-plan-"));
+    await mkdir(join(dir, "story", "runtime"), { recursive: true });
+    const plan = buildPlan(1);
+    await savePersistedPlan(dir, {
+      ...plan,
+      memo: {
+        ...plan.memo,
+        body: `${plan.memo.body}\n\n## Planner warning\n模型连续 3 次没有产出合格章节 memo。`,
+      },
+    });
+
+    const loaded = await loadPersistedPlan(dir, 1);
+    expect(loaded).toBeNull();
+
+    const historicalInput = await loadPersistedGovernedChapterInput(dir, 1);
+    expect(historicalInput.plan?.memo).toEqual(expect.objectContaining({
+      chapter: 1,
+      body: expect.stringContaining("## Planner warning"),
+    }));
   });
 });

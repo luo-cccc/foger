@@ -12,7 +12,9 @@
  * at least one keyword from the ledger line's descriptor (hook name, key
  * noun, etc.). We deliberately do NOT require the draft to repeat the raw
  * hook_id like "H007" — writers don't embed IDs in prose.
- */
+*/
+
+import { normalizeHookId } from "./story-markdown.js";
 
 export interface HookLedgerViolation {
   readonly severity: "critical" | "warning";
@@ -252,7 +254,7 @@ function extractLedgerEntry(line: string): HookLedgerEntry | undefined {
   const firstWord = cleaned.split(/\s+/)[0] ?? "";
   if (PLACEHOLDER_TOKENS.test(firstWord)) return undefined;
 
-  const idMatch = cleaned.match(/^([A-Za-z\u4e00-\u9fff][A-Za-z0-9_\-\u4e00-\u9fff]{0,19})/);
+  const idMatch = cleaned.match(/^([A-Za-z\u4e00-\u9fff][A-Za-z0-9_\-\u4e00-\u9fff]*)/);
   if (!idMatch) return undefined;
 
   const candidate = idMatch[1]!;
@@ -280,8 +282,12 @@ function extractKeywords(descriptor: string): ReadonlyArray<string> {
   if (!descriptor) return [];
 
   // Try the quoted-name anchor first — matches "..." or "..." quotes.
-  const quotedMatch = descriptor.match(/[""]([^""\n]+)[""]/);
-  const source = quotedMatch ? quotedMatch[1]! : descriptor.split(/[→]|->/, 1)[0]!;
+  const quotedMatch = descriptor.match(/[“"']([^”"'\n]+)[”"']/);
+  const beforeTransition = descriptor.split(/[→]|->/, 1)[0]!.trim();
+  const afterTransition = descriptor.replace(/^\s*(?:→|->)\s*/, "").trim();
+  const source = quotedMatch
+    ? quotedMatch[1]!
+    : beforeTransition || afterTransition;
 
   const cjkRuns = source.match(/[\u4e00-\u9fff]{2,}/g) ?? [];
   const cjkTokens: string[] = [];
@@ -342,7 +348,9 @@ function escapeRegex(value: string): string {
 }
 
 function normalizeHookIdForComparison(value: string): string {
-  return value.trim().toLowerCase();
+  return normalizeHookId(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, "");
 }
 
 function containsHookId(text: string, hookId: string): boolean {

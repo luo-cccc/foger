@@ -319,6 +319,40 @@ describe("claim gates", () => {
     expect(issues.map((issue) => issue.category)).not.toContain("claim-prohibition");
   });
 
+  it("does not ban a contextual subject when the prohibited misuse is absent", () => {
+    const prohibition = claim({
+      id: "prohibit-quantum-handwave",
+      claimType: "prohibition",
+      content: "禁止“量子”作为万能解释，所有技术设定必须有逻辑锚点",
+    });
+
+    const issues = runPostWriteClaimGate({
+      text: "量子雾对记忆的干扰具有实时性。回溯仪验证了哈希签名、时间戳偏移和军用加密频段，林澈据此缩小了信号来源。",
+      compiled: compiled({ usable: [prohibition] }),
+      phase: "post",
+    });
+
+    expect(issues.map((issue) => issue.category)).not.toContain("claim-prohibition");
+  });
+
+  it("still rejects using a contextual subject as the forbidden handwave", () => {
+    const prohibition = claim({
+      id: "prohibit-quantum-handwave",
+      claimType: "prohibition",
+      content: "禁止“量子”作为万能解释，所有技术设定必须有逻辑锚点",
+    });
+
+    const issues = runPostWriteClaimGate({
+      text: "这一切都可以用量子解释，不需要任何原理、机制或证据。",
+      compiled: compiled({ usable: [prohibition] }),
+      phase: "post",
+    });
+
+    expect(issues).toEqual([
+      expect.objectContaining({ severity: "critical", category: "claim-prohibition" }),
+    ]);
+  });
+
   it("does not flag a prohibition when a memo restates it as negative guidance", () => {
     const prohibition = claim({
       id: "ban-breakthrough",
@@ -480,6 +514,42 @@ describe("claim gates", () => {
     const issues = runPostWriteClaimGate({
       text: "林月想到誓契的旧事，直接推门走进丹房，仍然打算按规矩偿还自己的欠债。",
       compiled: compiled({ usable: [hardRule], costRequired: [hardRule] }),
+      phase: "post",
+    });
+
+    expect(issues.map((issue) => issue.category)).not.toContain("claim-hard-rule-bypass");
+  });
+
+  it("does not connect unrelated maintenance bypass words to broad world rules elsewhere in the chapter", () => {
+    const hardRules = [
+      claim({
+        id: "world-memory",
+        claimType: "objective_rule",
+        content: "锚点集团通过维护系统执行排他性的记忆校准，回声体不能生成新记忆。",
+        authority: { source: "story_frame", priority: "hard" },
+      }),
+      claim({
+        id: "world-tone",
+        claimType: "objective_rule",
+        content: "雾港建筑维护系统处于湿冷环境，声音在雾中成为闷响。",
+        authority: { source: "story_frame", priority: "hard" },
+      }),
+      claim({
+        id: "world-pov",
+        claimType: "objective_rule",
+        content: "叙事严格限定在林澈的第三人称有限视角，推理必须有线索。",
+        authority: { source: "story_frame", priority: "hard" },
+      }),
+    ];
+
+    const issues = runPostWriteClaimGate({
+      text: [
+        "塔基铭牌刻着：S13-废弃-无需维护。",
+        "林澈沿着湿冷的雾港街道检查信号参数。",
+        "系统把设备老化噪声归入低优先级，无需人工复核。",
+        "他依据终端日志和螺栓痕迹继续推理。",
+      ].join("\n"),
+      compiled: compiled({ usable: hardRules }),
       phase: "post",
     });
 

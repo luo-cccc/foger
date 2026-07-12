@@ -24,7 +24,17 @@ if (!existsSync(join(distDir, "index.html"))) {
   }
 }
 
-startStudioServer(root, port, { staticDir: distDir }).catch((e) => {
+startStudioServer(root, port, { staticDir: distDir }).then((server) => {
+  let closing = false;
+  const shutdown = (exitCode: number) => {
+    if (closing) return;
+    closing = true;
+    server.close(() => process.exit(exitCode));
+    setTimeout(() => process.exit(exitCode), 5_000).unref();
+  };
+  process.once("SIGINT", () => shutdown(130));
+  process.once("SIGTERM", () => shutdown(143));
+}).catch((e) => {
   console.error("Failed to start studio:", e);
   process.exit(1);
 });

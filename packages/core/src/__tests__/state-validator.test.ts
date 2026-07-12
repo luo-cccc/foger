@@ -119,4 +119,38 @@ describe("validateRuntimeState", () => {
 
     expect(issues).toEqual([]);
   });
+
+  it("rejects runtime truth that trails its committed manifest chapter", () => {
+    const issues = validateRuntimeState({
+      manifest: {
+        schemaVersion: 2,
+        language: "zh",
+        lastAppliedChapter: 2,
+        projectionVersion: 1,
+        migrationWarnings: [],
+      },
+      currentState: {
+        chapter: 1,
+        facts: [],
+      },
+      hooks: { hooks: [] },
+      chapterSummaries: {
+        rows: [{
+          chapter: 1,
+          title: "第一章",
+          characters: "林澈",
+          events: "发现广播",
+          stateChanges: "开始调查",
+          hookActivity: "H001 advanced",
+          mood: "紧张",
+          chapterType: "主线",
+        }],
+      },
+    });
+
+    expect(issues.map((issue) => issue.code)).toEqual(expect.arrayContaining([
+      "current_state_behind_manifest",
+      "chapter_summaries_behind_manifest",
+    ]));
+  });
 });

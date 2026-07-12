@@ -83,6 +83,42 @@ describe("StateValidatorAgent", () => {
     expect(options?.maxTokens).toBeUndefined();
   });
 
+  it("treats missing truth updates as blocking even when the model says PASS", async () => {
+    const agent = new StateValidatorAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: process.cwd(),
+    });
+    vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValue({
+        content: "PASS\n[missing_state_change] Chapter 2 changed the goal, but the state card stayed on chapter 1.",
+        usage: ZERO_USAGE,
+      });
+
+    const result = await agent.validate(
+      "Chapter 2 changes the goal.",
+      2,
+      "old state",
+      "new but incomplete state",
+      "old hooks",
+      "new hooks",
+      "en",
+    );
+
+    expect(result.passed).toBe(false);
+    expect(result.warnings[0]?.category).toBe("missing_state_change");
+  });
+
   it("passes authority truth context into the cross-file validation prompt", async () => {
     const agent = new StateValidatorAgent({
       client: {

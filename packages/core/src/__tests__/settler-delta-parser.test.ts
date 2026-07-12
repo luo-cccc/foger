@@ -130,4 +130,40 @@ describe("parseSettlerDeltaOutput", () => {
       }),
     ]);
   });
+
+  it("normalizes hook type and status aliases before schema validation", () => {
+    const result = parseSettlerDeltaOutput([
+      "=== RUNTIME_STATE_DELTA ===",
+      "```json",
+      JSON.stringify({
+        chapter: 3,
+        hookOps: {
+          upsert: [{
+            hookId: "H004",
+            startChapter: 1,
+            type: "信息",
+            status: "已推进",
+            lastAdvancedChapter: 3,
+            expectedPayoff: "解密零号协议的完整名单",
+            notes: "本章解开一部分身份字段",
+          }],
+          mention: [],
+          resolve: [],
+          defer: [],
+        },
+        newHookCandidates: [{
+          type: "物件",
+          expectedPayoff: "解释密钥的潮汐响应规则",
+          notes: "本章首次出现可验证的物件异常",
+        }],
+      }),
+      "```",
+    ].join("\n"));
+
+    expect(result.runtimeStateDelta.hookOps.upsert[0]).toEqual(expect.objectContaining({
+      type: "information",
+      status: "progressing",
+    }));
+    expect(result.runtimeStateDelta.newHookCandidates[0]?.type).toBe("artifact");
+  });
 });

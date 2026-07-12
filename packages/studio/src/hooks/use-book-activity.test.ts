@@ -73,6 +73,38 @@ describe("deriveBookActivity", () => {
       lastFailure: { stage: "audit", error: "audit model unavailable" },
     });
   });
+
+  it("tracks cancellation by request id until the terminal cancelled event", () => {
+    const cancelling: ReadonlyArray<SSEMessage> = [
+      msg("resync:start", { bookId: "alpha", requestId: "req-1" }, 1),
+      msg("resync:cancel-requested", { bookId: "alpha", requestId: "req-1" }, 2),
+    ];
+    const cancelled: ReadonlyArray<SSEMessage> = [
+      ...cancelling,
+      msg("resync:cancelled", { bookId: "alpha", requestId: "req-1" }, 3),
+    ];
+
+    expect(deriveBookActivity(cancelling, "alpha").activeOperation).toEqual({
+      requestId: "req-1",
+      kind: "resync",
+      cancelling: true,
+    });
+    expect(deriveBookActivity(cancelled, "alpha").activeOperation).toBeNull();
+  });
+
+  it("does not clear a newer operation when an older request terminates", () => {
+    const messages: ReadonlyArray<SSEMessage> = [
+      msg("write:start", { bookId: "alpha", requestId: "req-old" }, 1),
+      msg("write:start", { bookId: "alpha", requestId: "req-new" }, 2),
+      msg("write:cancelled", { bookId: "alpha", requestId: "req-old" }, 3),
+    ];
+
+    expect(deriveBookActivity(messages, "alpha").activeOperation).toEqual({
+      requestId: "req-new",
+      kind: "write",
+      cancelling: false,
+    });
+  });
 });
 
 describe("deriveActiveBookIds", () => {
@@ -94,6 +126,8 @@ describe("shouldRefetchBookView", () => {
     expect(shouldRefetchBookView(msg("write:complete", { bookId: "alpha" }, 1), "alpha")).toBe(true);
     expect(shouldRefetchBookView(msg("draft:error", { bookId: "alpha", error: "quota" }, 1), "alpha")).toBe(true);
     expect(shouldRefetchBookView(msg("rewrite:complete", { bookId: "alpha", chapterNumber: 3 }, 1), "alpha")).toBe(true);
+    expect(shouldRefetchBookView(msg("write:cancelled", { bookId: "alpha", requestId: "req-1" }, 1), "alpha")).toBe(true);
+    expect(shouldRefetchBookView(msg("resync:complete", { bookId: "alpha", chapter: 3 }, 1), "alpha")).toBe(true);
     expect(shouldRefetchBookView(msg("revise:error", { bookId: "alpha", error: "bad" }, 1), "alpha")).toBe(true);
     expect(shouldRefetchBookView(msg("audit:complete", { bookId: "alpha", chapter: 3, passed: true }, 1), "alpha")).toBe(true);
     expect(shouldRefetchBookView(msg("audit:start", { bookId: "alpha", chapter: 3 }, 1), "alpha")).toBe(false);
@@ -108,6 +142,7 @@ describe("shouldRefetchBookCollections", () => {
     expect(shouldRefetchBookCollections(msg("write:complete", { bookId: "alpha" }, 1))).toBe(true);
     expect(shouldRefetchBookCollections(msg("draft:error", { bookId: "alpha" }, 1))).toBe(true);
     expect(shouldRefetchBookCollections(msg("rewrite:complete", { bookId: "alpha" }, 1))).toBe(true);
+    expect(shouldRefetchBookCollections(msg("repair-state:cancelled", { bookId: "alpha" }, 1))).toBe(true);
     expect(shouldRefetchBookCollections(msg("audit:start", { bookId: "alpha" }, 1))).toBe(false);
     expect(shouldRefetchBookCollections(undefined)).toBe(false);
   });

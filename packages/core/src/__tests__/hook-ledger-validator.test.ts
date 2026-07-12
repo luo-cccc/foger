@@ -67,6 +67,19 @@ describe("parseHookLedger", () => {
     expect(h003.keywords).toContain("腰牌");
   });
 
+  it("uses the action text as evidence when a long id is followed directly by an arrow", () => {
+    const hookId = "mystery-废弃十三号信-号塔为何在-不可修复";
+    const memo = `## 本章 hook 账
+advance:
+- ${hookId} → 林澈发现塔内设备被改造为信号中继节点，废弃状态为伪造
+`;
+    const draft = "便携检测仪确认塔内设备仍在供电，这里实际是一处信号中继节点。";
+
+    const ledger = parseHookLedger(memo);
+    expect(ledger.advance[0]?.keywords).toContain("中继");
+    expect(validateHookLedger(memo, draft)).toEqual([]);
+  });
+
   it("extracts all four sub-lists from an en memo", () => {
     const ledger = parseHookLedger(EN_MEMO);
     expect(ledger.advance.map((e) => e.id)).toEqual(["H007"]);
@@ -128,6 +141,21 @@ defer:
     expect(ledger.resolve).toEqual([]);
     expect(ledger.defer).toEqual([]);
   });
+
+  it("preserves long generated hook ids instead of truncating them", () => {
+    const mysteryId = "mystery-废弃十三号信-号塔为何在-不可修复";
+    const relationshipId = "relationship-林澈发现三年-前未提交的加-密算法被升级";
+    const memo = `## 本章 hook 账
+advance:
+- ${mysteryId} "十三号信号塔" → 发现新证据
+defer:
+- ${relationshipId} "加密算法" → 留到后续
+`;
+
+    const ledger = parseHookLedger(memo);
+    expect(ledger.advance[0]?.id).toBe(mysteryId);
+    expect(ledger.defer[0]?.id).toBe(relationshipId);
+  });
 });
 
 describe("validatePlannedHookLedger", () => {
@@ -185,6 +213,36 @@ defer:
 `;
 
     expect(validatePlannedHookLedger(memo, existingHooks)).toEqual([]);
+  });
+
+  it("accepts exact long generated ids from the durable hook registry", () => {
+    const mysteryId = "mystery-废弃十三号信-号塔为何在-不可修复";
+    const relationshipId = "relationship-林澈发现三年-前未提交的加-密算法被升级";
+    const memo = `## 本章 hook 账
+advance:
+- ${mysteryId} "十三号信号塔" → 发现新证据
+defer:
+- ${relationshipId} "加密算法" → 留到后续
+`;
+
+    expect(validatePlannedHookLedger(memo, [
+      { hookId: mysteryId },
+      { hookId: relationshipId },
+    ])).toEqual([]);
+  });
+
+  it("accepts separator drift for a unique legacy long id", () => {
+    const durableId = "mystery-废弃十三号信-号塔为何在-不可修复";
+    const memo = `## 本章 hook 账
+advance:
+- mystery废弃十三号信号塔为何在不可修复 "十三号信号塔" → 发现新证据
+resolve:
+- 无
+defer:
+- 无
+`;
+
+    expect(validatePlannedHookLedger(memo, [{ hookId: durableId }])).toEqual([]);
   });
 });
 

@@ -29,6 +29,7 @@ describe("ComposerAgent", () => {
     bookDir = join(root, "books", "composer-book");
     storyDir = join(bookDir, "story");
     await mkdir(join(storyDir, "runtime"), { recursive: true });
+    await mkdir(join(storyDir, "outline"), { recursive: true });
 
     book = {
       id: "composer-book",
@@ -46,7 +47,6 @@ describe("ComposerAgent", () => {
       writeFile(join(storyDir, "author_intent.md"), "# Author Intent\n\nKeep the pressure on the mentor conflict.\n", "utf-8"),
       writeFile(join(storyDir, "current_focus.md"), "# Current Focus\n\nBring the focus back to the mentor conflict.\n", "utf-8"),
       writeFile(join(storyDir, "story_bible.md"), "# Story Bible\n\n- The jade seal cannot be destroyed.\n", "utf-8"),
-      mkdir(join(storyDir, "outline"), { recursive: true }),
       writeFile(join(storyDir, "outline", "volume_map.md"), [
         "# Volume Map",
         "",
@@ -277,7 +277,7 @@ describe("ComposerAgent", () => {
     expect(result.trace.contextNeeds).toEqual([]);
     expect(result.trace.contextTiers.protectedSources).toContain("story/current_focus.md");
     expect(result.trace.contextTiers.protectedSources).toContain("story/author_intent.md");
-    expect(result.trace.contextTiers.protectedSources).toContain("runtime/current_arc");
+    expect(result.trace.contextTiers.semanticSources).toContain("runtime/current_arc");
     expect(result.trace.contextTiers.compressibleSources).not.toContain("story/author_intent.md");
     expect(result.trace.contextTiers.compressibleSources).not.toContain("runtime/current_arc");
     expect(result.trace.tokenBudget.protectedTokens).toBeGreaterThan(0);
@@ -487,8 +487,8 @@ describe("ComposerAgent", () => {
     expect(sources).toContain("runtime/volume_contract");
     expect(sources).toContain("runtime/volume_progress");
     expect(sources).toContain("runtime/volume_gate");
-    expect(result.trace.contextTiers.protectedSources).toContain("runtime/volume_contract");
-    expect(result.trace.contextTiers.protectedSources).toContain("runtime/volume_progress");
+    expect(result.trace.contextTiers.semanticSources).toContain("runtime/volume_contract");
+    expect(result.trace.contextTiers.semanticSources).toContain("runtime/volume_progress");
     expect(result.trace.contextTiers.protectedSources).toContain("runtime/volume_gate");
     expect(result.trace.notes).toContain("volume-auditor:deterministic");
     expect(result.trace.notes).toContain("volume-auditor:warning:volume-kr-unbound");
@@ -579,7 +579,7 @@ describe("ComposerAgent", () => {
     expect(result.trace.contextTiers.protectedSources).toContain("runtime/pre_write_claim_gate");
   });
 
-  it("compiles only compressible context when selected context exceeds budget", async () => {
+  it("compiles semantic and compressible context while retaining verbatim sources", async () => {
     const longTitle = `旧章标题${"旧案".repeat(800)}`;
     await writeFile(
       join(storyDir, "chapter_summaries.md"),
@@ -597,6 +597,7 @@ describe("ComposerAgent", () => {
 
     let compileRequest: {
       protectedSources: string[];
+      semanticSources: string[];
       compressibleSources: string[];
     } | undefined;
 
@@ -611,10 +612,12 @@ describe("ComposerAgent", () => {
       },
       compressibleContextCompiler: async (request: {
         readonly protectedEntries: ReadonlyArray<{ readonly source: string }>;
+        readonly semanticEntries: ReadonlyArray<{ readonly source: string }>;
         readonly compressibleEntries: ReadonlyArray<{ readonly source: string }>;
       }) => {
         compileRequest = {
           protectedSources: request.protectedEntries.map((entry) => entry.source),
+          semanticSources: request.semanticEntries.map((entry) => entry.source),
           compressibleSources: request.compressibleEntries.map((entry) => entry.source),
         };
         return "压缩后的旧章标题历史：只保留旧案连续调查的节奏提醒。";
@@ -626,25 +629,27 @@ describe("ComposerAgent", () => {
       entry.source === "story/author_intent.md",
     );
     const compiled = result.contextPackage.selectedContext.find((entry) =>
-      entry.source === "runtime/compiled-compressible-context",
+      entry.source === "runtime/compiled-context",
     );
 
     expect(compileRequest).toBeDefined();
     expect(compileRequest!.protectedSources).toContain("story/author_intent.md");
+    expect(compileRequest!.semanticSources).toContain("runtime/current_arc");
     expect(compileRequest!.compressibleSources).toContain("story/chapter_summaries.md#recent_titles");
     expect(sources).toContain("story/author_intent.md");
     expect(sources).not.toContain("story/chapter_summaries.md#recent_titles");
     expect(authorIntent?.excerpt).toContain("Keep the pressure on the mentor conflict.");
     expect(compiled?.excerpt).toContain("压缩后的旧章标题历史");
-    expect(result.trace.notes).toContain("compiled-compressible-context");
+    expect(result.trace.notes).toContain("compiled-context");
     expect(result.trace.compression).toMatchObject({
-      compiledSource: "runtime/compiled-compressible-context",
+      compiledSource: "runtime/compiled-context",
       compressedSources: expect.arrayContaining(["story/chapter_summaries.md#recent_titles"]),
       protectedSources: expect.arrayContaining(["story/author_intent.md"]),
+      semanticSources: expect.arrayContaining(["runtime/current_arc"]),
     });
   });
 
-  it("emits story context compression lifecycle events when compiling compressible context", async () => {
+  it("emits story context compression lifecycle events when compiling semantic context", async () => {
     await writeFile(
       join(storyDir, "chapter_summaries.md"),
       [
@@ -717,10 +722,10 @@ describe("ComposerAgent", () => {
         contextWindowTokens: 900,
         reservedOutputTokens: 0,
       },
-    })).rejects.toThrow(/no compressible context compiler/);
+    })).rejects.toThrow(/no semantic context compiler/);
   });
 
-  it("fails loudly when the compressible context compiler returns empty output", async () => {
+  it("fails loudly when the semantic context compiler returns empty output", async () => {
     await writeFile(
       join(storyDir, "chapter_summaries.md"),
       [
@@ -862,10 +867,10 @@ describe("ComposerAgent", () => {
     expect(outlineText).toContain("商会债务规则不能被破坏");
     expect(outlineText).toContain("Track the merchant guild trail");
     expect(outlineText).not.toContain("IRRELEVANT-ARCHIVE-NOISE");
-    expect(result.trace.contextTiers.protectedSources.some((source) =>
+    expect(result.trace.contextTiers.semanticSources.some((source) =>
       source.startsWith("story/outline/story_frame.md#"),
     )).toBe(true);
-    expect(result.trace.contextTiers.protectedSources.some((source) =>
+    expect(result.trace.contextTiers.semanticSources.some((source) =>
       source.startsWith("story/outline/volume_map.md#"),
     )).toBe(true);
   });
@@ -1100,6 +1105,9 @@ describe("ComposerAgent", () => {
     expect(factEntry).toBeDefined();
     expect(factEntry?.excerpt).toContain("Current Conflict");
     expect(factEntry?.excerpt).toContain("Mentor debt with the vanished teacher");
+    expect(result.contextPackage.selectedContext.some((entry) =>
+      entry.source === "story/current_state.md"
+    )).toBe(false);
   });
 
   it("adds relevant volume-summary evidence for long-span retrieval after consolidation", async () => {

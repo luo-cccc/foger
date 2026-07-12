@@ -110,7 +110,7 @@ describe("PipelineRunner model-override routing (resolveOverride via createAgent
       writer: { model: "remote-writer", provider: "custom", baseUrl: "https://other.example/v1" },
       planner: { model: "remote-planner", provider: "custom", baseUrl: "https://other.example/v1" },
     });
-    // Same (provider, baseUrl, apiKeySource, stream, format) → same cache key →
+    // Same (provider, baseUrl, API-key fingerprint, stream, format) → same cache key →
     // same client instance shared across agents.
     const writerClient = runner.createAgentContext("writer").client;
     const writerClientAgain = runner.createAgentContext("writer").client;
@@ -164,5 +164,25 @@ describe("PipelineRunner model-override routing (resolveOverride via createAgent
     const ctx = runner.createAgentContext("writer");
     expect(ctx.model).toBe("remote-writer");
     expect(ctx.client).not.toBe(BASE_CLIENT);
+  });
+
+  it("never stores raw API keys in dedicated-client cache identifiers", () => {
+    const secret = "sk-sensitive-cache-key";
+    process.env.INKOS_TEST_ROUTE_KEY = secret;
+    const runner = buildRunner({
+      writer: {
+        model: "remote-writer",
+        provider: "custom",
+        baseUrl: "https://other.example/v1",
+        apiKeyEnv: "INKOS_TEST_ROUTE_KEY",
+      },
+    });
+
+    runner.createAgentContext("writer");
+    const cacheKeys = [...(runner as unknown as { agentClients: Map<string, LLMClient> }).agentClients.keys()];
+
+    expect(cacheKeys).toHaveLength(1);
+    expect(cacheKeys[0]).not.toContain(secret);
+    expect(cacheKeys[0]).not.toContain("INKOS_TEST_ROUTE_KEY");
   });
 });

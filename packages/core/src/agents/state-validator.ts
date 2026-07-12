@@ -12,6 +12,22 @@ export interface ValidationResult {
   readonly passed: boolean;
 }
 
+export function applyBlockingStateWarningPolicy(result: ValidationResult): ValidationResult {
+  if (!result.passed || !result.warnings.some(isBlockingStateWarning)) {
+    return result;
+  }
+  return { ...result, passed: false };
+}
+
+function isBlockingStateWarning(warning: ValidationWarning): boolean {
+  const category = warning.category.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (/^missing_(?:state_change|hook_update|summary|chapter_summary)/.test(category)) {
+    return true;
+  }
+  return category === "hook_anomaly"
+    && /(?:removed|disappeared|dropped|missing from|删除|移除|消失|丢失|未保留)/i.test(warning.description);
+}
+
 export interface StateValidationAuthorityContext {
   readonly storyFrame?: string;
   readonly bookRules?: string;
@@ -122,7 +138,7 @@ ${chapterContent}`;
         { temperature: 0.1 },
       );
 
-      return this.parseResult(response.content);
+      return applyBlockingStateWarningPolicy(this.parseResult(response.content));
     } catch (error) {
       this.log?.warn(`State validation failed: ${error}`);
       throw error;
@@ -237,13 +253,13 @@ ${chapterContent}`;
         passed?: boolean;
       };
       if (typeof parsed.passed !== "boolean") return null;
-      return {
+      return applyBlockingStateWarningPolicy({
         warnings: (parsed.warnings ?? []).map((w) => ({
           category: w.category ?? "unknown",
           description: w.description ?? "",
         })),
         passed: parsed.passed,
-      };
+      });
     } catch {
       return null;
     }

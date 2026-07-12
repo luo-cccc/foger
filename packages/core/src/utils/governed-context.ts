@@ -20,7 +20,9 @@ export function buildGovernedMemoryEvidenceBlocks(
     entry.source.startsWith("runtime/hook_debt#"),
   );
   const summaryEntries = contextPackage.selectedContext.filter((entry) =>
-    entry.source.startsWith("story/chapter_summaries.md#"),
+    entry.source.startsWith("story/chapter_summaries.md#")
+      && entry.source !== "story/chapter_summaries.md#recent_titles"
+      && entry.source !== "story/chapter_summaries.md#recent_mood_type_trail",
   );
   const volumeSummaryEntries = contextPackage.selectedContext.filter((entry) =>
     entry.source.startsWith("story/volume_summaries.md#"),

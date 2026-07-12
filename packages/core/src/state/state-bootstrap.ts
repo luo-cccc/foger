@@ -14,6 +14,10 @@ import {
 import type { Fact, StoredHook } from "./memory-db.js";
 import { normalizeHookPayoffTiming } from "../utils/hook-lifecycle.js";
 import {
+  normalizeHookStatusAlias,
+  normalizeHookTypeLabel,
+} from "../utils/hook-governance.js";
+import {
   inferFactSubject,
   isCurrentChapterLabel,
   isStateTableHeaderRow,
@@ -127,6 +131,7 @@ export async function bootstrapStructuredStateFromMarkdown(params: {
 export async function rewriteStructuredStateFromMarkdown(params: {
   readonly bookDir: string;
   readonly fallbackChapter?: number;
+  readonly authoritativeChapter?: number;
 }): Promise<BootstrapStructuredStateResult> {
   const storyDir = join(params.bookDir, "story");
   const stateDir = join(storyDir, "state");
@@ -144,6 +149,7 @@ export async function rewriteStructuredStateFromMarkdown(params: {
     bookDir: params.bookDir,
     storyDir,
     fallbackChapter: params.fallbackChapter ?? 0,
+    authoritativeChapter: params.authoritativeChapter,
     warnings,
   });
   const summariesState = markdownState.summariesState;
@@ -470,6 +476,7 @@ async function loadMarkdownBootstrapState(params: {
   readonly bookDir: string;
   readonly storyDir: string;
   readonly fallbackChapter: number;
+  readonly authoritativeChapter?: number;
   readonly warnings: string[];
 }): Promise<MarkdownBootstrapState> {
   const summariesState = await loadMarkdownSummariesState(params.storyDir);
@@ -479,7 +486,9 @@ async function loadMarkdownBootstrapState(params: {
   });
   const explicitFallback = normalizeExplicitChapter(params.fallbackChapter);
   const durableArtifactProgress = await resolveContiguousArtifactChapterProgress(params.bookDir);
-  const authoritativeProgress = Math.max(explicitFallback, durableArtifactProgress);
+  const authoritativeProgress = params.authoritativeChapter === undefined
+    ? Math.max(explicitFallback, durableArtifactProgress)
+    : normalizeExplicitChapter(params.authoritativeChapter);
   const currentState = await loadMarkdownCurrentState({
     storyDir: params.storyDir,
     fallbackChapter: authoritativeProgress,
@@ -587,18 +596,17 @@ export function resolveContiguousChapterPrefix(chapterNumbers: ReadonlyArray<num
 }
 
 function normalizeHookStatus(value: string | undefined, warnings: string[], hookId: string): HookStatus {
-  const normalized = (value ?? "").trim().toLowerCase();
-  if (!normalized) return "open";
-  if (/(resolved|closed|done|paid[_ -]?off|已回收|回收|完成|已解决|已兑现|兑现)/i.test(normalized)) return "resolved";
-  if (/(deferred|paused|hold|dormant|inactive|unplanted|unseeded|not[_ -]?started|not[_ -]?active|搁置|延后|延期|暂缓|休眠|未激活|未启动|待启动|未推进|尚未推进)/i.test(normalized)) return "deferred";
-  if (/(confirmed[_ -]?hit|confirmed|advanced|progressing|progress|active|pressured|命中|已确认命中|已推进|推进|进行中|持续推进|重大推进)/i.test(normalized)) return "progressing";
-  if (/(open|pending|seeded|planted|待定|未回收|已埋|已种下|已铺垫)/i.test(normalized)) return "open";
+  const normalized = normalizeHookStatusAlias(value ?? "");
+  if (normalized === "resolved" || normalized === "deferred" || normalized === "progressing" || normalized === "open") {
+    return normalized;
+  }
+  if (!(value ?? "").trim()) return "open";
   appendWarning(warnings, `${hookId}:status normalized from "${value ?? ""}" to "open"`);
   return "open";
 }
 
 function normalizeHookType(value: string | undefined, warnings: string[], hookId: string): string {
-  const normalized = (value ?? "").trim();
+  const normalized = normalizeHookTypeLabel(value ?? "");
   if (normalized) return normalized;
   appendWarning(warnings, `${hookId}: empty hook type normalized to "unspecified"`);
   return "unspecified";

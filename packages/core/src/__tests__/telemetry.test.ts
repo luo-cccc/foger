@@ -68,6 +68,15 @@ describe("LLMCallTelemetry", () => {
     expect(records[0]!.apiFormat).toBe("chat");
     expect(records[0]!.stream).toBe(false);
     expect(records[0]!.durationMs).toBeGreaterThanOrEqual(0);
+    expect(records[0]!.attemptCount).toBe(1);
+    expect(records[0]!.retryCount).toBe(0);
+    expect(records[0]!.promptAssembly).toMatchObject({
+      totalChars: 2,
+      messages: [expect.objectContaining({ role: "user", chars: 2 })],
+      sources: [],
+      duplicateSourceGroups: [],
+    });
+    expect(JSON.stringify(records[0]!.promptAssembly)).not.toContain('"content"');
     expect(records[0]!.usage.promptTokens).toBe(11);
     expect(records[0]!.usage.completionTokens).toBe(7);
     expect(records[0]!.timestamp).toBeDefined();
@@ -90,6 +99,27 @@ describe("LLMCallTelemetry", () => {
     expect(records).toHaveLength(1);
     expect(records[0]!.status).toBe("error");
     expect(records[0]!.agent).toBe("test:error");
+    expect(records[0]!.attemptCount).toBe(1);
+    expect(records[0]!.retryCount).toBe(0);
+  });
+
+  it("records provider retry attempts on the final telemetry event", async () => {
+    mockCompleteSimple
+      .mockRejectedValueOnce(new Error("503 service unavailable"))
+      .mockResolvedValueOnce(makeAssistantMessage("recovered"));
+    const records: LLMCallTelemetry[] = [];
+
+    await chatCompletion(
+      makeClient({ stream: false }),
+      "test",
+      [{ role: "user", content: "hi" }],
+      { onCallTelemetry: (telemetry) => records.push(telemetry) },
+    );
+
+    expect(records).toHaveLength(1);
+    expect(records[0]!.status).toBe("success");
+    expect(records[0]!.attemptCount).toBe(2);
+    expect(records[0]!.retryCount).toBe(1);
   });
 
   it("passes timeoutMs to chatCompletion options", async () => {

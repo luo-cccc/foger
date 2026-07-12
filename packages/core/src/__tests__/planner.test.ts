@@ -6,6 +6,7 @@ import { PlannerAgent } from "../agents/planner.js";
 import * as llmProvider from "../llm/provider.js";
 import type { LLMClient } from "../llm/provider.js";
 import type { BookConfig } from "../models/book.js";
+import type { OnPipelineDiagnostic } from "../pipeline/diagnostics.js";
 
 const VALID_BODY = `
 ## 当前任务
@@ -136,12 +137,13 @@ describe("PlannerAgent.planChapter memo generation", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  function makePlanner(): PlannerAgent {
+  function makePlanner(onPipelineDiagnostic?: OnPipelineDiagnostic): PlannerAgent {
     return new PlannerAgent({
       client: STUB_CLIENT,
       model: "test-model",
       projectRoot: root,
       bookId: "book-plan-1",
+      onPipelineDiagnostic,
     });
   }
 
@@ -245,6 +247,7 @@ describe("PlannerAgent.planChapter memo generation", () => {
   });
 
   it("retries when the first response is malformed and succeeds on retry", async () => {
+    const diagnostics: Parameters<OnPipelineDiagnostic>[0][] = [];
     const chatSpy = vi.spyOn(llmProvider, "chatCompletion")
       .mockResolvedValueOnce({
         content: "no memo sections here",
@@ -259,7 +262,7 @@ describe("PlannerAgent.planChapter memo generation", () => {
         usage: ZERO_USAGE,
       } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>);
 
-    const result = await makePlanner().planChapter({
+    const result = await makePlanner((diagnostic) => diagnostics.push(diagnostic)).planChapter({
       book: makeBook(),
       bookDir,
       chapterNumber: 4,
@@ -268,12 +271,81 @@ describe("PlannerAgent.planChapter memo generation", () => {
     expect(chatSpy).toHaveBeenCalledTimes(3);
     expect(result.memo.chapter).toBe(4);
     expect(result.memo.isGoldenOpening).toBe(false);
+    expect(diagnostics.map((diagnostic) => diagnostic.kind)).toEqual([
+      "planner-parse-retry",
+      "planner-parse-retry",
+    ]);
+    expect(diagnostics[0]).toMatchObject({
+      agent: "planner",
+      phase: "plan",
+      bookId: "book-plan-1",
+      chapterNumber: 4,
+      attempt: 1,
+      maxAttempts: 3,
+    });
 
     // Retry prompts must include the failure feedback
     const secondCallArgs = chatSpy.mock.calls[1]!;
     const secondMessages = secondCallArgs[2] as ReadonlyArray<{ role: string; content: string }>;
     const userMsg = secondMessages.find((m) => m.role === "user");
     expect(userMsg?.content).toContain("上次输出的错误");
+  });
+
+  it("reports the deterministic memo fallback after parse retries are exhausted", async () => {
+    const diagnostics: Parameters<OnPipelineDiagnostic>[0][] = [];
+    vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue({
+      content: "no memo sections here",
+      usage: ZERO_USAGE,
+    } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>);
+
+    const result = await makePlanner((diagnostic) => diagnostics.push(diagnostic)).planChapter({
+      book: makeBook(),
+      bookDir,
+      chapterNumber: 4,
+    });
+
+    expect(result.memo.body).toContain("## Planner warning");
+    expect(diagnostics.map((diagnostic) => diagnostic.kind)).toEqual([
+      "planner-parse-retry",
+      "planner-parse-retry",
+      "planner-parse-retry",
+      "planner-fallback",
+    ]);
+  });
+
+  it("includes exact allowed hook ids when retrying an invalid hook ledger", async () => {
+    const invalidHookMemo = validMemoRaw(4).replace(/H03/g, "H03-truncated");
+    const chatSpy = vi.spyOn(llmProvider, "chatCompletion")
+      .mockResolvedValueOnce({ content: invalidHookMemo, usage: ZERO_USAGE } as never)
+      .mockResolvedValueOnce({ content: validMemoRaw(4), usage: ZERO_USAGE } as never);
+
+    await makePlanner().planChapter({
+      book: makeBook(),
+      bookDir,
+      chapterNumber: 4,
+    });
+
+    const retryMessages = chatSpy.mock.calls[1]?.[2] as ReadonlyArray<{ role: string; content: string }>;
+    const retryUserMessage = retryMessages.find((message) => message.role === "user")?.content ?? "";
+    expect(retryUserMessage).toContain("允许使用的伏笔 ID");
+    expect(retryUserMessage).toContain("- H03");
+    expect(retryUserMessage).toContain("- S004");
+    expect(retryUserMessage).toContain("不要截断或重组");
+  });
+
+  it("skips volume-count metadata when deriving a prose outline node", () => {
+    const planner = makePlanner() as unknown as {
+      findOutlineNode: (outline: string, chapterNumber: number) => string | undefined;
+    };
+    const outline = [
+      "## 各卷主题与情绪曲线",
+      "本书共四卷，每卷约二十章。",
+      "第一卷主题是怀疑的诞生，林澈从收到异常广播开始秘密调查。",
+    ].join("\n");
+
+    expect(planner.findOutlineNode(outline, 2)).toBe(
+      "第一卷主题是怀疑的诞生，林澈从收到异常广播开始秘密调查。",
+    );
   });
 
   // Phase hotfix 4: English books must receive English system + user prompts

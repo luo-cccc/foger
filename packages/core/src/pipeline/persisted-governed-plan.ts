@@ -1,9 +1,14 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
+import yaml from "js-yaml";
 import type { PlanChapterOutput } from "../agents/planner.js";
 import {
   ChapterIntentSchema,
+  ContextPackageSchema,
+  RuleStackSchema,
   type ChapterIntent,
+  type ContextPackage,
+  type RuleStack,
 } from "../models/input-governance.js";
 import { parseMemo, PlannerParseError } from "../utils/chapter-memo-parser.js";
 
@@ -48,6 +53,7 @@ export async function savePersistedPlan(
 export async function loadPersistedPlan(
   bookDir: string,
   chapterNumber: number,
+  options?: { readonly allowFallbackMemo?: boolean },
 ): Promise<PlanChapterOutput | null> {
   let raw: string;
   try {
@@ -58,14 +64,18 @@ export async function loadPersistedPlan(
 
   if (raw.trimStart().startsWith("---")) return null;
 
-  // Reconstruct memo via the same strict parser planner uses. This guarantees
-  // the 7 required section headings are still present — any drift triggers
+  // Reconstruct the memo via the same strict parser the planner uses. This
+  // guarantees the required contract fields are still valid; drift triggers
   // re-planning (null return).
   let memo;
   try {
     const memoBlock = extractMarkedBlock(raw, "MEMO");
     if (!memoBlock) return null;
     memo = parseMemo(memoBlock, chapterNumber, readBooleanField(raw, "Golden Opening") ?? false);
+    // A fallback memo is usable only for the operation that produced it. If
+    // that operation is interrupted, reusing the cached fallback would skip a
+    // healthy planner on the next write attempt and preserve the old failure.
+    if (!options?.allowFallbackMemo && /^##\s+Planner warning\s*$/im.test(memo.body)) return null;
   } catch (error) {
     if (error instanceof PlannerParseError) return null;
     throw error;
@@ -105,6 +115,48 @@ export async function loadPersistedPlan(
     plannerInputs,
     runtimePath: intentPath(bookDir, chapterNumber),
   };
+}
+
+export interface PersistedGovernedChapterInput {
+  readonly plan: PlanChapterOutput | null;
+  readonly contextPackage?: ContextPackage;
+  readonly ruleStack?: RuleStack;
+}
+
+export async function loadPersistedGovernedChapterInput(
+  bookDir: string,
+  chapterNumber: number,
+): Promise<PersistedGovernedChapterInput> {
+  const runtimeDir = join(bookDir, "story", "runtime");
+  const chapterSlug = `chapter-${String(chapterNumber).padStart(4, "0")}`;
+  const [plan, contextPackage, ruleStack] = await Promise.all([
+    loadPersistedPlan(bookDir, chapterNumber, { allowFallbackMemo: true }),
+    readAndParse(
+      join(runtimeDir, `${chapterSlug}.context.json`),
+      (raw) => ContextPackageSchema.parse(JSON.parse(raw)),
+    ),
+    readAndParse(
+      join(runtimeDir, `${chapterSlug}.rule-stack.yaml`),
+      (raw) => RuleStackSchema.parse(yaml.load(raw)),
+    ),
+  ]);
+
+  return {
+    plan,
+    ...(contextPackage ? { contextPackage } : {}),
+    ...(ruleStack ? { ruleStack } : {}),
+  };
+}
+
+async function readAndParse<T>(
+  path: string,
+  parse: (raw: string) => T,
+): Promise<T | undefined> {
+  try {
+    return parse(await readFile(path, "utf-8"));
+  } catch {
+    return undefined;
+  }
 }
 
 function renderPersistedPlanMarkdown(

@@ -44,6 +44,12 @@ const REQUIRED_SECTIONS: ReadonlyArray<RequiredSection> = [
 const GOAL_HEADINGS = ["## 本章目标", "## Chapter goal"] as const;
 const THREAD_HEADINGS = ["## 关联线索", "## Thread refs", "## Related threads"] as const;
 const VOLUME_KR_HEADINGS = ["## 卷级 KR 绑定", "## Volume KR binding"] as const;
+const KNOWN_ZH_HEADINGS = [
+  ...GOAL_HEADINGS.filter((heading) => /[\u4e00-\u9fff]/u.test(heading)),
+  ...THREAD_HEADINGS.filter((heading) => /[\u4e00-\u9fff]/u.test(heading)),
+  ...VOLUME_KR_HEADINGS.filter((heading) => /[\u4e00-\u9fff]/u.test(heading)),
+  ...REQUIRED_SECTIONS.map((section) => section.zh),
+];
 
 /**
  * Extract the content between `heading` and the next `## ...` heading (or
@@ -78,6 +84,20 @@ function stripWrappingFence(raw: string): string {
   const trimmed = raw.trim();
   const fenced = trimmed.match(/^```(?:md|markdown)?\s*\n([\s\S]*?)\n```\s*$/i);
   return fenced?.[1]?.trim() ?? trimmed;
+}
+
+function normalizeKnownMemoHeadings(raw: string): string {
+  const canonicalByCompactHeading = new Map(
+    KNOWN_ZH_HEADINGS.map((heading) => [heading.replace(/\s+/g, ""), heading]),
+  );
+  return raw
+    .split("\n")
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("##")) return line;
+      return canonicalByCompactHeading.get(trimmed.replace(/\s+/g, "")) ?? line;
+    })
+    .join("\n");
 }
 
 function dropLeadingProse(raw: string): string {
@@ -198,7 +218,7 @@ export function parseMemo(
   expectedChapter: number,
   isGoldenOpening: boolean,
 ): ChapterMemo {
-  const markdown = dropLeadingProse(stripWrappingFence(raw));
+  const markdown = dropLeadingProse(normalizeKnownMemoHeadings(stripWrappingFence(raw)));
   const goal = extractGoal(markdown);
   const body = extractMemoBody(markdown);
   const threadRefs = extractThreadRefs(markdown);

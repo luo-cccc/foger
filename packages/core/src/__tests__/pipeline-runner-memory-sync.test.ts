@@ -306,7 +306,7 @@ describe("PipelineRunner structured-state memory sync", () => {
     expect(await readFile(join(storyDir, "chapter_summaries.md"), "utf-8")).toContain("Markdown Drift Summary");
     expect(narrativeStore?.hooks).toEqual([
       expect.objectContaining({
-        hookId: "structured-hook",
+        hookId: "D001",
         notes: "Structured hook should win.",
       }),
     ]);

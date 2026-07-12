@@ -18,7 +18,7 @@ Use `pnpm verify` for the complete offline quality gate. Use `pnpm release` when
 
 ## Live Provider Tests
 
-- `live-dual-api-routing.mjs`: multi-agent dual-provider live run and report generator.
+- `live-dual-api-routing.mjs`: multi-agent dual-provider live run and report v2 generator. It records service/model token and retry aggregates, structured fallbacks, chapter length deviation, optional repair/resync recovery, and configurable quality gates.
 - `live-openrouter-deepseek-flash.mjs`: focused OpenRouter live-provider run.
 
 Live-provider scripts require explicit credentials and write into ignored `.tmp-*` directories. Reports that matter long term must be summarized in [the live LLM test record](../docs/live-llm-testing-and-next-goals.md); do not commit secrets or raw temporary projects.

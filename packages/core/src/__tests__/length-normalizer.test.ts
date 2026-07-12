@@ -107,6 +107,39 @@ describe("LengthNormalizerAgent", () => {
     expect(result.warning).toContain("outside the soft range");
   });
 
+  it("retries when the first pass enters the hard range but still misses the soft target", async () => {
+    const agent = createAgent();
+    const firstPass = "首次压缩。".repeat(52);
+    const secondPass = "严格压缩。".repeat(42);
+    const chatSpy = vi.spyOn(BaseAgent.prototype as never, "chat")
+      .mockResolvedValueOnce({ content: firstPass, usage: ZERO_USAGE })
+      .mockResolvedValueOnce({ content: secondPass, usage: ZERO_USAGE });
+    const lengthSpec = LengthSpecSchema.parse({
+      target: 220,
+      softMin: 190,
+      softMax: 250,
+      hardMin: 160,
+      hardMax: 280,
+      countingMode: "zh_chars",
+      normalizeMode: "compress",
+    });
+
+    const result = await agent.normalizeChapter({
+      chapterContent: "原始正文。".repeat(120),
+      lengthSpec,
+    });
+
+    expect(countChapterLength(firstPass, "zh_chars")).toBeGreaterThan(lengthSpec.softMax);
+    expect(countChapterLength(firstPass, "zh_chars")).toBeLessThanOrEqual(lengthSpec.hardMax);
+    expect(chatSpy).toHaveBeenCalledTimes(2);
+    const secondCall = chatSpy.mock.calls[1] as unknown as [ReadonlyArray<{ content: string }>, unknown?] | undefined;
+    expect(secondCall?.[0]?.map((message) => message.content).join("\n")).toContain("Strict Length Requirement");
+    expect(secondCall?.[0]?.map((message) => message.content).join("\n")).toContain("Delete at least");
+    expect(secondCall?.[0]?.map((message) => message.content).join("\n")).toContain("preserving every paragraph is forbidden");
+    expect(result.normalizedContent).toBe(secondPass);
+    expect(result.warning).toBeUndefined();
+  });
+
   it("does not override provider output budget for large compression outputs", async () => {
     const agent = createAgent();
     const chatSpy = vi.spyOn(BaseAgent.prototype as never, "chat").mockResolvedValue({

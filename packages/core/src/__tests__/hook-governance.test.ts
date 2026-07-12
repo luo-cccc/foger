@@ -4,6 +4,8 @@ import {
   classifyHookDisposition,
   collectStaleHookDebt,
   evaluateHookAdmission,
+  normalizeHookStatusAlias,
+  normalizeHookTypeLabel,
 } from "../utils/hook-governance.js";
 
 function createHook(overrides: Partial<HookRecord> = {}): HookRecord {
@@ -53,6 +55,14 @@ describe("collectStaleHookDebt", () => {
 });
 
 describe("evaluateHookAdmission", () => {
+  it("normalizes common Chinese and English type/status aliases", () => {
+    expect(normalizeHookTypeLabel("信息")).toBe("information");
+    expect(normalizeHookTypeLabel("ITEM")).toBe("artifact");
+    expect(normalizeHookStatusAlias("已推进")).toBe("progressing");
+    expect(normalizeHookStatusAlias("待推进")).toBe("deferred");
+    expect(normalizeHookStatusAlias("未回收")).toBe("open");
+  });
+
   const activeHooks = [
     createHook({
       hookId: "H019",

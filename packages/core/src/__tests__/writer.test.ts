@@ -1427,9 +1427,56 @@ describe("WriterAgent", () => {
       expect(creativePrompt).toContain("tight / investigation");
       expect(creativePrompt).toContain("## Canon Evidence");
       expect(creativePrompt).toContain("archive fire until volume two");
+      expect(creativePrompt.match(/Ledger in Rain/g)).toHaveLength(1);
+      expect(creativePrompt.match(/## Recent Mood \/ Chapter Type Trail/g)).toHaveLength(1);
+      expect(creativePrompt.match(/archive fire until volume two/g)).toHaveLength(1);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("renders the governed chapter memo once even when it is also a context source", () => {
+    const agent = new WriterAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-writer-memo-dedup-test",
+    });
+    const marker = "UNIQUE_MEMO_EXECUTION_MARKER";
+    const prompt = (agent as unknown as {
+      buildGovernedUserPrompt(params: Record<string, unknown>): string;
+    }).buildGovernedUserPrompt({
+      chapterNumber: 7,
+      chapterMemo: {
+        chapter: 7,
+        goal: "Advance the ledger.",
+        isGoldenOpening: false,
+        body: `## Current task\n${marker}`,
+        threadRefs: [],
+      },
+      contextPackage: {
+        chapter: 7,
+        selectedContext: [{
+          source: "runtime/chapter_memo",
+          reason: "Planner memo.",
+          excerpt: `goal=Advance the ledger. | ## Current task | ${marker}`,
+        }],
+      },
+      ruleStack: {
+        layers: [],
+        sections: { hard: [], soft: [], diagnostic: [] },
+        overrideEdges: [],
+        activeOverrides: [],
+      },
+      lengthSpec: buildLengthSpec(1200, "en"),
+      language: "en",
+    });
+
+    expect(prompt.match(new RegExp(marker, "g"))).toHaveLength(1);
   });
 
   it("sanitizes governed control inputs so raw hook ids and control headings do not enter the creative prompt", async () => {
@@ -1557,7 +1604,8 @@ describe("WriterAgent", () => {
       const creativePrompt = (chatSpy.mock.calls[0]?.[0] as ReadonlyArray<{ content: string }> | undefined)?.[1]?.content ?? "";
 
       expect(systemPrompt).not.toContain("Hook-A / Hook-B");
-      expect(systemPrompt).toContain("Real hook_id"); // English book gets the English output scaffold
+      expect(systemPrompt).toContain("Hook execution"); // English book gets the English output scaffold
+      expect(systemPrompt).toContain("advance/resolve ids");
       // Enum/identifier fields (hookId, movement, chapterType) are NOT sanitized —
       // the writer needs them to understand which hook to move and what chapter type
       // to write. Free-text fields (goal, instruction, targetEffect) ARE sanitized.

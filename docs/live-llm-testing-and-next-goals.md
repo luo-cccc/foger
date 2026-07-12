@@ -1,6 +1,6 @@
 # InkOS 真实 LLM 测试方法与阶段记录
 
-> 文档状态：真实 provider 测试方法与阶段记录。本文保留 2026-07-09 至 2026-07-10 的实验数据；当前全项目优先级以[当前架构与开发优先级](current-architecture-and-priorities.md)为准。下文旧 P0/P1 不应被理解为最新排期。
+> 文档状态：真实 provider 测试方法与阶段记录。本文保留 2026-07-09 至 2026-07-12 的实验数据；当前全项目优先级以[当前架构与开发优先级](current-architecture-and-priorities.md)为准。下文旧 P0/P1 不应被理解为最新排期。
 
 ## 1. 文档目的
 
@@ -10,7 +10,7 @@
 
 ## 2. 当前结论
 
-截至 2026-07-11，项目本地逻辑、持久化和确定性测试已经较稳，剩余质量风险主要集中在真实 LLM 编排：
+截至 2026-07-12，项目本地逻辑、持久化和确定性测试已经较稳，剩余质量风险主要集中在真实 LLM 编排和不同操作入口的合同一致性：
 
 - 正文生成和状态结算不能绑定在同一个 `writer` 模型上。实测 MiniMax-M3 写正文可用，但如果同一客户端继续承担状态结算，会产生空状态 delta，触发 `state-degraded`。
 - `writer` 与 `settler` 拆分后，推荐路由为：MiniMax-M3 负责 `writer` / `reviser` / `length-normalizer`，OpenRouter DeepSeek Flash 负责 `settler` / `planner` / `composer` / `state-validator` / `canon-extractor`。
@@ -18,6 +18,8 @@
 - Studio 的 stub 模式真实后端链路现已跑通：`POST /api/v1/books/create -> create-status -> /book/:id/settings -> 写下一章 -> truth files -> runtime diagnostic` 的 Playwright E2E 通过，且不再依赖预种子书籍绕过建书阶段。
 - 为支撑这条链路，`llm-stub` 已补齐 architect 与 foundation-reviewer 两类合同响应，stub 模式下建书可以生成完整 foundation，而不是只返回结构 JSON / 单节点 JSON。
 - 仍需解决的主要问题是：planner memo 偶发 parse retry、canon extractor 偶发 schema fallback、MiniMax 正文字数偏超、真实多章运行耗时偏长。
+- 2026-07-12 的 Studio + OpenRouter DeepSeek V4 Pro 三章复测曾暴露长 hook ID、独立审计合同、Settler/resync 完整性、跨语言 hook 类型和前端取消/恢复问题；这些代码项现已关闭，下一次真实 3-5 章运行负责验证修复效果和成本。
+- 2026-07-12 已完成一轮不调用真实 API 的提示词与上下文治理：Prompt Assembly Trace、确定性去重、三层上下文、Planner/Writer/Auditor 职责收口和固定语料 A/B 门禁已落地。它提供成本回归证据，但不能替代真实 3-5 章质量测试。
 - 章节事务、workflow crash journal、book/config 跨进程锁、恢复前置、Session 路径校验和 Studio 本地安全边界已在平台复核中补齐；8 worker 竞争写入和 30 轮真实强杀恢复通过，这些问题不再列为真实 LLM 测试待办。
 
 ## 3. 测试分层
@@ -84,9 +86,18 @@ node scripts/live-dual-api-routing.mjs
 ```powershell
 $env:OPENROUTER_API_KEY="..."
 $env:MINIMAX_API_KEY="..."
-$env:INKOS_DUAL_ROUTE_MODE="minimax-writer"
-node scripts/live-dual-api-routing.mjs
+node scripts/live-dual-api-routing.mjs --chapters 5 --words 1000 --route-mode minimax-writer
 ```
+
+report v2 还支持以下门禁与恢复参数：
+
+- `--recovery-mode none|repair|resync|repair-then-resync`
+- `--max-retry-rate 0.2`
+- `--max-timeout-rate 0`
+- `--max-fallbacks 0`
+- `--min-hard-range-rate 0.8`
+
+任一门禁失败时，报告仍会完整写入，但进程退出码为非零，供外部任务判定失败。
 
 测试结束后清理：
 
@@ -153,9 +164,82 @@ Remove-Item .tmp-dual-api-routing\.inkos\secrets.json -Force -ErrorAction Silent
 
 这意味着：Studio 的下一步前端 E2E 不应再停留在“是否能跑通建书”，而应继续向“真实服务配置、错误诊断与长耗时反馈”推进。
 
+### 4.2 Studio + OpenRouter DeepSeek V4 Pro 复测（2026-07-12）
+
+测试入口：Studio 书籍设置页真实按钮，前端请求进入本地 Hono API，再进入 Core Pipeline。测试使用已有配置，不读取或记录 API Key。
+
+测试模型：
+
+- service：`openrouter`
+- model：`deepseek/deepseek-v4-pro`
+- telemetry 中 Planner、Writer、Length Normalizer、Continuity Auditor、Reviser、Chapter Analyzer、State Validator 均使用该模型。
+- 未观察到 `openrouter/auto` 回退。
+
+最终测试书状态：
+
+- 章节数：3。
+- 第 3 章：《塔内的第两百一十八秒》，3014 字，`ready-for-review`。
+- `manifest.lastAppliedChapter = 3`。
+- `current_state.chapter = 3`。
+- 快照：`0..3` 完整。
+- 章节摘要：3 条。
+- 活动 hook：14 条，H001-H012 完整，无本轮重复 `information-*` hook。
+
+真实流程暴露并已局部修复的问题：
+
+1. Hook ledger 解析器曾把 ID 截成最多 20 个字符；已取消该限制并增加长中文 ID 回归。
+2. Planner 首次输出会删去长 ID 中的连字符；合法 ID 重试后第二次通过。说明重试有效，但长描述型 ID 仍不适合作为协议主键。
+3. 中断写作留下的 fallback plan 会被下一次写作复用；已让持久化 fallback memo 在新操作中强制重新规划。
+4. Writer 原始约 5115 字，长度治理压到约 3355 字，修订后为 3014 字，证明严格二次压缩可进入软区间。
+5. Claim gate 曾把“无需维护”“无需人工复核”与全文世界规则拼接为 critical；已改为局部高置信度绕过证据。
+6. 长 hook ID 后直接接箭头时，正文落点校验没有提取动作关键词；已增加箭头后动作文本回退。
+7. 已有 hook 类型“信息”与新候选 `information` 被当成不同家族，创建两条重复 hook；已增加常见中英文类型族归一化并清理测试状态。
+
+本轮后续已关闭的问题：
+
+- 完整写作循环与独立“审计”按钮已复用统一 gate 合同，Core 回归已覆盖同文一致性。
+- Settler 在 repair/resync 连续遗漏 state/hook 后会转入 Chapter Analyzer 确定性重建；仍不完整时恢复原状态并返回单一错误。
+- 书籍详情页已增加统一取消入口，重写/同步等六类参数改用可测试对话框；真实 OpenRouter 浏览器取消和隔离状态机 E2E 已通过。
+
+仍未关闭的问题：
+
+- 第 3 章完整流程约消耗 17.7 万 token，单章成本和耗时偏高。
+- 确定性测试仍不能替代真实输出 corpus；下一步需要把 service/model、重试、fallback、repair/resync 和长度偏差写入 3-5 章 live report。
+
+本轮结论：事务、快照和状态校验保护有效，错误没有静默推进到第 4 章；下一阶段重点应从“增加更多重试”转为“统一合同、稳定身份、确定性重建和降低单章成本”。
+
+### 4.3 Studio 取消、恢复与修复路径复测（2026-07-12）
+
+- 真实浏览器复用已有 OpenRouter `deepseek/deepseek-v4-pro` 配置，在 3 章测试书上从同步对话框启动 resync，操作期间长任务按钮统一禁用；点击取消后显示“已保留取消前的持久化章节状态”，章节数和正文状态未推进。
+- 后端为 write、draft、rewrite、repair-state、resync 返回 `202 + requestId`，同书并发长操作返回 `409 BOOK_OPERATION_ACTIVE`；取消会中止下游 AbortSignal，取消后的非协作正常返回也不会产生 complete 事件。
+- 隔离 E2E 新增“对话框 -> 启动 -> 取消 -> 确认未落章 -> 再次启动 -> 写出第一章 -> 注入 state-degraded -> 前端 repair-state -> ready-for-review”状态机，完整套件为 9/9。
+- 开发服务器使用严格前端端口；隔离 `4577/4579` 启动时前后端均为 200，Ctrl+C 后监听端口和子进程树均清空。
+
+### 4.4 提示词与上下文固定语料基线（2026-07-12）
+
+本轮只运行确定性测试和 stub/固定语料，不读取密钥、不调用真实付费模型。实现内容：
+
+- Provider telemetry 新增 Prompt Assembly Trace，记录 message/source 的 chars、估算 tokens、fingerprint、tier、selected/compressed 状态和重复 source 组；报告可按 prompt source 聚合。
+- Writer/Composer 删除 chapter memo、标题历史、情绪轨迹、摘要、hook、canon 和 current-state 的确定性重复组装。
+- 上下文分为 `verbatim`、`semantic`、`compressible`，语义编译必须保留事实、ID、禁令、优先级和时序。
+- Planner 只决定剧情与 memo；Writer 只执行正文；Auditor 只报告已填承诺的证据缺口，不发明剧情或重写正文。
+- `prompt-optimization-gate.test.ts` 固化成本与质量门禁：Writer 三组系统提示词至少比记录基线低 15%，用户方向、章节任务、禁令、hook、章尾改变、Volume KR、长度 hard range 和输出合同必须保留。
+
+离线测量结果：
+
+| 固定语料 | 优化前估算 tokens | 当前估算 tokens | 变化 |
+| --- | ---: | ---: | ---: |
+| Writer 中文开篇 | 6422 | 4405 | -31.4% |
+| Writer 中文常规章 | 5452 | 4281 | -21.5% |
+| Writer 英文开篇 | 4584 | 3520 | -23.2% |
+
+Planner 中文/英文仍为 2113/2031 估算 tokens，本轮没有为了追求数字而压缩其规划合同。以上只证明提示词体积下降、确定性重复被删除、关键合同仍在；真实 prose 质量、供应商 usage、缓存命中率和整章成本必须由下一次明确成本范围的 3-5 章运行验证。
+
 ## 5. 推荐的双 API 分工
 
-当前推荐默认策略：
+下表保留 2026-07-10 双 API 实验得到的分工策略。2026-07-12 已验证单一 `openrouter / deepseek/deepseek-v4-pro` 可以贯穿 Planner、Writer、Normalizer、Auditor、Reviser 和 Settler 并完成 3 章，但代价是单章 token/耗时偏高，且结构结算仍可能漏字段。因此它证明“单模型路由可运行”，不证明“单模型路由是默认成本最优方案”。
+
+双 API 推荐策略：
 
 | Agent | 推荐模型 | 原因 |
 | --- | --- | --- |
@@ -248,14 +332,42 @@ Remove-Item .tmp-dual-api-routing\.inkos\secrets.json -Force -ErrorAction Silent
 - Studio 在 stub LLM 模式下已通过真实后端路径完成一次“创建书 -> 写一章 -> 查看 truth files”的 E2E；下一步验收应提升为“配置服务 -> 测试连接 -> 创建失败/成功反馈 -> 写一章 -> 查看 truth files”的完整前端诊断链路。
 - `pnpm typecheck` 与 `pnpm test` 全通过。
 
-## 8. 2026-07-11 复核后的使用方式
+新增 2026-07-12 完成条件：
+
+- [Core 已完成] 完整写作与独立审计对同一正文返回一致的 blocking issues；入口级 Studio/CLI/Chat E2E 与 gate 来源展示待补。
+- [Core 已完成] Settler 连续两次漏 state/hook 时，resync 会改由 Chapter Analyzer 重建；Analyzer 仍不完整时返回单一可执行错误并恢复原快照。
+- [Core 已完成] 新派生 hook 使用 `Dnnn` 短稳定 ID，中英文类型/status 在输入边界规范化，旧书长 ID 继续兼容。
+- [已完成] Studio 可取消 write/draft/rewrite/repair/resync，且中断后不复用 fallback plan；浏览器和隔离 E2E 已覆盖取消、重启与状态修复。
+- [确定性已完成] Prompt Assembly Trace、per-source 统计、三层上下文、确定性去重、职责清理和固定语料 A/B 门禁已通过；真实 3-5 章质量与账单成本仍待验收。
+- 真实 3000 字章节的 agent/phase token 成本进入报告，并建立可接受预算。
+
+## 8. 2026-07-12 复核后的使用方式
 
 本文第 7 节仍可作为“真实多章 LLM 质量”的专项完成定义，但不再代表整个项目的下一版本完成定义。
 
 当前开发顺序调整为：
 
 1. 可靠性 P0 已关闭：core command 迁移、sub-agent auditor、revise mode、受控文件 Chat edit、recovery preflight、配置锁与 workflow crash journal 均已完成。
-2. 当前第一优先级是本文的真实多章报告：补 service/model、token、重试、fallback 和长度偏差统计，形成可比较的 3-5 章基线。
-3. 随后推进 per-source / 跨 agent token 预算、provider 失败样例归档和真实服务配置/诊断 E2E。
+2. 统一审计、确定性 settlement/resync、稳定 hook ID 和前端取消/恢复路径已经完成。
+3. P1.1 report v2 代码已完成：service/model、token、provider retry、结构化 fallback、repair/resync、长度偏差和质量门禁均已接入。
+4. Prompt Assembly Trace、per-source 统计、三层上下文、确定性去重、职责清理和固定语料门禁已经完成。
+5. 当前待办是一次明确成本范围的真实 3-5 章基线；使用新 trace 建立跨 agent token 预算，并归档 provider 失败和质量样例。
 
-当前确定性基线为：`pnpm typecheck`、1852 个 Vitest 测试（core 1253、Studio 392、CLI 207）、`pnpm build`、发布清单检查和生产依赖审计通过。隔离 Studio E2E 完整套件为 8/8，preparing/committed 真实进程 recovery 场景连续 5 轮共 10/10；`pnpm stress:process` 通过 8 worker、400 次竞争 mutation 和 30 轮真实强杀恢复；`pnpm release` 全绿。真实 LLM 测试必须单独报告，不得与确定性测试结果合并表述。
+当前本轮确定性基线为：Core 123 个测试文件、1314 项，Studio 33 个测试文件、402 项，CLI 36 个测试文件、207 项；根级 `pnpm release` 已完整通过，隔离 Studio E2E 为 9/9，生产依赖审计为 0。此前 preparing/committed 真实进程 recovery 连续 5 轮共 10/10、`pnpm stress:process` 的 8 worker/400 次竞争 mutation/30 轮强杀恢复结果仍有效。真实 LLM 测试必须单独报告，不得与确定性测试结果合并表述。
+
+### 8.1 P1.1 report v2 实现记录（2026-07-12）
+
+- Core 新增统一 telemetry summary，汇总 calls、attempts、retries、duration、status 和 usage，并按三种维度分组。
+- Provider 每次最终遥测都带 `attemptCount` / `retryCount`；stub 模式也遵守同一合同，因此离线测试可验证报告结构。
+- Pipeline 新增结构化 diagnostics，覆盖 Planner parse retry/fallback、Canon heuristic fallback 和 Resync Chapter Analyzer fallback。
+- 每章报告写入目标/最终长度、偏差百分比、soft/hard range、Normalizer、warning 数量；总报告计算 hard-range rate 和平均绝对偏差。
+- `state-degraded` 恢复会记录 repair/resync 每次尝试的状态前后、耗时、遥测、诊断与异常。
+- 已用 dummy credentials + stub LLM 完成一次单章脚本验收，确认 report v2、双服务模型分组、质量门禁和测试密钥清理；这不是现实模型质量或 token 成本证据。
+
+### 8.2 P1.2 提示词与上下文治理实现记录（2026-07-12）
+
+- Prompt Assembly Trace 与 `byPromptSource` 汇总已接入，ChapterTrace 写入 per-source 统计和三层 token 预算。
+- Writer/Composer 的可确定重复已删除，结构化 current-state facts 优先于完整 Markdown 状态卡。
+- Context compiler 分别接收 verbatim、semantic、compressible entries；编译产物统一为 `runtime/compiled-context`。
+- Planner/Writer/Auditor 合同已收口，旧“7 段 memo”措辞从运行提示词和相关代码说明中移除。
+- 固定语料门禁已覆盖成本、职责和关键质量合同；真实 3-5 章验证仍是独立完成条件，不得由 stub 证据替代。

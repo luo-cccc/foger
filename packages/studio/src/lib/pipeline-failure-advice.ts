@@ -1,4 +1,4 @@
-export type PipelineFailureStage = "write" | "draft" | "rewrite" | "revise" | "audit";
+export type PipelineFailureStage = "write" | "draft" | "rewrite" | "revise" | "audit" | "repair-state" | "resync";
 
 export type PipelineFailureAction = "retry" | "repair-state" | "open-services" | "open-doctor";
 

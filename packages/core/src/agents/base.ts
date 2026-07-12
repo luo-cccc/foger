@@ -1,6 +1,14 @@
-import type { LLMClient, LLMMessage, LLMResponse, OnStreamProgress, OnCallTelemetry } from "../llm/provider.js";
+import type {
+  LLMClient,
+  LLMMessage,
+  LLMResponse,
+  OnStreamProgress,
+  OnCallTelemetry,
+  LLMPromptSourceInput,
+} from "../llm/provider.js";
 import { chatCompletion } from "../llm/provider.js";
 import type { Logger } from "../utils/logger.js";
+import type { OnPipelineDiagnostic, PipelineDiagnostic } from "../pipeline/diagnostics.js";
 
 export interface AgentContext {
   readonly client: LLMClient;
@@ -11,8 +19,12 @@ export interface AgentContext {
   readonly onStreamProgress?: OnStreamProgress;
   /** P0: telemetry callback for all LLM calls made by this agent. */
   readonly onCallTelemetry?: OnCallTelemetry;
+  /** Structured pipeline retries and fallback paths for reports and diagnostics. */
+  readonly onPipelineDiagnostic?: OnPipelineDiagnostic;
   /** P0: per-call LLM timeout in milliseconds. */
   readonly defaultTimeoutMs?: number;
+  /** Cooperative cancellation for the active pipeline operation. */
+  readonly signal?: AbortSignal;
 }
 
 export abstract class BaseAgent {
@@ -33,6 +45,7 @@ export abstract class BaseAgent {
       readonly maxTokens?: number;
       /** P0: phase label for telemetry (e.g. "write", "settle", "audit", "plan"). */
       readonly callPhase?: string;
+      readonly promptSources?: ReadonlyArray<LLMPromptSourceInput>;
     },
   ): Promise<LLMResponse> {
     return chatCompletion(this.ctx.client, this.ctx.model, messages, {
@@ -42,11 +55,24 @@ export abstract class BaseAgent {
       onStreamProgress: this.ctx.onStreamProgress,
       onCallTelemetry: this.ctx.onCallTelemetry,
       timeoutMs: this.ctx.defaultTimeoutMs,
+      signal: this.ctx.signal,
+      promptSources: options?.promptSources,
     });
   }
 
   protected async withPromptPackGuidance(basePrompt: string, promptId: string): Promise<string> {
     return basePrompt;
+  }
+
+  protected emitDiagnostic(
+    diagnostic: Omit<PipelineDiagnostic, "agent" | "bookId" | "timestamp">,
+  ): void {
+    this.ctx.onPipelineDiagnostic?.({
+      ...diagnostic,
+      agent: this.name,
+      ...(this.ctx.bookId ? { bookId: this.ctx.bookId } : {}),
+      timestamp: new Date().toISOString(),
+    });
   }
 
   /**

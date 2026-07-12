@@ -12,7 +12,7 @@
 
 ## 测试与实验记录
 
-- [真实 LLM 测试方法与阶段记录](live-llm-testing-and-next-goals.md)：真实 provider、双 API 路由、多章连载和状态健康检查。该文档中的历史 P0/P1 记录不覆盖当前开发优先级。
+- [真实 LLM 测试方法与阶段记录](live-llm-testing-and-next-goals.md)：真实 provider、双 API 路由、多章连载、Studio 前后端复测和状态健康检查。该文档中的历史 P0/P1 记录不覆盖当前开发优先级。
 
 ## 文档维护规则
 

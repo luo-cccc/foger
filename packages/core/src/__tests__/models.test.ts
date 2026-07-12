@@ -736,6 +736,7 @@ describe("ChapterTraceSchema", () => {
 
     expect(result.plannerInputs).toContain("story/author_intent.md");
     expect(result.notes).toHaveLength(1);
+    expect(result.sourceStats).toEqual([]);
   });
 
   it("defaults notes to empty", () => {

@@ -95,13 +95,27 @@ export function buildGovernedTrace(params: {
   readonly compression?: ChapterTrace["compression"];
 }): ChapterTrace {
   const protectedEntries = params.contextPackage.selectedContext.filter((entry) =>
-    isProtectedContextSource(entry.source),
+    getContextSourceTier(entry.source) === "verbatim",
+  );
+  const semanticEntries = params.contextPackage.selectedContext.filter((entry) =>
+    getContextSourceTier(entry.source) === "semantic",
   );
   const compressibleEntries = params.contextPackage.selectedContext.filter((entry) =>
-    !isProtectedContextSource(entry.source),
+    getContextSourceTier(entry.source) === "compressible",
   );
   const protectedTokens = sumContextTokens(protectedEntries);
+  const semanticTokens = sumContextTokens(semanticEntries);
   const compressibleTokens = sumContextTokens(compressibleEntries);
+  const sourceStats = params.contextPackage.selectedContext.map((entry) => {
+    const content = [entry.reason, entry.excerpt].filter(Boolean).join("\n");
+    return {
+      source: entry.source,
+      tier: getContextSourceTier(entry.source),
+      chars: content.length,
+      estimatedTokens: estimateTextTokens(content),
+      contentHash: fingerprintContextContent(content),
+    };
+  });
 
   return ChapterTraceSchema.parse({
     chapter: params.chapterNumber,
@@ -113,37 +127,53 @@ export function buildGovernedTrace(params: {
     contextNeeds: params.contextNeeds ?? [],
     contextTiers: {
       protectedSources: protectedEntries.map((entry) => entry.source),
+      semanticSources: semanticEntries.map((entry) => entry.source),
       compressibleSources: compressibleEntries.map((entry) => entry.source),
     },
     tokenBudget: {
       protectedTokens,
+      semanticTokens,
       compressibleTokens,
-      totalSelectedTokens: protectedTokens + compressibleTokens,
+      totalSelectedTokens: protectedTokens + semanticTokens + compressibleTokens,
     },
+    sourceStats,
     ...(params.compression ? { compression: params.compression } : {}),
     notes: params.notes ?? [],
   });
 }
 
-// Protected sources never get compressed out under context-budget pressure.
-// Governance runtime sources (chapter memo, claim brief, canon validator,
-// pre-write claim gate, current arc, volume contract/progress/gate, hook debt)
-// carry "must be honored before drafting" constraints, so they belong here.
-// MAINTENANCE: when a new `runtime/*` governance source is injected by the
-// Composer, add it here too — otherwise it can silently drop under budget
-// pressure (that is how `runtime/canon_validator` was once missed).
-export function isProtectedContextSource(source: string): boolean {
-  return source === "runtime/chapter_memo"
+function fingerprintContextContent(content: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < content.length; index += 1) {
+    hash ^= content.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+export type ContextSourceTier = "verbatim" | "semantic" | "compressible";
+
+/**
+ * Verbatim sources survive byte-for-byte. Semantic sources may be compiled,
+ * but their facts, ids, prohibitions, and precedence must survive. Everything
+ * else is best-effort context that may be summarized or omitted by relevance.
+ */
+export function getContextSourceTier(source: string): ContextSourceTier {
+  if (source === "runtime/chapter_memo"
     || source === "runtime/chapter_claim_brief"
     || source === "runtime/canon_validator"
     || source === "runtime/pre_write_claim_gate"
-    || source === "runtime/current_arc"
-    || source === "runtime/volume_contract"
-    || source === "runtime/volume_progress"
     || source === "runtime/volume_gate"
     || source === "story/current_focus.md"
     || source === "story/author_intent.md"
     || source === "story/audit_drift.md"
+    || source.startsWith("runtime/hook_debt#")) {
+    return "verbatim";
+  }
+  if (source === "runtime/current_arc"
+    || source === "runtime/volume_contract"
+    || source === "runtime/volume_progress"
+    || source === "runtime/compiled-context"
     || source === "story/outline/story_frame.md"
     || source.startsWith("story/outline/story_frame.md#")
     || source === "story/story_bible.md"
@@ -152,8 +182,14 @@ export function isProtectedContextSource(source: string): boolean {
     || source === "story/volume_outline.md"
     || source === "story/parent_canon.md"
     || source.startsWith("story/current_state.md")
-    || source.startsWith("story/pending_hooks.md#")
-    || source.startsWith("runtime/hook_debt#");
+    || source.startsWith("story/pending_hooks.md#")) {
+    return "semantic";
+  }
+  return "compressible";
+}
+
+export function isProtectedContextSource(source: string): boolean {
+  return getContextSourceTier(source) === "verbatim";
 }
 
 function sumContextTokens(entries: ReadonlyArray<ContextPackage["selectedContext"][number]>): number {

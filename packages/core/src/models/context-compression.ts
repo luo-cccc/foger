@@ -6,6 +6,7 @@ export interface ContextCompressionEvent {
   readonly phase: ContextCompressionPhase;
   readonly message?: string;
   readonly protectedTokens?: number;
+  readonly semanticTokens?: number;
   readonly compressibleTokens?: number;
   readonly budgetTokens?: number;
   readonly sources?: readonly string[];

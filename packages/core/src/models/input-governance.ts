@@ -104,25 +104,38 @@ export const ChapterTraceSchema = z.object({
   contextNeeds: z.array(z.string()).default([]),
   contextTiers: z.object({
     protectedSources: z.array(z.string()).default([]),
+    semanticSources: z.array(z.string()).default([]),
     compressibleSources: z.array(z.string()).default([]),
   }).default({
     protectedSources: [],
+    semanticSources: [],
     compressibleSources: [],
   }),
   tokenBudget: z.object({
     protectedTokens: z.number().int().nonnegative().default(0),
+    semanticTokens: z.number().int().nonnegative().default(0),
     compressibleTokens: z.number().int().nonnegative().default(0),
     totalSelectedTokens: z.number().int().nonnegative().default(0),
   }).default({
     protectedTokens: 0,
+    semanticTokens: 0,
     compressibleTokens: 0,
     totalSelectedTokens: 0,
   }),
+  sourceStats: z.array(z.object({
+    source: z.string().min(1),
+    tier: z.enum(["verbatim", "semantic", "compressible"]),
+    chars: z.number().int().nonnegative(),
+    estimatedTokens: z.number().int().nonnegative(),
+    contentHash: z.string().min(1),
+  })).default([]),
   compression: z.object({
     compiledSource: z.string().min(1),
     protectedSources: z.array(z.string()).default([]),
+    semanticSources: z.array(z.string()).default([]),
     compressedSources: z.array(z.string()).default([]),
     protectedTokens: z.number().int().nonnegative().default(0),
+    semanticTokens: z.number().int().nonnegative().default(0),
     compressibleTokens: z.number().int().nonnegative().default(0),
     budgetTokens: z.number().int().nonnegative().default(0),
   }).optional(),

@@ -3,7 +3,6 @@ import type { GenreProfile } from "../models/genre-profile.js";
 import type { BookRules } from "../models/book-rules.js";
 import type { LengthSpec } from "../models/length-governance.js";
 import { buildEnglishCoreRules, buildEnglishAntiAIRules, buildEnglishCharacterMethod, buildEnglishPreWriteChecklist, buildEnglishGenreIntro } from "./en-prompt-sections.js";
-import { buildLengthSpec } from "../utils/length-metrics.js";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -21,19 +20,18 @@ export function buildWriterSystemPrompt(
   mode: "full" | "creative" = "full",
   languageOverride?: "zh" | "en",
   inputProfile: "legacy" | "governed" = "legacy",
-  lengthSpec?: LengthSpec,
+  _lengthSpec?: LengthSpec,
 ): string {
   const isEnglish = (languageOverride ?? genreProfile.language) === "en";
   const governed = inputProfile === "governed";
-  const resolvedLengthSpec = lengthSpec ?? buildLengthSpec(book.chapterWordCount, isEnglish ? "en" : "zh");
 
   const outputSection = isEnglish
     ? (mode === "creative"
-        ? buildEnglishCreativeOutputFormat(book, genreProfile, resolvedLengthSpec)
-        : buildEnglishOutputFormat(book, genreProfile, resolvedLengthSpec))
+        ? buildEnglishCreativeOutputFormat(genreProfile)
+        : buildEnglishOutputFormat(genreProfile))
     : (mode === "creative"
-        ? buildCreativeOutputFormat(book, genreProfile, resolvedLengthSpec)
-        : buildOutputFormat(book, genreProfile, resolvedLengthSpec));
+        ? buildCreativeOutputFormat(genreProfile)
+        : buildOutputFormat(genreProfile));
 
   const sections = isEnglish
     ? [
@@ -41,7 +39,6 @@ export function buildWriterSystemPrompt(
         buildEnglishCoreRules(book),
         buildGovernedInputContract("en", governed),
         buildChapterMemoContract("en", governed),
-        buildLengthGuidance(resolvedLengthSpec, "en"),
         buildWritingCraftCard("en"),
         buildProseExecutionRules("en"),
         buildCreativeConstitution("en"),
@@ -58,16 +55,14 @@ export function buildWriterSystemPrompt(
       ]
     : [
         buildGenreIntro(book, genreProfile),
-        buildCoreRules(resolvedLengthSpec),
+        buildCoreRules(),
         buildGovernedInputContract("zh", governed),
         buildChapterMemoContract("zh", governed),
-        buildLengthGuidance(resolvedLengthSpec, "zh"),
         buildWritingCraftCard("zh"),
         buildProseExecutionRules("zh"),
         buildCreativeConstitution("zh"),
         buildImmersionPillars("zh"),
         buildGoldenOpeningDiscipline(chapterNumber, "zh"),
-        buildGoldenChaptersRules(chapterNumber, isEnglish ? "en" : "zh"),
         bookRules?.enableFullCastTracking ? buildFullCastTracking() : "",
         buildGenreRules(genreProfile, genreBody),
         buildProtagonistRules(bookRules),
@@ -121,7 +116,7 @@ function buildGovernedInputContract(language: "zh" | "en", governed: boolean): s
 }
 
 // ---------------------------------------------------------------------------
-// Chapter memo alignment — 7 sections from mobile web-fiction craft methodology
+// Chapter memo alignment — Planner owns decisions; Writer owns prose execution.
 // ---------------------------------------------------------------------------
 
 function buildChapterMemoContract(language: "zh" | "en", governed: boolean): string {
@@ -130,63 +125,44 @@ function buildChapterMemoContract(language: "zh" | "en", governed: boolean): str
   if (language === "en") {
     return `## Chapter Memo Alignment
 
-You will receive a chapter_memo composed of 7 markdown sections:
+You will receive a structured chapter memo. The planner owns plot decisions; your job is to execute them as prose:
 
-- ## 当前任务 → the concrete action this chapter must complete; stay aligned with it throughout
-- ## 读者此刻在等什么 → controls how emotional gaps are created / delayed / paid off
-- ## 该兑现的 / 暂不掀的 → payoffs that must land this chapter + cards you must NOT reveal
-- ## 日常/过渡承担什么任务 → function map for non-conflict passages ([passage location] → [function])
-- ## 关键抉择过三连问 → three-question check every key character choice must pass
-- ## 章尾必须发生的改变 → 1-3 concrete changes the ending must deliver (info / relation / physical / power)
-- ## 本章 hook 账 → **hard correspondence rule**: each hook_id listed under advance/resolve MUST have a **concretely locatable payoff scene** in the prose — explicit characters acting on or talking about a specific object/event/piece of information, with observable actions. No "sideways hints" or "deferred to next chapter". Example: if the memo says 'advance: H007 Huzi's IOU → planted → pressured', the prose must contain a scene where Lin Qiu actually touches / sees / picks up that specific IOU and does something. An inner mention like "he remembered the IOU was still in the drawer" does NOT count. Each advance/resolve payoff scene must be at least 60 chars. Entries under defer need no prose. Entries under open only need a natural new-hook seed near the chapter end
-- ## 不要做 → hard prohibitions for this chapter
+- Current task: complete the named concrete action.
+- Reader expectation and payoff boundary: land only the promised degree of reveal; keep buried items hidden.
+- Transitional function and key choices: dramatize them instead of explaining the plan.
+- Required end change: make the specified information, relationship, physical, or power change visible.
+- Hook ledger: each advance/resolve id needs one locatable scene with an observable action, object, event, or exchange. Deferred entries need no prose; new entries only need a natural seed.
+- Volume KR binding: realize the specified movement on page without mentioning KR ids in prose.
+- Do not: obey every chapter prohibition.
 
 Address each section in order when drafting the chapter. Every section must leave a visible trace in the prose — if a section is not reflected, the chapter is incomplete. **After the first draft, self-check the hook ledger**: list each hook_id from advance/resolve and point each one to a specific prose span containing action / object / dialogue. If you cannot point to one, go back and add it; do not submit a draft where the ledger lives in the memo but nowhere in the prose — review will flag the missing payoff and ask for a concrete scene.`;
   }
 
   return `## 章节备忘对齐
 
-你将收到本章的 chapter_memo，由 7 段 markdown 组成：
+你将收到结构化 chapter memo。Planner 负责决定“本章发生什么”，你只负责把决策执行成正文：
 
-- ## 当前任务 → 本章必须完成的具体动作，写作时始终对齐这条
-- ## 读者此刻在等什么 → 控制情绪缺口的制造/延迟/兑现程度
-- ## 该兑现的 / 暂不掀的 → 本章必须兑现的伏笔清单 + 必须压住不掀的底牌
-- ## 日常/过渡承担什么任务 → 非冲突段落的功能映射（[段落位置] → [承担功能]）
-- ## 关键抉择过三连问 → 关键人物选择必须过的检查
-- ## 章尾必须发生的改变 → 结尾落地的 1-3 条具体改变（信息/关系/物理/权力）
-- ## 本章 hook 账 → **硬对应规则**：advance/resolve 下面列出的每一个 hook_id 都必须在正文里有一个**具体可定位的兑现段**——写明人物对着什么物件/事件/信息做出什么可观察的动作或交谈。不允许"侧面暗示""留给下章"。举例：memo 写 'advance: H007 胖虎借条 → planted → pressured'，正文里必须出现一段林秋真的伸手摸到/看到/拿起那张胖虎借条并做出动作的场景；不能只写"他想起借条还在抽屉里"这种内心提及。每个 advance/resolve 的 hook 兑现段至少 60 字。defer 下的不用落，open 段只需要在章末附近安排一个自然引出的新悬念即可
-- ## 不要做 → 硬约束红线
+- 当前任务：完成 memo 指定的具体动作。
+- 读者期待与兑现边界：只揭示计划允许的程度，明确压住暂不掀的底牌。
+- 过渡功能与关键选择：用场景演出，不复述规划说明。
+- 章尾改变：让指定的信息、关系、物理或权力变化在正文中可见。
+- Hook 账：每个 advance/resolve id 都要对应一个可定位场景，包含人物针对具体动作、物件、事件或信息的可观察反应；defer 不必落正文，open 只需自然种下。
+- 卷级 KR：写出计划指定的可见推进，但正文不得出现 KR 编号。
+- 不要做：逐条遵守本章禁令。
 
 写作时按段落顺序落实，每一段都要在正文里有对应的兑现痕迹。如果某一段没有体现到正文里，本章不算完成。**写完初稿后自检一遍 hook 账**：把 advance 和 resolve 的 hook_id 列下来，对照正文，确认每一个都能指到一段带具体动作/物件/对话的 prose。如果指不到，回去补写；不要提交"账本在 memo 里、正文里没落"的稿子——审稿会标记缺口并要求补出具体场景。`;
-}
-
-function buildLengthGuidance(lengthSpec: LengthSpec, language: "zh" | "en"): string {
-  if (language === "en") {
-    return `## Length Guidance
-
-- Target length: ${lengthSpec.target} words
-- Acceptable range: ${lengthSpec.softMin}-${lengthSpec.softMax} words
-- Hard range: ${lengthSpec.hardMin}-${lengthSpec.hardMax} words`;
-  }
-
-  return `## 字数治理
-
-- 目标字数：${lengthSpec.target}字
-- 允许区间：${lengthSpec.softMin}-${lengthSpec.softMax}字
-- 硬区间：${lengthSpec.hardMin}-${lengthSpec.hardMax}字`;
 }
 
 // ---------------------------------------------------------------------------
 // Core rules (~25 universal rules)
 // ---------------------------------------------------------------------------
 
-function buildCoreRules(lengthSpec: LengthSpec): string {
+function buildCoreRules(): string {
   return `## 核心规则
 
 1. 以简体中文工作，句子长短交替，段落适合手机阅读（3-5行/段）
-2. 目标字数：${lengthSpec.target}字，允许区间：${lengthSpec.softMin}-${lengthSpec.softMax}字
-3. 伏笔前后呼应，不留悬空线；所有埋下的伏笔都必须在后续收回
-4. 只读必要上下文，不机械重复已有内容
+2. 伏笔前后呼应，不留悬空线；只执行 memo 的 hook 账，不为追求密度随意开新坑
+3. 只读必要上下文，不机械重复已有内容
 
 ## 人物塑造铁律
 
@@ -206,35 +182,16 @@ function buildCoreRules(lengthSpec: LengthSpec): string {
 - 描写必须服务叙事：环境描写烘托氛围或暗示情节，一笔带过即可；禁止无效描写
 - 日常/过渡段落必须为后续剧情服务：或埋伏笔，或推进关系，或建立反差。纯填充式日常是流水账的温床
 
-## 看点密集度（硬尺）
+## 正文执行节奏
 
-本章正文从头到尾必须满足以下节奏，写完后自检：
-
-- **每 300 字至少 1 个爽点**：小看点、有趣的梗、炸裂的小情节、反套路小动作、暧昧台词、情绪拉扯都算
-- **每 500 字至少 1 个钩子**：引发读者"接下来怎样"的小悬念；不要求揭开，要求抛出
-- **每 1000-1500 字至少 1 个完整悬念**：一组"问题—蓄力—未解"的结构，给读者追下去的理由
-- 不靠密度堆砌糊弄——单章里的爽点/钩子/悬念必须服务于本章 goal，不能是和主线无关的孤立段落
-- 如果某段连续 300 字以上是环境、回忆、议论、心理独白而没有推进主线或制造看点，就是水文，必须删或改
-- **密度是靠段落内的语义密度实现，不是靠把段落切碎**：
-  - 叙事段（非对话）**必须 ≥ 40 字**——差不多是手机屏 2 行，低于这个数就是"一句动作 / 一句观察 / 一句反应各自一段"，直接违反移动端阅读节奏准则
-  - 目标长度：叙事段 40-120 字（3-5 行手机屏），允许偶尔到 150 字讲一段连贯动作链
-  - 对话段落不算入"短段"——它天然短，无需并段
-  - **短段（<40 字）只在三个场景允许独立成段**：(1) 开场前 300 字里的反转金句（如"她突然跪下"），(2) 章末钩子最后一句（action-climax 定格），(3) 单章 ≤ 3 个"爆点短段"（一击命中、改变局势的关键台词、定格镜头）
-  - 三个场景合计一章最多 5 个短段，超过就是在"堆砌电报体"
-  - **连续短段硬规则**：不允许 3 个及以上短段（<40 字）并列连排。即使是上面三种合法场景里的短段，也不能连着甩。碰到"短段 → 短段"已经到极限，第 3 段必须是 ≥ 60 字的叙事段把动作 / 情绪 / 细节合回来，把读者呼吸节奏放回来。3 连短段 = reviewer 直接判"连续短段"警告
-  - 审核硬阈值：narrative 段里 60% 以上 <40 字 → 段落过碎 / 连续 3+ 短段并排 → 连续短段。触发即返工
-  - 正反例：
-    - ✗ "他转身。/ 看向门外。/ 门开了一条缝。/ 赵无尘站在光里。"（4 段全 <15 字，4 连短段）
-    - ✓ "他转身看向门外。门开了一条缝，赵无尘站在光里，手里还端着一碗凉透的茶。"（两段合并成 1 段 60 字，动作 + 观察 + 细节完整）
-    - ✗ "他一愣。/ 手停了。/ 嘴唇发白。"（3 连心理反应各自一段）
-    - ✓ "他一愣，手停了，嘴唇发白。"（并段为 1 句节奏紧凑的叙事）
+- 每个场景都必须推进本章 goal、关系、证据或风险，避免纯说明和纯填充
+- 密度来自动作、信息和选择，不来自额外制造与 memo 无关的新 hook
+- 长短段交替；不要连续堆叠三个以上只有一句动作或反应的短段。具体阈值由写后校验器判断
 
 ## 章节 80/20 断章（硬尺）
 
-- **永远不要在一章里把本章故事讲完**：本章的主剧情写到 80%，剩下 20% 留给下一章开头消化/揭示/后果
-- 章末必须断在 action-climax 的那一刻：主角刚放大招尚未见效 / 刚拔刀尚未落下 / 刚塞出银行卡尚未转身——不给结果，让读者到下一章才看到
-- 章节结构优先于字数：宁可超出目标字数几百字去完成一个完整的小高潮+断章，也不要为了卡字数切断节奏
-- 不要为了"凑 2000 字"硬加无关对话/描写；也不要为了"不超 2000 字"提前把高潮讲完
+- 按 memo 指定的章尾改变和 hook 收束，不擅自把已计划兑现的结果拖到下一章
+- 在允许字数区间内完成场景；先压缩过渡和解释，不用填充凑字数，也不要突破 hard range 保留冗余段落
 
 ## 逻辑自洽
 
@@ -524,100 +481,12 @@ export function buildGoldenOpeningDiscipline(
   if (language === "en") {
     return `## Golden Opening Discipline — Chapter ${chapterNumber}
 
-This is chapter ${chapterNumber} of the opening three — your prose directly decides whether the reader stays. The Golden Three Chapters rule is a hard constraint on your sentences, not advice. Chapter 1: within the first 800 words the protagonist must trip the main-line conflict (chase, dead-end, dispossession, transmigration-as-crisis); long background paragraphs are forbidden, and worldbuilding rides on the protagonist's actions instead of being explained in a block. **The last sentence of the first 300 words (the reader's first phone screen) must land a dramatic / reversal / striking beat — "Officer, I transmigrated"-level, "I'll probably die tomorrow"-level, "I'm attending my own funeral"-level — not background or scene-setting. When the reader scrolls to the bottom of the first screen they must feel pulled into the next line.** Chapter 2: the edge — power, system, rebirth-memory, information advantage — must be **performed** (one concrete event of using it, with a visible consequence), not **announced** (a narrator paragraph saying it exists). Chapter 3: somewhere in this chapter the protagonist's next quantifiable short-term goal must surface, so the reader can name what comes next when they close the page.
-
-The discipline that runs across all three opening chapters: paragraphs of three to five lines (mobile reading), verbs over adjectives, and every chapter ends on a small hook — a cliff, an unresolved question, or an emotional gap. **At most two scenes and at most two named characters who actually clash in the chapter (protagonist + one trigger/opponent; walk-on roles get a role label only, no name, no expansion). Editor Cong Yue's rule tightens the cap from 3 to 2 — readers already mix up 3.** Information is layered into action: basic facts (looks, status, situation) emerge from what the protagonist does; key world rules (system mechanics, the deeper logic) attach to plot triggers; a paragraph of pure exposition is forbidden.`;
+The planner memo already decides the chapter's opening-three plot obligation. Execute it without restating it: reach a dramatic or reversal beat by the end of the first phone screen, keep the chapter to at most two focused scenes and two named characters in direct conflict, reveal information through action, and end on the memo's required hook or change. Do not add background preambles or extra subplots.`;
   }
 
   return `## 黄金三章写作纪律 — 第 ${chapterNumber} 章
 
-这是开篇三章中的第 ${chapterNumber} 章——你写出的每一句话都直接决定读者是否留下来。黄金三章法则对你不是建议，是对句子的硬约束。第 1 章：主角出场 800 字以内必须触发主线冲突（追杀、死局、被夺权、穿越即危机），禁止长段背景铺垫，世界观要通过主角的行动自然带出，不要整段解释。**第 1 章正文前 300 字（手机屏第一页）的最后一句必须是带戏剧性/反差/反转的收尾——警察叔叔我穿越了这类、我大概明天就要死了这类、我躺在自己的葬礼上这类——而不是介绍背景或交代环境。读者第一屏刷到页尾时必须产生"下一句是什么"的拉力。** 第 2 章：金手指/能力/系统/重生记忆/信息差必须"做出来"——一次具体使用的事件、一个看得见的后果——而不是"说出来"——旁白介绍它存在。第 3 章：本章中段必须让主角下一个可量化的短期目标浮上水面，读者合上页面要能说出"接下来他要干什么"。
-
-贯穿开篇三章的纪律：段落 3-5 行（手机阅读节奏），动词压过形容词，每一章结尾必有小钩子——小悬念、未解之问、情绪缺口。**本章场景 ≤ 2 个、有名有姓参与正面冲突的人物 ≤ 2 个（主角 + 1 个触发者或对手；路人甲乙只报身份不给名字，不展开）。开篇人物上限从 3 收紧到 2：3 个已经够读者记混，2 个最稳。** 信息分层植入到动作里：基础信息（外貌、身份、处境）通过主角行动自然带出；关键设定（系统规则、世界底层）结合剧情节点揭示；禁止整段 exposition。`;
-}
-
-// ---------------------------------------------------------------------------
-// 黄金开篇（中文3章/英文5章）
-// ---------------------------------------------------------------------------
-
-function buildGoldenChaptersRules(chapterNumber?: number, language?: string): string {
-  const isEnglish = language === "en";
-  const goldenLimit = isEnglish ? 5 : 3;
-  if (chapterNumber === undefined || chapterNumber > goldenLimit) return "";
-
-  const zhRules: Record<number, string> = {
-    1: `### 第一章：抛出核心冲突
-- 开篇直接进入冲突场景，禁止用背景介绍/世界观设定开头
-- 第一段必须有动作或对话，让读者"看到"画面
-- **手机屏第一页（正文约前 300 字）的最后一句必须是戏剧性反转/反差句**，不是铺垫——警察叔叔我穿越了、我大概明天就要死了、我躺在自己的葬礼上、妻子和婆婆同时掉水里了，类似这种一句话的钩子
-- **开篇场景限制：最多 1-2 个场景，有名有姓参与正面冲突的人物上限 2 个（主角 + 1 个触发者/对手）**；路人甲乙只给身份标签（"穿红衣的女人""跛脚老头"）不给名字
-- 主角身份/外貌/背景通过行动自然带出，禁止资料卡式罗列
-- 本章结束前，核心矛盾必须浮出水面
-- 一句对话能交代的信息不要用一段叙述，角色身份、性格、地位都可以从一句有特色的台词中带出`,
-    2: `### 第二章：展现金手指/核心能力
-- 主角的核心优势（金手指/特殊能力/信息差等）必须在本章初现
-- 金手指的展现必须通过具体事件，不能只是内心独白"我获得了XX"
-- 开始建立"主角有什么不同"的读者认知
-- 第一个小爽点应在本章出现
-- 继续收紧核心冲突，不引入新支线`,
-    3: `### 第三章：明确短期目标
-- 主角的第一个阶段性目标必须在本章确立
-- 目标必须具体可衡量（打败某人/获得某物/到达某处），不能是抽象的"变强"
-- 读完本章，读者应能说出"接下来主角要干什么"
-- 章尾钩子要足够强，这是读者决定是否继续追读的关键章`,
-  };
-
-  const enRules: Record<number, string> = {
-    1: `### Chapter 1: Drop into conflict
-- Open with action or dialogue — no worldbuilding preamble
-- First paragraph must show a scene, not tell backstory
-- **The last sentence of the first 300 words (first phone screen) must be a dramatic reversal / striking beat** — "Officer, I transmigrated"-level, "I'll probably die tomorrow"-level — not scene-setting
-- **Max 1-2 locations; max 2 named characters who actually clash in the chapter (protagonist + one trigger/opponent)**. Walk-ons get a role tag ("the woman in red", "the limping old man"), no name
-- Protagonist identity revealed through behavior, not info-dump
-- Core conflict must surface before chapter end`,
-    2: `### Chapter 2: Reveal the edge
-- The protagonist's unique advantage (power/secret/skill) must appear
-- Show it through a concrete event, not internal monologue ("I gained X")
-- First small payoff/satisfaction beat should land here
-- Tighten the core conflict, don't open new subplots`,
-    3: `### Chapter 3: Lock in the short-term goal
-- A specific, measurable goal must be established (defeat someone / obtain something / reach somewhere)
-- Reader must be able to say "I know what the protagonist wants next"
-- End with a strong hook — this is the make-or-break chapter for retention`,
-    4: `### Chapter 4: First major payoff
-- Deliver the first BIG satisfaction beat — reader has invested 3 chapters, reward them
-- Protagonist uses their edge to achieve something meaningful (not just survive)
-- Raise the emotional stakes: what the protagonist stands to LOSE becomes clear
-- Introduce or deepen a relationship that matters (ally, rival, love interest)`,
-    5: `### Chapter 5: Raise the stakes before paywall
-- New threat or complication that makes the goal harder (new antagonist, betrayal, revelation)
-- The world expands: reader sees there's a bigger game beyond the initial conflict
-- End on the strongest cliffhanger yet — reader hits paywall after this chapter
-- They must feel "I CANNOT stop here" — this is the conversion chapter`,
-  };
-
-  const rules = isEnglish ? enRules : zhRules;
-  const header = isEnglish
-    ? `## Golden ${goldenLimit} Chapters — Chapter ${chapterNumber}
-
-The opening ${goldenLimit} chapters determine whether readers stay or leave. Before the paywall (ch6-8), every chapter must hook harder than the last.
-
-- Start from an explosion, not the first brick
-- No info-dumps: worldbuilding reveals through action
-- Each chapter: 1 storyline; **ch1-ch2 keep named characters in conflict ≤ 2** (protagonist + one), ch3+ relax to ≤ 3
-- Lead with strong emotion: injustice, danger, mystery, desire`
-    : `## 黄金${goldenLimit}章特殊指令（当前第${chapterNumber}章）
-
-开篇${goldenLimit}章决定读者是否追读。遵循以下强制规则：
-
-- 开篇不要从第一块砖头开始砌楼——从炸了一栋楼开始写
-- 禁止信息轰炸：世界观、力量体系等设定随剧情自然揭示
-- 每章聚焦 1 条故事线；**第 1-2 章有名有姓参与正面冲突的人物 ≤ 2 个（主角 + 1 个触发者/对手），第 3 章起可放宽到 ≤ 3 个**
-- 强情绪优先：利用读者共情（亲情纽带、不公待遇、被低估）快速建立代入感`;
-
-  return `${header}
-
-${rules[chapterNumber] ?? ""}`;
+Planner memo 已经决定本章在黄金三章中的剧情任务。不要复述方法论，只执行它：手机第一页结束前出现戏剧性、反差或反转节点；全章最多两个聚焦场景、两个参与正面冲突的有名角色；信息通过动作带出；结尾落实 memo 指定的 hook 或改变。不要追加背景序言和额外支线。`;
 }
 
 // ---------------------------------------------------------------------------
@@ -800,27 +669,19 @@ function buildPreWriteChecklist(book: BookConfig, gp: GenreProfile): string {
 // Creative-only output format (no settlement blocks)
 // ---------------------------------------------------------------------------
 
-function buildCreativeOutputFormat(book: BookConfig, gp: GenreProfile, lengthSpec: LengthSpec): string {
+function buildCreativeOutputFormat(gp: GenreProfile): string {
   const resourceRow = gp.numericalSystem
     ? "| 当前资源总量 | X | 与账本一致 |\n| 本章预计增量 | +X（来源） | 无增量写+0 |"
     : "";
 
   const preWriteTable = `=== PRE_WRITE_CHECK ===
-（必须输出Markdown表格，全部检查项对齐 chapter_memo 七段，而不是卷纲）
+（简短输出，只确认正文执行所需的四项）
 | 检查项 | 本章记录 | 备注 |
 |--------|----------|------|
 | 当前任务 | 复述 chapter_memo 的「当前任务」并写出本章执行动作 | 必须具体，不能抽象 |
-| 读者在等什么 | 本章如何处理「读者此刻在等什么」—制造/延迟/兑现 | 与 memo 一致 |
-| 该兑现的 / 暂不掀的 | 本章确认要兑现的伏笔 + 必须压住不掀的底牌 | 引用 memo 原文 |
-| 日常/过渡承担任务 | 若有日常/过渡段落，说明各自承担的功能 | 对齐 memo 映射表 |
 | 章尾必须发生的改变 | 列出 memo「章尾必须发生的改变」中 1-3 条具体改变 | 必须落地 |
 | 不要做 | 复述 memo「不要做」清单 | 正文不得触碰 |
-| 上下文范围 | 第X章至第Y章 / 状态卡 / 设定文件 | |
-| 当前锚点 | 地点 / 对手 / 收益目标 | 锚点必须具体 |
-${resourceRow}| 待回收伏笔 | 用真实 hook_id 填写（无则写 none） | 与伏笔池一致 |
-| 本章冲突 | 一句话概括 | |
-| 章节类型 | ${gp.chapterTypes.join("/")} | |
-| 风险扫描 | OOC/信息越界/设定冲突${gp.powerScaling ? "/战力崩坏" : ""}/节奏/词汇疲劳 | |`;
+${resourceRow}| Hook 执行 | 列出 advance/resolve id 及对应场景，无则写 none | 不新增 memo 外 hook |`;
 
   return `## 输出格式（严格遵守）
 
@@ -830,7 +691,7 @@ ${preWriteTable}
 (章节标题，不含"第X章"。标题必须与已有章节标题不同，不要重复使用相同或相似的标题；若提供了 recent title history 或高频标题词，必须主动避开重复词根和高频意象)
 
 === CHAPTER_CONTENT ===
-(正文内容，目标${lengthSpec.target}字，允许区间${lengthSpec.softMin}-${lengthSpec.softMax}字)
+(正文内容；字数要求以 user prompt 的单一长度区块为准)
 
 【重要】本次只需输出以上三个区块（PRE_WRITE_CHECK、CHAPTER_TITLE、CHAPTER_CONTENT）。
 状态卡、伏笔池、摘要等追踪文件将由后续结算阶段处理，请勿输出。`;
@@ -840,27 +701,19 @@ ${preWriteTable}
 // Output format
 // ---------------------------------------------------------------------------
 
-function buildOutputFormat(book: BookConfig, gp: GenreProfile, lengthSpec: LengthSpec): string {
+function buildOutputFormat(gp: GenreProfile): string {
   const resourceRow = gp.numericalSystem
     ? "| 当前资源总量 | X | 与账本一致 |\n| 本章预计增量 | +X（来源） | 无增量写+0 |"
     : "";
 
   const preWriteTable = `=== PRE_WRITE_CHECK ===
-（必须输出Markdown表格，全部检查项对齐 chapter_memo 七段，而不是卷纲）
+（简短输出，只确认正文执行所需的四项）
 | 检查项 | 本章记录 | 备注 |
 |--------|----------|------|
 | 当前任务 | 复述 chapter_memo 的「当前任务」并写出本章执行动作 | 必须具体，不能抽象 |
-| 读者在等什么 | 本章如何处理「读者此刻在等什么」—制造/延迟/兑现 | 与 memo 一致 |
-| 该兑现的 / 暂不掀的 | 本章确认要兑现的伏笔 + 必须压住不掀的底牌 | 引用 memo 原文 |
-| 日常/过渡承担任务 | 若有日常/过渡段落，说明各自承担的功能 | 对齐 memo 映射表 |
 | 章尾必须发生的改变 | 列出 memo「章尾必须发生的改变」中 1-3 条具体改变 | 必须落地 |
 | 不要做 | 复述 memo「不要做」清单 | 正文不得触碰 |
-| 上下文范围 | 第X章至第Y章 / 状态卡 / 设定文件 | |
-| 当前锚点 | 地点 / 对手 / 收益目标 | 锚点必须具体 |
-${resourceRow}| 待回收伏笔 | 用真实 hook_id 填写（无则写 none） | 与伏笔池一致 |
-| 本章冲突 | 一句话概括 | |
-| 章节类型 | ${gp.chapterTypes.join("/")} | |
-| 风险扫描 | OOC/信息越界/设定冲突${gp.powerScaling ? "/战力崩坏" : ""}/节奏/词汇疲劳 | |`;
+${resourceRow}| Hook 执行 | 列出 advance/resolve id 及对应场景，无则写 none | 不新增 memo 外 hook |`;
 
   const postSettlement = gp.numericalSystem
     ? `=== POST_SETTLEMENT ===
@@ -888,7 +741,7 @@ ${preWriteTable}
 (章节标题，不含"第X章"。标题必须与已有章节标题不同，不要重复使用相同或相似的标题；若提供了 recent title history 或高频标题词，必须主动避开重复词根和高频意象)
 
 === CHAPTER_CONTENT ===
-(正文内容，目标${lengthSpec.target}字，允许区间${lengthSpec.softMin}-${lengthSpec.softMax}字)
+(正文内容；字数要求以 user prompt 的单一长度区块为准)
 
 ${postSettlement}
 
@@ -941,42 +794,34 @@ function buildEnglishPreWriteTable(gp: GenreProfile): string {
     : "";
 
   return `=== PRE_WRITE_CHECK ===
-(Output a Markdown table. Every row aligns with the seven chapter_memo sections, not the volume outline.)
+(Keep it short. Confirm only the four items needed to execute the prose.)
 | Check | This chapter | Note |
 |-------|--------------|------|
 | Current task | Restate the chapter_memo "Current task" and the concrete action this chapter takes | Be specific, not abstract |
-| What the reader is waiting for | How this chapter handles it: create / delay / pay off | Match the memo |
-| Pay off / keep hidden | Foreshadowing to pay off + cards that must stay down | Quote the memo |
-| Routine / transition duty | If any routine or transition passage exists, state each one's function | Match the memo mapping |
 | Required end-of-chapter change | 1-3 concrete changes from the memo's end-of-chapter change | Must land on the page |
 | Do not | Restate the memo "Do not" list | The prose must not touch these |
-| Context range | Ch X to Ch Y / state card / setting files | |
-| Current anchor | Location / opponent / payoff goal | Anchor must be concrete |
-${resourceRow}| Hooks to resolve | Real hook_id (write none if absent) | Match the hook pool |
-| This chapter's conflict | One line | |
-| Chapter type | ${gp.chapterTypes.join(" / ")} | |
-| Risk scan | OOC / info leak / canon conflict${gp.powerScaling ? " / power-scaling break" : ""} / pacing / word fatigue | |`;
+${resourceRow}| Hook execution | advance/resolve ids and their scene; write none if absent | Do not invent hooks outside the memo |`;
 }
 
-function buildEnglishContentBlocks(lengthSpec: LengthSpec): string {
+function buildEnglishContentBlocks(): string {
   return `=== CHAPTER_TITLE ===
 (Chapter title, without "Chapter X". It must differ from existing titles; do not reuse the same or similar titles. If recent title history or high-frequency title words are provided, avoid repeated roots and overused imagery.)
 
 === CHAPTER_CONTENT ===
-(Chapter prose. Target ${lengthSpec.target} words, acceptable range ${lengthSpec.softMin}-${lengthSpec.softMax} words.)`;
+(Chapter prose. Follow the single length block in the user prompt.)`;
 }
 
-function buildEnglishCreativeOutputFormat(_book: BookConfig, gp: GenreProfile, lengthSpec: LengthSpec): string {
+function buildEnglishCreativeOutputFormat(gp: GenreProfile): string {
   return `## Output Format (follow strictly)
 
 ${buildEnglishPreWriteTable(gp)}
 
-${buildEnglishContentBlocks(lengthSpec)}
+${buildEnglishContentBlocks()}
 
 [Important] Output only the three blocks above (PRE_WRITE_CHECK, CHAPTER_TITLE, CHAPTER_CONTENT). State cards, hook pool, and summaries are handled by the later settlement stage; do not output them.`;
 }
 
-function buildEnglishOutputFormat(_book: BookConfig, gp: GenreProfile, lengthSpec: LengthSpec): string {
+function buildEnglishOutputFormat(gp: GenreProfile): string {
   const postSettlement = gp.numericalSystem
     ? `=== POST_SETTLEMENT ===
 (If any numerical change occurred, output a Markdown table.)
@@ -999,7 +844,7 @@ function buildEnglishOutputFormat(_book: BookConfig, gp: GenreProfile, lengthSpe
 
 ${buildEnglishPreWriteTable(gp)}
 
-${buildEnglishContentBlocks(lengthSpec)}
+${buildEnglishContentBlocks()}
 
 ${postSettlement}
 

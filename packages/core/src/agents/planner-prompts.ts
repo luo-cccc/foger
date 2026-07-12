@@ -117,7 +117,7 @@ defer:
 
 // ---------------------------------------------------------------------------
 // English variants — Phase hotfix 4
-// Same 7-section structure, same placeholders, same sparse-memo legality.
+// Same chapter-memo contract, placeholders, and sparse-memo legality.
 // Used when book.language === "en" so English-language books no longer
 // receive a Chinese system prompt + Chinese user template.
 // ---------------------------------------------------------------------------

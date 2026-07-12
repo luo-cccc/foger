@@ -52,7 +52,7 @@ describe("buildWriterSystemPrompt", () => {
     // v10: compact craft card replaces full methodology modules
     expect(prompt).toContain("写作铁律");
     expect(prompt).toContain("盐溶于汤");
-    expect(prompt).toContain("黄金3章");
+    expect(prompt).toContain("黄金三章写作纪律");
   });
 
   it("injects cross-theme prose-execution rules: simile restraint + dramatize the climax (zh)", () => {
@@ -95,7 +95,7 @@ describe("buildWriterSystemPrompt", () => {
     expect(rules.narrativePerson).toBeUndefined();
   });
 
-  it("uses target-range wording when a length spec is provided", () => {
+  it("keeps length rules out of the system prompt so the user prompt is authoritative", () => {
     const lengthSpec = LengthSpecSchema.parse({
       target: 2200,
       softMin: 1900,
@@ -121,8 +121,8 @@ describe("buildWriterSystemPrompt", () => {
       lengthSpec,
     );
 
-    expect(prompt).toContain("目标字数：2200");
-    expect(prompt).toContain("允许区间：1900-2500");
+    expect(prompt).not.toContain("目标字数：2200");
+    expect(prompt).not.toContain("允许区间：1900-2500");
     expect(prompt).not.toContain("正文不少于2200字");
   });
 
@@ -262,10 +262,10 @@ describe("buildWriterSystemPrompt", () => {
     expect(out).not.toMatch(/^\s*-\s/m);
     expect(out).not.toMatch(/^\s*\*\s/m);
     // Carries the load-bearing slot constraints.
-    expect(out).toContain("800 字");
-    expect(out).toContain("做出来");
-    expect(out).toContain("说出来");
-    expect(out).toContain("小钩子");
+    expect(out).toContain("手机第一页");
+    expect(out).toContain("最多两个聚焦场景");
+    expect(out).toContain("通过动作带出");
+    expect(out).toContain("memo 指定的 hook");
   });
 
   it("buildGoldenOpeningDiscipline returns empty string for ch>=4 / undefined", () => {

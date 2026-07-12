@@ -289,6 +289,65 @@ test("creates a book, writes a chapter, and opens runtime truth diagnostics from
   await expect(page.getByTestId("runtime-diagnostic-warning")).toBeVisible();
 });
 
+test("cancels a long book operation, preserves durable state, and restarts cleanly", async ({
+  page,
+  request,
+}) => {
+  const bookId = await createBook(request);
+  await waitForCreateReady(request, bookId);
+  await waitForBook(request, bookId);
+
+  await page.goto(`/#/book/${encodeURIComponent(bookId)}/settings`);
+  await expect(page.getByTestId("write-next-button")).toBeVisible();
+
+  await page.getByRole("button", { name: "重修设定" }).click();
+  const promptDialog = page.getByRole("dialog", { name: "重修基础设定" });
+  await expect(promptDialog.getByTestId("book-action-prompt-input")).toBeVisible();
+  await promptDialog.getByRole("button", { name: "取消" }).click();
+  await expect(promptDialog).toBeHidden();
+
+  await page.getByTestId("write-next-button").click();
+  const cancelButton = page.getByTestId("cancel-book-operation");
+  await expect(cancelButton).toBeVisible();
+  await expect(page.getByTestId("write-next-button")).toBeDisabled();
+  await cancelButton.click();
+
+  await expect(page.getByTestId("chapter-recovery-notice"))
+    .toContainText("操作已取消，已保留取消前的持久化章节状态");
+  await expect(page.getByTestId("write-next-button")).toBeEnabled();
+
+  const cancelledBook = await readJson<BookDetailResponse>(
+    await request.get(`/api/v1/books/${encodeURIComponent(bookId)}`),
+  );
+  expect(cancelledBook.chapters).toHaveLength(0);
+
+  await page.getByTestId("write-next-button").click();
+  const writtenBook = await waitForFirstChapter(request, bookId);
+  expect(writtenBook.chapters).toHaveLength(1);
+
+  const projectRoot = await readE2eProjectRoot();
+  const indexPath = join(projectRoot, "books", bookId, "chapters", "index.json");
+  const chapterIndex = JSON.parse(await readFile(indexPath, "utf-8")) as Array<Record<string, unknown>>;
+  chapterIndex[0] = { ...chapterIndex[0], status: "state-degraded" };
+  await writeFile(indexPath, `${JSON.stringify(chapterIndex, null, 2)}\n`, "utf-8");
+
+  await page.reload();
+  const repairButton = page.getByTestId("repair-state-1");
+  await expect(repairButton).toBeVisible();
+  await repairButton.click();
+  await expect(page.getByTestId("chapter-recovery-notice"))
+    .toContainText("章节状态修复已完成");
+
+  const repairedBook = await pollUntil(
+    async () => await readJson<BookDetailResponse>(
+      await request.get(`/api/v1/books/${encodeURIComponent(bookId)}`),
+    ),
+    (value) => value.chapters[0]?.status === "ready-for-review",
+    { timeoutMs: 30_000, description: `book ${bookId} state repair` },
+  );
+  expect(repairedBook.chapters[0]?.status).toBe("ready-for-review");
+});
+
 test("recovers an interrupted chapter transaction and preserves the recovery diagnostic", async ({
   page,
   request,

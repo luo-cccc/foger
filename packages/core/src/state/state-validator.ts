@@ -84,6 +84,23 @@ export function validateRuntimeState(input: {
         path: "currentState.chapter",
       });
     }
+    if (manifest && currentState && currentState.chapter < manifest.lastAppliedChapter) {
+      issues.push({
+        code: "current_state_behind_manifest",
+        message: `current state chapter ${currentState.chapter} trails manifest ${manifest.lastAppliedChapter}`,
+        path: "currentState.chapter",
+      });
+    }
+    if (manifest && chapterSummaries && chapterSummaries.rows.length > 0) {
+      const latestSummaryChapter = Math.max(...chapterSummaries.rows.map((row) => row.chapter));
+      if (latestSummaryChapter < manifest.lastAppliedChapter) {
+        issues.push({
+          code: "chapter_summaries_behind_manifest",
+          message: `latest chapter summary ${latestSummaryChapter} trails manifest ${manifest.lastAppliedChapter}`,
+          path: "chapterSummaries.rows",
+        });
+      }
+    }
 
     return issues;
   } catch (error) {

@@ -184,6 +184,32 @@ describe("chatCompletion via pi-ai", () => {
     expect(mockStreamSimple).toHaveBeenCalledOnce();
   });
 
+  it("aborts a delayed LLM stub before returning a response", async () => {
+    const previousStub = process.env.INKOS_AGENT_LLM_STUB;
+    const previousDelay = process.env.INKOS_AGENT_LLM_STUB_DELAY_MS;
+    process.env.INKOS_AGENT_LLM_STUB = "1";
+    process.env.INKOS_AGENT_LLM_STUB_DELAY_MS = "1000";
+    const controller = new AbortController();
+
+    try {
+      const result = chatCompletion(
+        makeClient(),
+        "test-model",
+        [{ role: "user", content: "ping" }],
+        { signal: controller.signal },
+      );
+      controller.abort(new DOMException("Cancelled in test", "AbortError"));
+      await expect(result).rejects.toMatchObject({ name: "AbortError" });
+      expect(mockStreamSimple).not.toHaveBeenCalled();
+      expect(mockCompleteSimple).not.toHaveBeenCalled();
+    } finally {
+      if (previousStub === undefined) delete process.env.INKOS_AGENT_LLM_STUB;
+      else process.env.INKOS_AGENT_LLM_STUB = previousStub;
+      if (previousDelay === undefined) delete process.env.INKOS_AGENT_LLM_STUB_DELAY_MS;
+      else process.env.INKOS_AGENT_LLM_STUB_DELAY_MS = previousDelay;
+    }
+  });
+
   it("throws when stream produces no text content", async () => {
     mockStreamSimple.mockReturnValue(makeEmptyStream());
 

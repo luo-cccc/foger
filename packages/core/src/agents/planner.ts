@@ -208,7 +208,7 @@ export class PlannerAgent extends BaseAgent {
   }
 
   /**
-   * Invoke the LLM to produce a 7-section memo and parse it. Retries up to
+   * Invoke the LLM to produce a chapter memo contract and parse it. Retries up to
    * 3 times on parse failure, injecting the error message back into the user
    * prompt so the LLM can correct itself.
    */
@@ -276,6 +276,7 @@ export class PlannerAgent extends BaseAgent {
     });
 
     const systemPrompt = getPlannerMemoSystemPrompt(language);
+    const existingHooks = parsePendingHooksMarkdown(pendingHooks);
 
     let currentUserMessage = userMessage;
     let lastError: PlannerParseError | undefined;
@@ -293,7 +294,7 @@ export class PlannerAgent extends BaseAgent {
         const memo = parseMemo(response.content, input.chapterNumber, input.isGoldenOpening);
         const hookLedgerIssues = validatePlannedHookLedger(
           memo.body,
-          parsePendingHooksMarkdown(pendingHooks),
+          existingHooks,
         );
         if (hookLedgerIssues.length > 0) {
           throw new PlannerParseError(`invalid hook ledger: ${hookLedgerIssues.join("; ")}`);
@@ -305,12 +306,35 @@ export class PlannerAgent extends BaseAgent {
         }
         lastError = error;
         this.log?.warn(`[planner] memo parse failed (attempt ${attempt + 1}/${MEMO_RETRY_LIMIT}): ${error.message}`);
-        currentUserMessage = `${userMessage}\n\n${retryFeedbackHeader}\n${error.message}\n${retryFeedbackTrailer}`;
+        this.emitDiagnostic({
+          kind: "planner-parse-retry",
+          severity: "warning",
+          phase: "plan",
+          chapterNumber: input.chapterNumber,
+          attempt: attempt + 1,
+          maxAttempts: MEMO_RETRY_LIMIT,
+          message: error.message,
+        });
+        const hookIdHint = /hook ledger/i.test(error.message) && existingHooks.length > 0
+          ? language === "en"
+            ? `\nAllowed hook ids (copy exactly; do not shorten or reconstruct):\n${existingHooks.map((hook) => `- ${hook.hookId}`).join("\n")}`
+            : `\n允许使用的伏笔 ID（必须原样复制，不要截断或重组）：\n${existingHooks.map((hook) => `- ${hook.hookId}`).join("\n")}`
+          : "";
+        currentUserMessage = `${userMessage}\n\n${retryFeedbackHeader}\n${error.message}${hookIdHint}\n${retryFeedbackTrailer}`;
       }
     }
 
     const fallbackError = lastError ?? new PlannerParseError("memo planner exhausted retries without a specific error");
     this.log?.warn(`[planner] memo planner fell back after ${MEMO_RETRY_LIMIT} attempts: ${fallbackError.message}`);
+    this.emitDiagnostic({
+      kind: "planner-fallback",
+      severity: "warning",
+      phase: "plan",
+      chapterNumber: input.chapterNumber,
+      attempt: MEMO_RETRY_LIMIT,
+      maxAttempts: MEMO_RETRY_LIMIT,
+      message: fallbackError.message,
+    });
     return parseMemo(
       this.buildFallbackMemoMarkdown({
         chapterNumber: input.chapterNumber,
@@ -728,7 +752,24 @@ export class PlannerAgent extends BaseAgent {
       break;
     }
 
-    return this.extractFirstDirective(volumeOutline);
+    return this.extractFirstOutlineDirective(volumeOutline);
+  }
+
+  private extractFirstOutlineDirective(content: string): string | undefined {
+    return content
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) =>
+        line.length > 0
+        && !line.startsWith("#")
+        && !line.startsWith("-")
+        && !this.isTemplatePlaceholder(line)
+        && !this.isOutlineMetadata(line),
+      );
+  }
+
+  private isOutlineMetadata(line: string): boolean {
+    return /^(?:本书|全书).{0,16}(?:共|分为).{0,8}[一二三四五六七八九十百\d]+卷|^(?:this\s+)?(?:book|novel).{0,24}\bvolumes?\b/i.test(line);
   }
 
   private cleanOutlineContent(content?: string): string | undefined {
