@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   parseHookLedger,
+  validatePlannedHookLedger,
   validateHookLedger,
 } from "../utils/hook-ledger-validator.js";
 
@@ -75,7 +76,14 @@ describe("parseHookLedger", () => {
 
   it("returns empty lists when no ledger section is present", () => {
     const ledger = parseHookLedger("## 当前任务\n正文\n\n## 不要做\n- 无");
-    expect(ledger).toEqual({ open: [], advance: [], resolve: [], defer: [], newOpenCount: 0 });
+    expect(ledger).toEqual({
+      open: [],
+      advance: [],
+      resolve: [],
+      defer: [],
+      newOpenCount: 0,
+      newOpenDescriptions: [],
+    });
   });
 
   it("counts [new] placeholder lines under open as new hooks opened", () => {
@@ -89,6 +97,7 @@ advance:
     const ledger = parseHookLedger(memo);
     expect(ledger.open).toEqual([]); // [new] lines have no id → not in .open
     expect(ledger.newOpenCount).toBe(2);
+    expect(ledger.newOpenDescriptions).toHaveLength(2);
   });
 
   it("stops at the next H2 heading and does not pollute across sections", () => {
@@ -118,6 +127,64 @@ defer:
     expect(ledger.advance.map((e) => e.id)).toEqual(["H007"]);
     expect(ledger.resolve).toEqual([]);
     expect(ledger.defer).toEqual([]);
+  });
+});
+
+describe("validatePlannedHookLedger", () => {
+  const existingHooks = [
+    { hookId: "H008", expectedPayoff: "archive case", notes: "blacked-out paragraph" },
+    { hookId: "H009", expectedPayoff: "sister's warning echo", notes: "later chapter" },
+  ];
+
+  it("rejects derivative [new] hooks that cite an existing hook id", () => {
+    const memo = `## 本章 hook 账
+open:
+- [new] 姐姐留下的半句话 || 理由：为H009提前埋语言碎片
+advance:
+- H008 "旧档案" → 本章出现新证据
+resolve:
+- 无
+defer:
+- H009 "姐姐回声" → 留到后续
+`;
+
+    expect(validatePlannedHookLedger(memo, existingHooks)).toContainEqual(
+      expect.stringContaining("references existing hook H009"),
+    );
+  });
+
+  it("rejects invented ids, range ids, and conflicting actions", () => {
+    const memo = `## 本章 hook 账
+open:
+- H010 invented hook
+advance:
+- H008 "旧档案" → 推进
+- H008-H009 → 批量处理
+resolve:
+- H008 "旧档案" → 回收
+defer:
+- 无
+`;
+
+    const issues = validatePlannedHookLedger(memo, existingHooks).join("\n");
+    expect(issues).toContain("inventing hook id H010");
+    expect(issues).toContain("unknown hook id H008-H009");
+    expect(issues).toContain("multiple actions");
+  });
+
+  it("accepts explicit existing actions plus an independent id-less new hook", () => {
+    const memo = `## 本章 hook 账
+open:
+- [new] 港口新换的无主铜牌 || 理由：独立身份谜团
+advance:
+- H008 "旧档案" → 本章出现新证据
+resolve:
+- 无
+defer:
+- H009 "姐姐回声" → 留到后续
+`;
+
+    expect(validatePlannedHookLedger(memo, existingHooks)).toEqual([]);
   });
 });
 

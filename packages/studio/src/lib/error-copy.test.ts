@@ -8,6 +8,12 @@ import {
 } from "./error-copy";
 
 describe("localizeKnownRuntimeMessage", () => {
+  it("localizes the audit-failed continuation blocker", () => {
+    expect(localizeKnownRuntimeMessage(
+      "Latest chapter 1 is audit-failed. Revise or rewrite that chapter before continuing.",
+    )).toBe("最新第 1 章审稿未通过（audit-failed）。继续写下一章前，请先修订或重写这一章。");
+  });
+
   it("localizes the state-degraded continuation blocker", () => {
     expect(localizeKnownRuntimeMessage(
       "Latest chapter 1 is state-degraded. Repair state or rewrite that chapter before continuing.",

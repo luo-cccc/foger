@@ -123,6 +123,7 @@ describe("StateValidatorAgent", () => {
     const messages = chatSpy.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
     expect(messages[0]?.content).toContain("truth files");
     expect(messages[0]?.content).toContain("numbered");
+    expect(messages[0]?.content).toContain("Internal hook contradiction");
     expect(messages[1]?.content).toContain("## Authority / Cross-Truth Context");
     expect(messages[1]?.content).toContain("规则一：天黑后不准出宿舍");
     expect(messages[1]?.content).toContain("第1章：发现第五条规则的漏洞");
@@ -206,5 +207,76 @@ describe("StateValidatorAgent", () => {
       "new hooks",
       "en",
     )).rejects.toThrow("empty response");
+  });
+
+  it("deterministically rejects a hook advanced this chapter whose note denies movement", async () => {
+    const agent = new StateValidatorAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: process.cwd(),
+    });
+    const chatSpy = vi.spyOn(
+      agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> },
+      "chat",
+    );
+    const oldHooks = [
+      "| hook_id | 起始章节 | 类型 | 状态 | 最近推进 | 预期回收 | 备注 |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| H008 | 1 | 信息 | open | 1 | 查明旧档案 | 等待证据 |",
+    ].join("\n");
+    const newHooks = [
+      "| hook_id | 起始章节 | 类型 | 状态 | 最近推进 | 预期回收 | 备注 |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| H008 | 1 | 信息 | progressing | 2 | 查明旧档案 | 本章没有推进，也未出现相关证据 |",
+    ].join("\n");
+
+    const result = await agent.validate("正文没有档案。", 2, "old", "new", oldHooks, newHooks, "zh");
+
+    expect(result.passed).toBe(false);
+    expect(result.warnings[0]?.category).toBe("hook-state-contradiction");
+    expect(chatSpy).not.toHaveBeenCalled();
+  });
+
+  it("allows a progressing hook to note that its final payoff has not happened yet", async () => {
+    const agent = new StateValidatorAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: process.cwd(),
+    });
+    vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValue({ content: "PASS", usage: ZERO_USAGE });
+    const oldHooks = [
+      "| hook_id | 起始章节 | 类型 | 状态 | 最近推进 | 预期回收 | 备注 |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| H006 | 1 | 情感 | open | 0 | 记忆形成回声 | 等待触发 |",
+    ].join("\n");
+    const newHooks = [
+      "| hook_id | 起始章节 | 类型 | 状态 | 最近推进 | 预期回收 | 备注 |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| H006 | 1 | 情感 | progressing | 1 | 记忆形成回声 | 本章推进前置阶段；最终回声循环尚未形成 |",
+    ].join("\n");
+
+    await expect(agent.validate("正文呈现了记忆代价。", 1, "old", "new", oldHooks, newHooks, "zh"))
+      .resolves.toEqual({ warnings: [], passed: true });
   });
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { validateToolArguments } from "@mariozechner/pi-ai";
-import { createSubAgentTool } from "../agent/agent-tools.js";
+import { createProposeActionTool, createSubAgentTool } from "../agent/agent-tools.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -76,6 +76,44 @@ describe("SubAgentParams schema", () => {
       name: "sub_agent",
       arguments: blankPlatform,
     } as any)).not.toThrow();
+  });
+});
+
+describe("propose_action payload", () => {
+  it("preserves structured create-book arguments for confirmation", async () => {
+    const tool = createProposeActionTool("zh");
+    const result = await tool.execute("proposal-1", {
+      action: "create_book",
+      title: "创建《葬神契》",
+      summary: "确认后创建长篇连载。",
+      instruction: "创建《葬神契》，东方玄幻，番茄小说。",
+      createBook: {
+        title: "葬神契",
+        genre: "东方玄幻",
+        platform: "tomato",
+        language: "zh",
+        targetChapters: 200,
+        chapterWordCount: 3000,
+      },
+    });
+
+    expect(result.details).toMatchObject({
+      kind: "proposed_action",
+      action: "create_book",
+      title: "创建《葬神契》",
+      summary: "确认后创建长篇连载。",
+      actionPayload: {
+        createBook: {
+          title: "葬神契",
+          genre: "东方玄幻",
+          platform: "tomato",
+          language: "zh",
+          targetChapters: 200,
+          chapterWordCount: 3000,
+        },
+      },
+    });
+    expect(result.details).not.toHaveProperty("payload");
   });
 });
 

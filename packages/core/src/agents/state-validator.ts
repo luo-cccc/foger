@@ -1,4 +1,6 @@
 import { BaseAgent } from "./base.js";
+import { normalizeStoredHookStatus } from "../utils/hook-lifecycle.js";
+import { parsePendingHooksMarkdown } from "../utils/story-markdown.js";
 
 export interface ValidationWarning {
   readonly category: string;
@@ -41,6 +43,16 @@ export class StateValidatorAgent extends BaseAgent {
   ): Promise<ValidationResult> {
     const stateDiff = this.computeDiff(oldState, newState, "State Card");
     const hooksDiff = this.computeDiff(oldHooks, newHooks, "Hooks Pool");
+    const deterministicWarnings = detectHookStateContradictions(
+      oldHooks,
+      newHooks,
+      chapterNumber,
+      language,
+    );
+
+    if (deterministicWarnings.length > 0) {
+      return { warnings: deterministicWarnings, passed: false };
+    }
 
     // Skip validation if nothing changed
     if (!stateDiff && !hooksDiff) {
@@ -61,6 +73,7 @@ Given the chapter text and the CHANGES made to truth files (state card + hooks p
 4. Hook anomaly — a hook disappeared without being marked resolved, or a new hook has no basis in the chapter
 5. Retroactive edit — truth file change implies something happened in a PREVIOUS chapter, not the current one
 6. Cross-truth key-setting conflict — numbered rules, named laws, ranks, identities, locations, or relationship labels in the new truth files contradict the chapter text or the authority context
+7. Internal hook contradiction — a hook is marked progressing/resolved in its status or last-advanced chapter while its own new note says the promised event did not appear, did not happen, remains untriggered, or is deferred to a later chapter
 
 Output format (simple, NOT JSON):
 - First line: exactly PASS or FAIL (nothing else on this line)
@@ -78,6 +91,7 @@ FAIL
 [unsupported_change] New location not mentioned anywhere in chapter text
 
 IMPORTANT: Output FAIL ONLY for hard contradictions — facts that directly conflict with the chapter text. Do NOT fail for:
+- A status/note contradiction from item 7 is a hard contradiction: output FAIL even if the underlying hook management choice would otherwise be advisory
 - Slightly ahead-of-text inferences
 - Missing details that the state card didn't capture
 - Reasonable extrapolations from text
@@ -234,6 +248,67 @@ ${chapterContent}`;
       return null;
     }
   }
+}
+
+function detectHookStateContradictions(
+  oldHooksMarkdown: string,
+  newHooksMarkdown: string,
+  chapterNumber: number,
+  language: "zh" | "en",
+): ValidationWarning[] {
+  const oldHooks = new Map(
+    parsePendingHooksMarkdown(oldHooksMarkdown).map((hook) => [hook.hookId, hook]),
+  );
+  const warnings: ValidationWarning[] = [];
+
+  for (const hook of parsePendingHooksMarkdown(newHooksMarkdown)) {
+    const previous = oldHooks.get(hook.hookId);
+    const status = normalizeStoredHookStatus(hook.status);
+    const previousStatus = previous ? normalizeStoredHookStatus(previous.status) : undefined;
+    const statusAdvanced = previousStatus !== status && (status === "progressing" || status === "resolved");
+    const chapterAdvanced = hook.lastAdvancedChapter >= chapterNumber
+      && hook.lastAdvancedChapter > (previous?.lastAdvancedChapter ?? -1);
+    const note = hook.notes.trim();
+
+    if (hook.lastAdvancedChapter > chapterNumber) {
+      warnings.push({
+        category: "hook-state-contradiction",
+        description: language === "en"
+          ? `Hook ${hook.hookId} claims last advancement in future chapter ${hook.lastAdvancedChapter}, while validating chapter ${chapterNumber}.`
+          : `伏笔 ${hook.hookId} 的最近推进被写成未来第${hook.lastAdvancedChapter}章，但当前校验的是第${chapterNumber}章。`,
+      });
+      continue;
+    }
+
+    if (status === "resolved" && noteContradictsResolution(note)) {
+      warnings.push({
+        category: "hook-state-contradiction",
+        description: language === "en"
+          ? `Hook ${hook.hookId} is resolved, but its note says the payoff remains unresolved or deferred: ${note}`
+          : `伏笔 ${hook.hookId} 已标记为回收，但备注仍说明尚未兑现或被延后：${note}`,
+      });
+      continue;
+    }
+
+    if ((statusAdvanced || chapterAdvanced) && noteDeniesCurrentChapterMovement(note)) {
+      warnings.push({
+        category: "hook-state-contradiction",
+        description: language === "en"
+          ? `Hook ${hook.hookId} is marked as advanced in chapter ${chapterNumber}, but its note explicitly says this chapter did not advance it: ${note}`
+          : `伏笔 ${hook.hookId} 被标记为第${chapterNumber}章已推进，但备注明确写着本章没有推进：${note}`,
+      });
+    }
+  }
+
+  return warnings;
+}
+
+function noteContradictsResolution(note: string): boolean {
+  return /(?:尚未|仍未|还未|没有|未能|并未|不曾).{0,12}(?:回收|解决|兑现|完成|揭晓|揭示|触发|发生)|(?:留待|留到|延后至|推迟到).{0,12}(?:后续|以后|下一章|第\s*\d+\s*章)|(?:remains?|still|not|never).{0,16}(?:unresolved|unpaid|unrevealed|incomplete)|(?:defer(?:red)?|postpone(?:d)?).{0,16}(?:later|future|next chapter)/iu.test(note);
+}
+
+function noteDeniesCurrentChapterMovement(note: string): boolean {
+  return /(?:本章|这一章|当章).{0,10}(?:未|没有|不|并未|不会).{0,10}(?:推进|触发|涉及|触达|出现|发生|兑现|回收|激活|变化)|(?:未在本章|没有在本章|不在本章).{0,10}(?:推进|触发|涉及|触达|出现|发生|兑现|回收|激活)|(?:this chapter).{0,16}(?:did not|does not|never|no).{0,16}(?:advance|trigger|touch|appear|occur|resolve|activate|change)/iu.test(note);
 }
 
 function extractBalancedJsonObject(text: string): string | null {

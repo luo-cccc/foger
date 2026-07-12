@@ -167,6 +167,34 @@ describe("groupChronologically", () => {
     });
   });
 
+  it("restores legacy proposed-action payloads from persisted sessions", () => {
+    const exec = makeExec({
+      id: "proposal-legacy",
+      tool: "propose_action",
+      details: {
+        kind: "proposed_action",
+        action: "create_book",
+        targetSessionKind: "book-create",
+        instruction: "创建《葬神契》",
+        payload: {
+          createBook: {
+            title: "葬神契",
+            genre: "东方玄幻",
+            platform: "tomato",
+          },
+        },
+      },
+    });
+
+    expect(getProposedActionDetails(exec)?.actionPayload).toEqual({
+      createBook: {
+        title: "葬神契",
+        genre: "东方玄幻",
+        platform: "tomato",
+      },
+    });
+  });
+
   it("extracts proposed route actions for existing Studio workflows", () => {
     const cases = [
       { action: "import_chapters", route: "import:chapters", title: "导入章节" },

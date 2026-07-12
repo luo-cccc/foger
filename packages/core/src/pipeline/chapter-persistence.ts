@@ -23,7 +23,7 @@ export async function persistChapterArtifacts(params: {
   readonly tokenUsage?: ChapterPersistenceUsage;
   readonly operationId?: string;
   readonly loadChapterIndex: () => Promise<ReadonlyArray<ChapterMeta>>;
-  readonly saveChapter: () => Promise<void>;
+  readonly saveChapter: (options: { readonly persistTruth: boolean }) => Promise<void>;
   readonly saveTruthFiles: () => Promise<void>;
   readonly saveChapterIndex: (index: ReadonlyArray<ChapterMeta>) => Promise<void>;
   readonly markBookActiveIfNeeded: () => Promise<void>;
@@ -33,8 +33,9 @@ export async function persistChapterArtifacts(params: {
   readonly logSnapshotStage: () => void;
   readonly now?: () => string;
 }): Promise<{ readonly entry: ChapterMeta }> {
-  await params.saveChapter();
-  if (params.status !== "state-degraded") {
+  const advancesStoryState = params.status === "ready-for-review";
+  await params.saveChapter({ persistTruth: advancesStoryState });
+  if (advancesStoryState) {
     await params.saveTruthFiles();
   }
 
@@ -64,14 +65,16 @@ export async function persistChapterArtifacts(params: {
     ? existingIndex.map((e, i) => i === existingIdx ? { ...entry, createdAt: e.createdAt } : e)
     : [...existingIndex, entry];
   await params.saveChapterIndex(updatedIndex);
-  await params.markBookActiveIfNeeded();
+  if (advancesStoryState) {
+    await params.markBookActiveIfNeeded();
+  }
 
   const driftIssues = params.auditResult.issues.filter(
     (issue) => issue.severity === "critical" || issue.severity === "warning",
   );
   await params.persistAuditDriftGuidance(params.status === "state-degraded" ? [] : driftIssues);
 
-  if (params.status !== "state-degraded") {
+  if (advancesStoryState) {
     params.logSnapshotStage();
     await params.snapshotState();
     await params.syncCurrentStateFactHistory();

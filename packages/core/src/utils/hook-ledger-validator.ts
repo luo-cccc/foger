@@ -42,6 +42,14 @@ export interface HookLedger {
    * 揭 1 埋 1 floor check.
    */
   readonly newOpenCount: number;
+  /** Raw `[new]` declarations, including their reason text. */
+  readonly newOpenDescriptions: ReadonlyArray<string>;
+}
+
+export interface ExistingHookIdentity {
+  readonly hookId: string;
+  readonly expectedPayoff?: string;
+  readonly notes?: string;
 }
 
 const LEDGER_HEADING_PATTERNS = [
@@ -64,7 +72,14 @@ const SUBSECTION_WORDS = /^(open|advance|resolve|defer|new)$/i;
 export function parseHookLedger(memoBody: string): HookLedger {
   const section = extractLedgerSection(memoBody);
   if (!section) {
-    return { open: [], advance: [], resolve: [], defer: [], newOpenCount: 0 };
+    return {
+      open: [],
+      advance: [],
+      resolve: [],
+      defer: [],
+      newOpenCount: 0,
+      newOpenDescriptions: [],
+    };
   }
 
   type Subsection = "open" | "advance" | "resolve" | "defer";
@@ -75,6 +90,7 @@ export function parseHookLedger(memoBody: string): HookLedger {
     defer: [],
   };
   let newOpenCount = 0;
+  const newOpenDescriptions: string[] = [];
 
   let current: Subsection | null = null;
   for (const rawLine of section.split(/\r?\n/)) {
@@ -96,6 +112,7 @@ export function parseHookLedger(memoBody: string): HookLedger {
     const cleaned = line.replace(/^-+\s*/, "").trim();
     if (current === "open" && /^\[new\]/i.test(cleaned)) {
       newOpenCount += 1;
+      newOpenDescriptions.push(cleaned.replace(/^\[new\]\s*/i, "").trim());
       continue;
     }
 
@@ -103,7 +120,62 @@ export function parseHookLedger(memoBody: string): HookLedger {
     if (entry) result[current].push(entry);
   }
 
-  return { ...result, newOpenCount };
+  return { ...result, newOpenCount, newOpenDescriptions };
+}
+
+/** Validate a planner hook ledger against the durable hook registry. */
+export function validatePlannedHookLedger(
+  memoBody: string,
+  existingHooks: ReadonlyArray<ExistingHookIdentity>,
+): ReadonlyArray<string> {
+  const ledger = parseHookLedger(memoBody);
+  const issues: string[] = [];
+  const knownIds = new Map(
+    existingHooks.map((hook) => [normalizeHookIdForComparison(hook.hookId), hook.hookId]),
+  );
+
+  for (const entry of ledger.open) {
+    const normalized = normalizeHookIdForComparison(entry.id);
+    issues.push(knownIds.has(normalized)
+      ? `existing hook ${knownIds.get(normalized)} must use advance/resolve/defer, not open`
+      : `new hooks must use [new] without inventing hook id ${entry.id}`);
+  }
+
+  const actionEntries = [
+    ...ledger.advance.map((entry) => ({ action: "advance", entry })),
+    ...ledger.resolve.map((entry) => ({ action: "resolve", entry })),
+    ...ledger.defer.map((entry) => ({ action: "defer", entry })),
+  ];
+  const actionsById = new Map<string, Set<string>>();
+  for (const { action, entry } of actionEntries) {
+    const normalized = normalizeHookIdForComparison(entry.id);
+    if (!knownIds.has(normalized)) {
+      issues.push(`${action} references unknown hook id ${entry.id}`);
+      continue;
+    }
+    const actions = actionsById.get(normalized) ?? new Set<string>();
+    actions.add(action);
+    actionsById.set(normalized, actions);
+  }
+
+  for (const [normalizedId, actions] of actionsById) {
+    if (actions.size > 1) {
+      issues.push(`existing hook ${knownIds.get(normalizedId)} appears under multiple actions: ${[...actions].join(", ")}`);
+    }
+  }
+
+  for (const description of ledger.newOpenDescriptions) {
+    const referencedIds = existingHooks
+      .filter((hook) => containsHookId(description, hook.hookId))
+      .map((hook) => hook.hookId);
+    if (referencedIds.length > 0) {
+      issues.push(
+        `[new] hook references existing hook ${referencedIds.join(", ")}; classify it as advance/defer on that hook instead of opening a derivative thread`,
+      );
+    }
+  }
+
+  return [...new Set(issues)];
 }
 
 /**
@@ -267,6 +339,16 @@ function dedupeStrings(values: ReadonlyArray<string>): string[] {
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeHookIdForComparison(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function containsHookId(text: string, hookId: string): boolean {
+  const escaped = escapeRegex(hookId.trim());
+  if (!escaped) return false;
+  return new RegExp(`(^|[^A-Za-z0-9_-])${escaped}(?=$|[^A-Za-z0-9_-])`, "i").test(text);
 }
 
 export const INTERNAL = {

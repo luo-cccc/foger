@@ -121,4 +121,82 @@ describe("arbitrateRuntimeStateDeltaHooks", () => {
     expect(result.resolvedDelta.hookOps.upsert[0]?.hookId).not.toBe("mentor-debt");
     expect(result.resolvedDelta.newHookCandidates).toEqual([]);
   });
+
+  it("does not overwrite an existing hook when a planner reuses its id for another family", () => {
+    const result = arbitrateRuntimeStateDeltaHooks({
+      hooks: [
+        createHook({
+          hookId: "H008",
+          type: "relationship",
+          expectedPayoff: "Reveal why Lu Yuan reopened Shen Yao's archived case.",
+          notes: "The archive contains a blacked-out paragraph.",
+        }),
+      ],
+      delta: createDelta({
+        chapter: 2,
+        hookOps: {
+          upsert: [createHook({
+            hookId: "H008",
+            type: "institution",
+            startChapter: 2,
+            lastAdvancedChapter: 2,
+            expectedPayoff: "Reveal how the citywide pursuit tracker works.",
+            notes: "A new pursuit order activates this chapter.",
+          })],
+          mention: [],
+          resolve: [],
+          defer: [],
+        },
+      }),
+    });
+
+    expect(result.resolvedDelta.hookOps.upsert).toHaveLength(1);
+    expect(result.resolvedDelta.hookOps.upsert[0]?.hookId).not.toBe("H008");
+    expect(result.decisions).toContainEqual(expect.objectContaining({
+      action: "rejected",
+      reason: "existing_id_identity_conflict",
+      hookId: "H008",
+    }));
+  });
+
+  it("allows an existing hook to advance with richer payoff text when its family is unchanged", () => {
+    const result = arbitrateRuntimeStateDeltaHooks({
+      hooks: [
+        createHook({
+          hookId: "mentor-debt",
+          type: "relationship",
+          lastAdvancedChapter: 2,
+          expectedPayoff: "Reveal why the mentor vanished.",
+          notes: "The debt remains unresolved.",
+        }),
+      ],
+      delta: createDelta({
+        chapter: 3,
+        hookOps: {
+          upsert: [createHook({
+            hookId: "mentor-debt",
+            type: "relationship",
+            status: "progressing",
+            lastAdvancedChapter: 3,
+            expectedPayoff: "Reveal how the river ledger explains the mentor's debt.",
+            notes: "The ledger clue sharpens the same relationship line.",
+          })],
+          mention: [],
+          resolve: [],
+          defer: [],
+        },
+      }),
+    });
+
+    expect(result.resolvedDelta.hookOps.upsert).toEqual([
+      expect.objectContaining({
+        hookId: "mentor-debt",
+        status: "progressing",
+        lastAdvancedChapter: 3,
+      }),
+    ]);
+    expect(result.decisions).not.toContainEqual(expect.objectContaining({
+      reason: "existing_id_identity_conflict",
+    }));
+  });
 });

@@ -114,8 +114,18 @@ export function analyzeHookHealth(params: {
     const newHookIds = params.delta.hookOps.upsert
       .map((hook) => hook.hookId)
       .filter((hookId) => !existingHookIds.has(hookId) && resultingHookIds.has(hookId));
+    const hasOlderActiveDebt = params.hooks.some((hook) =>
+      existingHookIds.has(hook.hookId)
+      && hook.startChapter < params.chapterNumber
+      && normalizeStoredHookStatus(hook.status) !== "resolved"
+      && normalizeStoredHookStatus(hook.status) !== "deferred"
+    );
 
-    if (newHookIds.length >= newHookBurstThreshold && params.delta.hookOps.resolve.length === 0) {
+    if (
+      hasOlderActiveDebt
+      && newHookIds.length >= newHookBurstThreshold
+      && params.delta.hookOps.resolve.length === 0
+    ) {
       issues.push(warning(
         params.language,
         params.language === "en"

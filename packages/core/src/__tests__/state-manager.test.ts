@@ -211,6 +211,37 @@ describe("StateManager", () => {
       expect(next).toBe(2);
     });
 
+    it("does not advance durable progress past an audit-failed chapter", async () => {
+      const bookId = "audit-failed-progress-book";
+      const bookDir = manager.bookDir(bookId);
+      const chaptersDir = join(bookDir, "chapters");
+      await mkdir(chaptersDir, { recursive: true });
+      await manager.saveChapterIndex(bookId, [{
+        number: 1,
+        title: "Failed Chapter",
+        status: "audit-failed",
+        wordCount: 3000,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+        auditIssues: ["[critical] blocking issue"],
+        lengthWarnings: [],
+      }]);
+      await writeFile(
+        join(chaptersDir, "0001_Failed_Chapter.md"),
+        "# Chapter 1: Failed Chapter\n\nPersisted review draft.",
+        "utf-8",
+      );
+
+      const next = await manager.getNextChapterNumber(bookId);
+      const manifest = JSON.parse(await readFile(
+        join(bookDir, "story", "state", "manifest.json"),
+        "utf-8",
+      )) as { lastAppliedChapter: number };
+
+      expect(next).toBe(1);
+      expect(manifest.lastAppliedChapter).toBe(0);
+    });
+
     it("uses durable story progress when chapter index lags behind persisted chapter files", async () => {
       const bookId = "stale-index-book";
       const bookDir = manager.bookDir(bookId);

@@ -20,6 +20,29 @@ export interface ChatPageSessionSummary {
   readonly messageCount: number;
 }
 
+export interface ChatBookChapterStatus {
+  readonly number: number;
+  readonly status: string;
+}
+
+export interface ChatBookContinuationBlock {
+  readonly chapterNumber: number;
+  readonly status: "audit-failed" | "state-degraded";
+}
+
+export function getBookContinuationBlock(
+  chapters: ReadonlyArray<ChatBookChapterStatus>,
+): ChatBookContinuationBlock | null {
+  const latest = chapters.reduce<ChatBookChapterStatus | null>(
+    (current, chapter) => !current || chapter.number > current.number ? chapter : current,
+    null,
+  );
+  if (latest?.status !== "audit-failed" && latest?.status !== "state-degraded") {
+    return null;
+  }
+  return { chapterNumber: latest.number, status: latest.status };
+}
+
 const BOOK_CREATE_SESSION_KEY = "inkos.book-create.session-id";
 const PROJECT_CHAT_SESSION_KEY = "inkos.project-chat.session-id";
 
@@ -84,6 +107,9 @@ export function pickModelSelection(
       : undefined;
     if (preferredGroup && exactModel) {
       return { model: exactModel.id, service: preferredGroup.service };
+    }
+    if (preferredGroup && preferredModel) {
+      return { model: preferredModel, service: preferredGroup.service };
     }
     const firstPreferredModel = preferredGroup?.models[0];
     if (preferredGroup && firstPreferredModel) {

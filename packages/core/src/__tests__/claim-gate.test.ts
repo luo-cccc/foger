@@ -303,6 +303,90 @@ describe("claim gates", () => {
     ]);
   });
 
+  it("does not flag a prohibition merely because prose follows the constrained action", () => {
+    const prohibition = claim({
+      id: "ban-repair-grind",
+      claimType: "prohibition",
+      content: "禁止星门修复变成“打怪升级”（每次修复必须推动剧情或角色弧，不能为修复而修复）",
+    });
+
+    const issues = runPostWriteClaimGate({
+      text: "沈砚修复第一道星纹，失去童年记忆，也从回声里取得姐姐失踪前的线索。城防司随即锁定了他。",
+      compiled: compiled({ usable: [prohibition] }),
+      phase: "post",
+    });
+
+    expect(issues.map((issue) => issue.category)).not.toContain("claim-prohibition");
+  });
+
+  it("does not flag a prohibition when a memo restates it as negative guidance", () => {
+    const prohibition = claim({
+      id: "ban-breakthrough",
+      claimType: "prohibition",
+      content: "禁止沈砚通过“顿悟”或“爆种”解决核心冲突",
+    });
+
+    const issues = runPreWriteClaimGate({
+      text: "本章禁止沈砚顿悟，也不能让他爆种；修复必须基于已有知识。",
+      compiled: compiled({ usable: [prohibition] }),
+      phase: "pre",
+    });
+
+    expect(issues.map((issue) => issue.category)).not.toContain("claim-prohibition");
+  });
+
+  it("still flags an explicit violation of a quoted prohibition target", () => {
+    const prohibition = claim({
+      id: "ban-repair-grind",
+      claimType: "prohibition",
+      content: "禁止星门修复变成“打怪升级”（每次修复必须推动剧情或角色弧，不能为修复而修复）",
+    });
+
+    const issues = runPostWriteClaimGate({
+      text: "从此修复被当成打怪升级：每点亮一道星纹，他就无条件变强一级。",
+      compiled: compiled({ usable: [prohibition] }),
+      phase: "post",
+    });
+
+    expect(issues).toEqual([
+      expect.objectContaining({ severity: "critical", category: "claim-prohibition" }),
+    ]);
+  });
+
+  it("flags a high-confidence paraphrase of a progression-loop prohibition", () => {
+    const prohibition = claim({
+      id: "ban-repair-grind",
+      claimType: "prohibition",
+      content: "禁止星门修复变成“打怪升级”（每次修复必须推动剧情或角色弧，不能为修复而修复）",
+    });
+
+    const issues = runPostWriteClaimGate({
+      text: "从此每修复一道星纹，他都会无条件变强一级，不需要发现线索，也没有人物变化。",
+      compiled: compiled({ usable: [prohibition] }),
+      phase: "post",
+    });
+
+    expect(issues).toEqual([
+      expect.objectContaining({ severity: "critical", category: "claim-prohibition" }),
+    ]);
+  });
+
+  it("does not confuse an earned one-off advantage with an upgrade loop", () => {
+    const prohibition = claim({
+      id: "ban-repair-grind",
+      claimType: "prohibition",
+      content: "禁止星门修复变成“打怪升级”（每次修复必须推动剧情或角色弧，不能为修复而修复）",
+    });
+
+    const issues = runPostWriteClaimGate({
+      text: "沈砚修复星纹后取得一段坐标线索，因此在追查姐姐时更有胜算，但能力没有自动提升。",
+      compiled: compiled({ usable: [prohibition] }),
+      phase: "post",
+    });
+
+    expect(issues.map((issue) => issue.category)).not.toContain("claim-prohibition");
+  });
+
   it("flags institution rules that fail without a grounded exception", () => {
     const rule = claim({
       id: "org-1",

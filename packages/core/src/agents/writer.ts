@@ -701,6 +701,7 @@ export class WriterAgent extends BaseAgent {
     output: WriteChapterOutput,
     numericalSystem: boolean = true,
     language: "zh" | "en" = "zh",
+    options: { readonly persistTruth?: boolean } = {},
   ): Promise<void> {
     const chaptersDir = join(bookDir, "chapters");
     const storyDir = join(bookDir, "story");
@@ -723,11 +724,10 @@ export class WriterAgent extends BaseAgent {
       "",
       output.content,
     ].join("\n");
-    const runtimeStateArtifacts = await this.resolveRuntimeStateArtifactsForOutput(
-      bookDir,
-      output,
-      language,
-    );
+    const persistTruth = options.persistTruth ?? true;
+    const runtimeStateArtifacts = persistTruth
+      ? await this.resolveRuntimeStateArtifactsForOutput(bookDir, output, language)
+      : undefined;
     const nextStateMarkdown = runtimeStateArtifacts?.currentStateMarkdown ?? output.updatedState;
     const nextHooksMarkdown = runtimeStateArtifacts?.hooksMarkdown ?? output.updatedHooks;
     const previousStateMarkdown = await this.readFileOrDefault(join(storyDir, "current_state.md"));
@@ -745,24 +745,24 @@ export class WriterAgent extends BaseAgent {
     const writes: Array<Promise<void>> = [
       writeFile(join(chaptersDir, filename), chapterContent, "utf-8"),
     ];
-    if (shouldWriteState) {
+    if (persistTruth && shouldWriteState) {
       writes.push(writeFile(join(storyDir, "current_state.md"), nextStateMarkdown, "utf-8"));
     }
-    if (shouldWriteHooks) {
+    if (persistTruth && shouldWriteHooks) {
       writes.push(writeFile(join(storyDir, "pending_hooks.md"), nextHooksMarkdown, "utf-8"));
     }
 
-    if (runtimeStateArtifacts?.chapterSummariesMarkdown) {
+    if (persistTruth && runtimeStateArtifacts?.chapterSummariesMarkdown) {
       writes.push(
         writeFile(join(storyDir, "chapter_summaries.md"), runtimeStateArtifacts.chapterSummariesMarkdown, "utf-8"),
       );
     }
 
-    if (shouldSaveRuntimeSnapshot && (runtimeStateArtifacts?.snapshot ?? output.runtimeStateSnapshot)) {
+    if (persistTruth && shouldSaveRuntimeSnapshot && (runtimeStateArtifacts?.snapshot ?? output.runtimeStateSnapshot)) {
       writes.push(saveRuntimeStateSnapshot(bookDir, runtimeStateArtifacts?.snapshot ?? output.runtimeStateSnapshot!));
     }
 
-    if (numericalSystem) {
+    if (persistTruth && numericalSystem) {
       writes.push(
         writeFile(join(storyDir, "particle_ledger.md"), output.updatedLedger, "utf-8"),
       );

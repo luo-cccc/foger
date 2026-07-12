@@ -38,6 +38,25 @@ export function arbitrateRuntimeStateDeltaHooks(params: {
 
   for (const hook of delta.hookOps.upsert) {
     if (knownHookIds.has(hook.hookId)) {
+      const existing = workingHooks.find((candidate) => candidate.hookId === hook.hookId)!;
+      // An explicit upsert for an existing id is a lifecycle update. Reject it
+      // only when the model also changes the hook family/type; novelty in the
+      // payoff or notes is expected during legitimate advancement.
+      if (normalizeHookType(existing.type) !== normalizeHookType(hook.type)) {
+        const candidate = {
+          type: hook.type,
+          expectedPayoff: hook.expectedPayoff,
+          notes: hook.notes,
+        };
+        fallbackCandidates.push(candidate);
+        decisions.push({
+          action: "rejected",
+          reason: "existing_id_identity_conflict",
+          hookId: hook.hookId,
+          candidate,
+        });
+        continue;
+      }
       const normalized = { ...hook };
       upsertsById.set(normalized.hookId, normalized);
       replaceWorkingHook(workingHooks, normalized);
@@ -256,6 +275,10 @@ function replaceWorkingHook(workingHooks: HookRecord[], hook: HookRecord): void 
   }
 
   workingHooks.push(hook);
+}
+
+function normalizeHookType(value: string): string {
+  return value.trim().toLowerCase();
 }
 
 function sortHooks(left: HookRecord, right: HookRecord): number {

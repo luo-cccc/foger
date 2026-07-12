@@ -209,4 +209,23 @@ describe("extractRelevantThreads", () => {
     expect(threads).toContain("S001");
     expect(threads).not.toContain("S007");
   });
+
+  it("surfaces deferred hooks scheduled for the current chapter as existing hooks", () => {
+    const hooks = `
+| hook_id | 起始章节 | 类型 | 状态 | 预期回收 |
+|---------|----------|------|------|----------|
+| H001 | 0 | 物品 | 暂缓 | 第1章发现星图 |
+| H005 | 1 | 信息 | deferred | 第2卷回收 |
+| H008 | 3 | 关系 | 暂缓 | 第3章后推进 |
+| H009 | 0 | 信息 | 已回收 | 完成 |
+`;
+
+    const threads = extractRelevantThreads(hooks, "", 1);
+    expect(threads).toContain("H001");
+    expect(threads).toContain("H005");
+    expect(threads).toContain("不得作为 [new] 重开");
+    expect(threads).toContain("H008");
+    expect(threads).toContain("仅作 ID 注册");
+    expect(threads).not.toContain("H009");
+  });
 });

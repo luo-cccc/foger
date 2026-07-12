@@ -39,6 +39,7 @@ import {
   type ChatPageModelPreference,
   filterModelGroups,
   getChatScrollBehavior,
+  getBookContinuationBlock,
   getBookCreateSessionId,
   getProjectChatSessionId,
   pickProjectChatSessionId,
@@ -71,6 +72,10 @@ export interface ChatPageProps {
 interface ServiceConfigPayload {
   readonly service?: string | null;
   readonly defaultModel?: string | null;
+}
+
+interface BookContinuationPayload {
+  readonly chapters?: ReadonlyArray<{ readonly number: number; readonly status: string }>;
 }
 
 const MAX_CHAT_ATTACHMENTS = 8;
@@ -249,6 +254,7 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
       : activeBookId ? "book" : "chat");
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [continuationBlock, setContinuationBlock] = useState<ReturnType<typeof getBookContinuationBlock>>(null);
   const sessionTelemetry = useMemo(
     () => buildLLMTelemetrySnapshot(sse.messages, { sessionId: activeSessionId ?? undefined, limit: 3 }),
     [activeSessionId, sse.messages],
@@ -278,6 +284,7 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
   const fetchServices = useServiceStore((s) => s.fetchServices);
   const fetchBankModels = useServiceStore((s) => s.fetchBankModels);
   const fetchCustomModels = useServiceStore((s) => s.fetchCustomModels);
+  const fetchLiveModels = useServiceStore((s) => s.fetchLiveModels);
   const [configuredModelSelection, setConfiguredModelSelection] = useState<ChatPageModelPreference | null>(null);
   const [serviceConfigLoaded, setServiceConfigLoaded] = useState(false);
 
@@ -308,6 +315,12 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
       cancelled = true;
     };
   }, []);
+  useEffect(() => {
+    const service = configuredModelSelection?.service?.trim();
+    if (!service || service.startsWith("custom:")) return;
+    if (!services.some((item) => item.service === service && item.connected)) return;
+    void fetchLiveModels(service);
+  }, [configuredModelSelection, fetchLiveModels, services]);
 
   const modelPickerStatus = useMemo(() => {
     if (servicesLoading || services.length === 0) return "loading" as const;
@@ -465,6 +478,31 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
     };
   }, [activeBookId, activateSession, createSession, loadSessionDetail, loadSessionList, mode]);
 
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeBookId) {
+      setContinuationBlock(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setContinuationBlock(null);
+    void fetchJson<BookContinuationPayload>(`/books/${encodeURIComponent(activeBookId)}`)
+      .then((payload) => {
+        if (!cancelled) {
+          setContinuationBlock(getBookContinuationBlock(payload.chapters ?? []));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setContinuationBlock(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeBookId, messages.length, sse.messages.length]);
+
   const addAttachedFiles = (files: FileList | File[]) => {
     const incoming = Array.from(files);
     const accepted: File[] = [];
@@ -506,6 +544,7 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
 
   const handleQuickAction = (command: string, requestedIntent?: "write_next") => {
     if (!activeSessionId) return;
+    if (requestedIntent === "write_next" && continuationBlock) return;
     autoScrollPinnedRef.current = true;
     void sendMessage(activeSessionId, command, {
       activeBookId,
@@ -777,6 +816,16 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
               onAction={handleQuickAction}
               disabled={loading || !activeSessionId}
               isZh={isZh}
+              writeNextBlocked={continuationBlock !== null}
+              writeNextBlockedTitle={continuationBlock
+                ? continuationBlock.status === "audit-failed"
+                  ? (isZh
+                      ? `第 ${continuationBlock.chapterNumber} 章审稿未通过，请先修订或重写。`
+                      : `Chapter ${continuationBlock.chapterNumber} failed audit. Revise or rewrite it first.`)
+                  : (isZh
+                      ? `第 ${continuationBlock.chapterNumber} 章状态结算失败，请先修复状态或重写。`
+                      : `Chapter ${continuationBlock.chapterNumber} has degraded state. Repair or rewrite it first.`)
+                : undefined}
             />
           </div>
         </div>

@@ -229,8 +229,10 @@ export function createProposeActionTool(
           action: params.action,
           targetSessionKind,
           ...(targetRoute ? { targetRoute } : {}),
+          title,
+          summary,
           instruction: params.instruction,
-          ...(actionPayload ? { payload: actionPayload } : {}),
+          ...(actionPayload ? { actionPayload } : {}),
         },
       );
     },

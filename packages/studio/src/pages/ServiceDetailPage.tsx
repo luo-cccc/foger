@@ -9,7 +9,9 @@ import {
   matchServiceConfigEntryForDetail,
   probeServiceForDetail,
   rehydrateServiceConnectionStatus,
+  savedModelForService,
   saveServiceConfig,
+  type ServiceDetailConfigPayload,
   type ServiceDetailConnectionStatus as ConnectionStatus,
   type ServiceDetailDetectedConfig as DetectedConfig,
   type ServiceDetailModelInfo as ModelInfo,
@@ -57,6 +59,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
   const [apiFormat, setApiFormat] = useState<"chat" | "responses">("chat");
   const [stream, setStream] = useState(true);
   const [model, setModel] = useState("");
+  const modelDirtyRef = useRef(false);
   const [detectedModel, setDetectedModel] = useState<string>("");
   const [detectedConfig, setDetectedConfig] = useState<DetectedConfig | null>(null);
   const [verifiedProbe, setVerifiedProbe] = useState<VerifiedProbe | null>(null);
@@ -66,11 +69,13 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
 
   useEffect(() => {
     let cancelled = false;
-    void fetchJson<{ services: Array<Record<string, unknown>> }>("/services/config")
+    void fetchJson<ServiceDetailConfigPayload>("/services/config")
       .then((data) => {
         if (cancelled) return;
         const matched = matchServiceConfigEntryForDetail(data.services ?? [], serviceId);
         if (!matched) return;
+        const savedModel = savedModelForService(data, serviceId);
+        if (savedModel && !modelDirtyRef.current) setModel(savedModel);
         if (isCustom) {
           setCustomName(String(matched.name ?? persistedCustomName));
           setBaseUrl(String(matched.baseUrl ?? ""));
@@ -310,6 +315,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
             type="text"
             value={model}
             onChange={(e) => {
+              modelDirtyRef.current = true;
               setModel(e.target.value);
               setVerifiedProbe(null);
             }}

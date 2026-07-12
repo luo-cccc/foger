@@ -504,13 +504,54 @@ function extractRowsByRelation(
 
 const RELEVANT_THREAD_STATUS_PATTERN = /activat|partial_payoff|推进|高压|open|progress/i;
 const STALE_STATUS_PATTERN = /resolved|deferred|dormant|暂稳待续|暂挂|已回收/i;
+const DEFERRED_STATUS_PATTERN = /deferred|dormant|paused|hold|暂缓|搁置|延后|延期|未激活|未启动|待启动|待推进|尚未推进/i;
+const RESOLVED_STATUS_PATTERN = /resolved|closed|done|已回收|已解决/i;
 
-export function extractRelevantThreads(pendingHooksRaw: string, subplotBoardRaw: string): string {
-  const hookRows = parseMarkdownTableRows(pendingHooksRaw)
+export function extractRelevantThreads(
+  pendingHooksRaw: string,
+  subplotBoardRaw: string,
+  chapterNumber?: number,
+): string {
+  const parsedHookRows = parseMarkdownTableRows(pendingHooksRaw);
+  const hookHeader = parsedHookRows.find((row) => /^(hook_id)$/i.test(row[0] ?? ""));
+  const hookStatusIndex = hookHeader?.findIndex((cell) => /^(状态|status)$/i.test(cell.trim())) ?? -1;
+  const hookStartIndex = hookHeader?.findIndex((cell) => /^(起始章节|start(?:_chapter)?)$/i.test(cell.trim())) ?? -1;
+  const selectedHookRows = parsedHookRows
     .filter((row) => !/^(hook_id)$/i.test(row[0] ?? ""))
-    .filter((row) => row.some((cell) => RELEVANT_THREAD_STATUS_PATTERN.test(cell)))
-    .filter((row) => !row.some((cell) => STALE_STATUS_PATTERN.test(cell)))
-    .map((row) => `- ${row[0]}: ${row.slice(1).filter(Boolean).join(" | ")}`);
+    .filter((row) => {
+      const status = row[hookStatusIndex >= 0 ? hookStatusIndex : 1] ?? "";
+      const active = RELEVANT_THREAD_STATUS_PATTERN.test(status)
+        && !STALE_STATUS_PATTERN.test(status);
+      if (active) return true;
+      if (chapterNumber === undefined) return false;
+
+      const startChapter = parsePlainInteger(row[hookStartIndex >= 0 ? hookStartIndex : 1]);
+      const deferred = DEFERRED_STATUS_PATTERN.test(status);
+      const resolved = RESOLVED_STATUS_PATTERN.test(status);
+      return deferred && !resolved && startChapter !== undefined && startChapter <= chapterNumber;
+    })
+    .map((row) => {
+      const status = row[hookStatusIndex >= 0 ? hookStatusIndex : 1] ?? "";
+      const scheduled = chapterNumber !== undefined
+        && DEFERRED_STATUS_PATTERN.test(status);
+      const suffix = scheduled ? " | 已存在且已排期，不得作为 [new] 重开" : "";
+      return `- ${row[0]}: ${row.slice(1).filter(Boolean).join(" | ")}${suffix}`;
+    });
+  const selectedHookIds = new Set(selectedHookRows.map((line) => line.match(/^\-\s+([^:：]+)/)?.[1]).filter(Boolean));
+  const futureHookRegistry = chapterNumber === undefined
+    ? []
+    : parsedHookRows
+      .filter((row) => !/^(hook_id)$/i.test(row[0] ?? ""))
+      .filter((row) => !selectedHookIds.has(row[0]))
+      .filter((row) => {
+        const status = row[hookStatusIndex >= 0 ? hookStatusIndex : 1] ?? "";
+        return !RESOLVED_STATUS_PATTERN.test(status);
+      })
+      .map((row) => {
+        const start = row[hookStartIndex >= 0 ? hookStartIndex : 1] ?? "?";
+        const status = row[hookStatusIndex >= 0 ? hookStatusIndex : 1] ?? "unknown";
+        return `- ${row[0]}: 已存在（起始章节 ${start}，状态 ${status}），仅作 ID 注册，不得作为 [new] 重开`;
+      });
 
   const subplotRows = parseMarkdownTableRows(subplotBoardRaw)
     .filter((row) => !/^(id|subplot_id|subplot)$/i.test(row[0] ?? ""))
@@ -518,7 +559,7 @@ export function extractRelevantThreads(pendingHooksRaw: string, subplotBoardRaw:
     .filter((row) => !row.some((cell) => STALE_STATUS_PATTERN.test(cell)))
     .map((row) => `- ${row[0]}: ${row.slice(1).filter(Boolean).join(" | ")}`);
 
-  const lines = [...hookRows, ...subplotRows];
+  const lines = [...selectedHookRows, ...futureHookRegistry, ...subplotRows];
   if (lines.length === 0) {
     return "（暂无活跃线索）";
   }

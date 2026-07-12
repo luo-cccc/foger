@@ -17,6 +17,8 @@ import {
   loadPlanningSeedMaterials,
 } from "../utils/planning-materials.js";
 import { parseMemo, PlannerParseError } from "../utils/chapter-memo-parser.js";
+import { validatePlannedHookLedger } from "../utils/hook-ledger-validator.js";
+import { parsePendingHooksMarkdown } from "../utils/story-markdown.js";
 import {
   buildPlannerUserMessage,
   getPlannerMemoSystemPrompt,
@@ -259,7 +261,7 @@ export class PlannerAgent extends BaseAgent {
       protagonistMatrixRow: extractProtagonistRow(characterMatrix),
       opponentRows: extractOpponentRows(characterMatrix, 3),
       collaboratorRows: extractCollaboratorRows(characterMatrix, 3),
-      relevantThreads: extractRelevantThreads(pendingHooks, subplotBoard),
+      relevantThreads: extractRelevantThreads(pendingHooks, subplotBoard, input.chapterNumber),
       recyclableHooks: formatRecyclableHooks(
         input.recyclableHooks ?? [],
         input.chapterNumber,
@@ -288,7 +290,15 @@ export class PlannerAgent extends BaseAgent {
       );
 
       try {
-        return parseMemo(response.content, input.chapterNumber, input.isGoldenOpening);
+        const memo = parseMemo(response.content, input.chapterNumber, input.isGoldenOpening);
+        const hookLedgerIssues = validatePlannedHookLedger(
+          memo.body,
+          parsePendingHooksMarkdown(pendingHooks),
+        );
+        if (hookLedgerIssues.length > 0) {
+          throw new PlannerParseError(`invalid hook ledger: ${hookLedgerIssues.join("; ")}`);
+        }
+        return memo;
       } catch (error) {
         if (!(error instanceof PlannerParseError)) {
           throw error;

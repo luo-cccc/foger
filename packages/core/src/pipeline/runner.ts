@@ -1593,6 +1593,8 @@ export class PipelineRunner {
         };
       }
       this.logLengthWarnings(lengthWarnings);
+      const hardLengthPassed = chapterMeta.lengthTelemetry === undefined || lengthWarnings.length === 0;
+      const truthAccepted = effectivePostRevision.auditResult.passed && hardLengthPassed;
 
       // Save revised chapter file
       this.logStage(stageLanguage, {
@@ -1616,25 +1618,28 @@ export class PipelineRunner {
         "utf-8",
       );
 
-      // Update truth files
+      // An explicit revision may keep a body that still needs review, but
+      // failed bodies must not mutate durable truth, memory, or snapshots.
       const storyDir = join(bookDir, "story");
-      if (reviseOutput.updatedState !== "(状态卡未更新)") {
-        await writeFile(join(storyDir, "current_state.md"), reviseOutput.updatedState, "utf-8");
+      if (truthAccepted) {
+        if (reviseOutput.updatedState !== "(状态卡未更新)") {
+          await writeFile(join(storyDir, "current_state.md"), reviseOutput.updatedState, "utf-8");
+        }
+        if (gp.numericalSystem && reviseOutput.updatedLedger && reviseOutput.updatedLedger !== "(账本未更新)") {
+          await writeFile(join(storyDir, "particle_ledger.md"), reviseOutput.updatedLedger, "utf-8");
+        }
+        if (reviseOutput.updatedHooks !== "(伏笔池未更新)") {
+          await writeFile(join(storyDir, "pending_hooks.md"), reviseOutput.updatedHooks, "utf-8");
+        }
+        await this.syncLegacyStructuredStateFromMarkdown(bookDir, targetChapter);
       }
-      if (gp.numericalSystem && reviseOutput.updatedLedger && reviseOutput.updatedLedger !== "(账本未更新)") {
-        await writeFile(join(storyDir, "particle_ledger.md"), reviseOutput.updatedLedger, "utf-8");
-      }
-      if (reviseOutput.updatedHooks !== "(伏笔池未更新)") {
-        await writeFile(join(storyDir, "pending_hooks.md"), reviseOutput.updatedHooks, "utf-8");
-      }
-      await this.syncLegacyStructuredStateFromMarkdown(bookDir, targetChapter);
 
       // Update index
       const updatedIndex = index.map((ch) =>
         ch.number === targetChapter
           ? {
               ...ch,
-              status: (effectivePostRevision.auditResult.passed ? "ready-for-review" : "audit-failed") as ChapterMeta["status"],
+              status: (truthAccepted ? "ready-for-review" : "audit-failed") as ChapterMeta["status"],
               wordCount: normalizedRevision.wordCount,
               updatedAt: new Date().toISOString(),
               auditIssues: effectivePostRevision.auditResult.issues.map((i) => `[${i.severity}] ${i.description}`),
@@ -1656,14 +1661,16 @@ export class PipelineRunner {
         }).catch(() => undefined);
       }
 
-      // Re-snapshot
-      this.logStage(stageLanguage, {
-        zh: `更新第${targetChapter}章索引与快照`,
-        en: `updating chapter index and snapshots for chapter ${targetChapter}`,
-      });
-      await this.state.snapshotState(bookId, targetChapter);
-      await this.syncNarrativeMemoryIndex(bookId);
-      await this.syncCurrentStateFactHistory(bookId, targetChapter);
+      if (truthAccepted) {
+        this.logStage(stageLanguage, {
+          zh: `更新第${targetChapter}章索引与快照`,
+          en: `updating chapter index and snapshots for chapter ${targetChapter}`,
+        });
+        await this.state.snapshotState(bookId, targetChapter);
+        await this.syncNarrativeMemoryIndex(bookId);
+        await this.syncCurrentStateFactHistory(bookId, targetChapter);
+        await this.markBookActiveIfNeeded(bookId);
+      }
 
       await this.emitWebhook("revision-complete", bookId, targetChapter, {
         wordCount: normalizedRevision.wordCount,
@@ -1675,7 +1682,7 @@ export class PipelineRunner {
         wordCount: normalizedRevision.wordCount,
         fixedIssues: reviseOutput.fixedIssues,
         applied: true,
-        status: effectivePostRevision.auditResult.passed ? "ready-for-review" : "audit-failed",
+        status: truthAccepted ? "ready-for-review" : "audit-failed",
         lengthWarnings,
         lengthTelemetry,
         ...(recovery.kind === "none" ? {} : { recovery }),
@@ -2189,7 +2196,11 @@ export class PipelineRunner {
       }
     }
 
-    const resolvedStatus = chapterStatus ?? (auditResult.passed ? "ready-for-review" : "audit-failed");
+    const resolvedStatus = chapterStatus ?? (
+      auditResult.passed && lengthWarnings.length === 0
+        ? "ready-for-review"
+        : "audit-failed"
+    );
     await this.state.beginChapterPersistence(bookId, chapterNumber, this.activeOperationIds.get(bookId));
     try {
       await persistChapterArtifacts({
@@ -2204,7 +2215,13 @@ export class PipelineRunner {
       tokenUsage: totalUsage,
       operationId: this.activeOperationIds.get(bookId),
       loadChapterIndex: () => this.state.loadChapterIndex(bookId),
-      saveChapter: () => writer.saveChapter(bookDir, persistenceOutput, gp.numericalSystem, pipelineLang),
+      saveChapter: ({ persistTruth }) => writer.saveChapter(
+        bookDir,
+        persistenceOutput,
+        gp.numericalSystem,
+        pipelineLang,
+        { persistTruth },
+      ),
       saveTruthFiles: async () => {
         await writer.saveNewTruthFiles(bookDir, persistenceOutput, pipelineLang);
         await this.syncLegacyStructuredStateFromMarkdown(bookDir, chapterNumber, persistenceOutput);
@@ -2427,10 +2444,6 @@ export class PipelineRunner {
     const pipelineLang = book.language ?? gp.language;
     const content = await this.readChapterContent(bookDir, targetChapter);
     const storyDir = join(bookDir, "story");
-    const [oldState, oldHooks] = await Promise.all([
-      readFile(join(storyDir, "current_state.md"), "utf-8").catch(() => ""),
-      readFile(join(storyDir, "pending_hooks.md"), "utf-8").catch(() => ""),
-    ]);
 
     const reducedControlInput = (this.config.inputGovernanceMode ?? "v2") === "legacy"
       ? undefined
@@ -2442,8 +2455,22 @@ export class PipelineRunner {
         { reuseExistingIntentWhenContextMissing: true },
       );
 
-    const writer = new WriterAgent(this.agentCtxFor("writer", bookId), this.agentCtxFor("settler", bookId));
-    let syncedOutput = await writer.settleChapterState({
+    // Resync must replay the edited chapter from the previous durable truth.
+    // Using the live truth here can re-apply the same chapter on top of itself
+    // and preserve hallucinated state from an earlier settlement.
+    await this.state.snapshotState(bookId, targetChapter);
+    const restoredPreviousTruth = targetChapter > 0
+      ? await this.state.restoreState(bookId, targetChapter - 1)
+      : false;
+
+    try {
+      const [oldState, oldHooks] = await Promise.all([
+        readFile(join(storyDir, "current_state.md"), "utf-8").catch(() => ""),
+        readFile(join(storyDir, "pending_hooks.md"), "utf-8").catch(() => ""),
+      ]);
+
+      const writer = new WriterAgent(this.agentCtxFor("writer", bookId), this.agentCtxFor("settler", bookId));
+      let syncedOutput = await writer.settleChapterState({
       book,
       bookDir,
       chapterNumber: targetChapter,
@@ -2454,19 +2481,23 @@ export class PipelineRunner {
       ruleStack: reducedControlInput?.composed.ruleStack,
       allowReapply: true,
     });
-    const validator = new StateValidatorAgent(this.agentCtxFor("state-validator", bookId));
-    let validation = await validator.validate(
-      content,
-      targetChapter,
-      oldState,
-      syncedOutput.updatedState,
-      oldHooks,
-      syncedOutput.updatedHooks,
-      pipelineLang,
-    );
+      const validator = new StateValidatorAgent(this.agentCtxFor("state-validator", bookId));
+      let validation = this.validateResyncSettlementCompleteness(
+        syncedOutput,
+        oldState,
+        pipelineLang,
+      ) ?? await validator.validate(
+        content,
+        targetChapter,
+        oldState,
+        syncedOutput.updatedState,
+        oldHooks,
+        syncedOutput.updatedHooks,
+        pipelineLang,
+      );
 
-    if (!validation.passed) {
-      const recovery = await retrySettlementAfterValidationFailure({
+      if (!validation.passed) {
+        const recovery = await retrySettlementAfterValidationFailure({
         writer,
         validator,
         book,
@@ -2488,50 +2519,62 @@ export class PipelineRunner {
         logWarn: (message) => this.logWarn(pipelineLang, message),
         logger: this.config.logger,
       });
-      if (recovery.kind !== "recovered") {
-        throw new Error(
+        if (recovery.kind !== "recovered") {
+          throw new Error(
           recovery.issues[0]?.description
             ?? `Chapter sync still failed for chapter ${targetChapter}.`,
         );
+        }
+        syncedOutput = recovery.output;
+        validation = recovery.validation;
       }
-      syncedOutput = recovery.output;
-      validation = recovery.validation;
-    }
 
-    if (!validation.passed) {
-      throw new Error(`Chapter sync still failed for chapter ${targetChapter}.`);
-    }
+      const incompleteRetry = this.validateResyncSettlementCompleteness(
+        syncedOutput,
+        oldState,
+        pipelineLang,
+      );
+      if (incompleteRetry) {
+        throw new Error(incompleteRetry.warnings[0]?.description ?? "Chapter sync returned an empty truth settlement.");
+      }
 
-    await writer.saveChapter(bookDir, syncedOutput, gp.numericalSystem, pipelineLang);
-    await writer.saveNewTruthFiles(bookDir, syncedOutput, pipelineLang);
-    await this.syncLegacyStructuredStateFromMarkdown(bookDir, targetChapter, syncedOutput);
-    await this.syncNarrativeMemoryIndex(bookId);
-    await this.state.snapshotState(bookId, targetChapter);
-    await this.syncCurrentStateFactHistory(bookId, targetChapter);
+      if (!validation.passed) {
+        throw new Error(`Chapter sync still failed for chapter ${targetChapter}.`);
+      }
 
-    const finalStatus: "ready-for-review" | "audit-failed" = targetMeta.status === "state-degraded"
+      await writer.saveChapter(bookDir, syncedOutput, gp.numericalSystem, pipelineLang);
+      await writer.saveNewTruthFiles(bookDir, syncedOutput, pipelineLang);
+      await this.syncLegacyStructuredStateFromMarkdown(bookDir, targetChapter, syncedOutput);
+      await this.syncNarrativeMemoryIndex(bookId);
+      await this.state.snapshotState(bookId, targetChapter);
+      await this.syncCurrentStateFactHistory(bookId, targetChapter);
+
+      const finalStatus: "ready-for-review" | "audit-failed" = targetMeta.status === "state-degraded"
       ? resolveStateDegradedBaseStatus(targetMeta)
       : "ready-for-review";
 
-    if (targetMeta.status === "state-degraded") {
-      const degradedMetadata = parseStateDegradedReviewNote(targetMeta.reviewNote);
-      const injectedIssues = new Set(degradedMetadata?.injectedIssues ?? []);
-      index[targetIndex] = {
+      if (targetMeta.status === "state-degraded") {
+        const degradedMetadata = parseStateDegradedReviewNote(targetMeta.reviewNote);
+        const injectedIssues = new Set(degradedMetadata?.injectedIssues ?? []);
+        index[targetIndex] = {
         ...targetMeta,
         status: finalStatus,
         updatedAt: new Date().toISOString(),
         auditIssues: targetMeta.auditIssues.filter((issue) => !injectedIssues.has(issue)),
         reviewNote: undefined,
       };
-    } else {
-      index[targetIndex] = {
+      } else {
+        index[targetIndex] = {
         ...targetMeta,
         status: "ready-for-review",
         updatedAt: new Date().toISOString(),
       };
-    }
-    await this.state.saveChapterIndex(bookId, index);
-    return {
+      }
+      await this.state.saveChapterIndex(bookId, index);
+      if (finalStatus === "ready-for-review") {
+        await this.markBookActiveIfNeeded(bookId);
+      }
+      return {
       chapterNumber: targetChapter,
       title: targetMeta.title,
       wordCount: targetMeta.wordCount,
@@ -2547,7 +2590,13 @@ export class PipelineRunner {
       lengthWarnings: targetMeta.lengthWarnings,
       lengthTelemetry: targetMeta.lengthTelemetry,
       tokenUsage: targetMeta.tokenUsage,
-    };
+      };
+    } catch (error) {
+      if (restoredPreviousTruth) {
+        await this.state.restoreState(bookId, targetChapter);
+      }
+      throw error;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -2915,8 +2964,14 @@ ${matrix}`,
   private async assertNoPendingStateRepair(bookId: string): Promise<void> {
     const existingIndex = await this.state.loadChapterIndex(bookId);
     const latestChapter = [...existingIndex].sort((left, right) => right.number - left.number)[0];
-    if (latestChapter?.status !== "state-degraded") {
+    if (latestChapter?.status !== "state-degraded" && latestChapter?.status !== "audit-failed") {
       return;
+    }
+
+    if (latestChapter.status === "audit-failed") {
+      throw new Error(
+        `Latest chapter ${latestChapter.number} is audit-failed. Revise or rewrite that chapter before continuing.`,
+      );
     }
 
     throw new Error(
@@ -3647,6 +3702,30 @@ ${matrix}`,
       blockingCount: revisionBlockingIssues.filter((issue) => issue.severity === "warning" || issue.severity === "critical").length,
       criticalCount: revisionBlockingIssues.filter((issue) => issue.severity === "critical").length,
       revisionBlockingIssues,
+    };
+  }
+
+  private validateResyncSettlementCompleteness(
+    output: WriteChapterOutput,
+    oldState: string,
+    language: LengthLanguage,
+  ): ValidationResult | null {
+    const stateChanged = output.updatedState.trim().length > 0
+      && output.updatedState.trim() !== "(状态卡未更新)"
+      && output.updatedState.trim() !== oldState.trim();
+    const hasSummary = Boolean(
+      output.runtimeStateDelta?.chapterSummary
+      || output.updatedChapterSummaries?.trim()
+      || output.chapterSummary.trim(),
+    );
+    if (stateChanged && hasSummary) return null;
+
+    const description = language === "en"
+      ? "Settlement returned no meaningful state change or current-chapter summary; refusing to mark resync successful."
+      : "状态结算没有产生有效状态变化或当前章摘要，拒绝将 resync 标记为成功。";
+    return {
+      passed: false,
+      warnings: [{ category: "empty-settlement", description }],
     };
   }
 

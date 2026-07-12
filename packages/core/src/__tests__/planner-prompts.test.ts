@@ -18,6 +18,8 @@ describe("PLANNER_MEMO_SYSTEM_PROMPT", () => {
     expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("## 当前任务");
     expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("## 卷级 KR 绑定");
     expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("## 不要做");
+    expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("禁止写成 `[new] Hxxx`");
+    expect(PLANNER_MEMO_SYSTEM_PROMPT_EN).toContain("never write `[new] Hxxx`");
   });
 
   it("explains attempted volume KR movement without treating it as volume-end completion", () => {

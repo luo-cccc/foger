@@ -155,7 +155,7 @@ function booleanField(record: Record<string, unknown>, key: string): boolean | u
 }
 
 function actionPayloadField(record: Record<string, unknown>): ChatActionPayload | undefined {
-  const value = record.actionPayload;
+  const value = record.actionPayload ?? record.payload;
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   return value as ChatActionPayload;
 }

@@ -41,6 +41,20 @@ export interface ServiceDetailVerifiedProbe {
   readonly detected?: ServiceDetailDetectedConfig;
 }
 
+export interface ServiceDetailConfigPayload {
+  readonly services?: ReadonlyArray<Record<string, unknown>>;
+  readonly service?: string | null;
+  readonly defaultModel?: string | null;
+}
+
+export function savedModelForService(
+  config: ServiceDetailConfigPayload,
+  serviceId: string,
+): string {
+  if (config.service !== serviceId) return "";
+  return config.defaultModel?.trim() ?? "";
+}
+
 export async function probeServiceForDetail(
   serviceId: string,
   body: {

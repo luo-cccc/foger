@@ -89,6 +89,10 @@ defer:
 **硬规则**：
 - 输入的 pending_hooks 里如果有任何 hook 状态已是 "pressured" 或 "near_payoff" 且距上次推进 ≥ 5 章，**必须**放到 advance 或 resolve，不允许 defer
 - advance/resolve 里写的 hook_id 必须真实存在于 pending_hooks 输入中（不要编造 ID）
+- pending_hooks 输入里出现过的任何 hook_id（包括暂缓、未激活、已排期到本章的行）都已经存在，禁止写到 open，更禁止写成 \`[new] Hxxx\`；应按本章动作放入 advance / resolve / defer
+- \`[new]\` 描述和理由中也禁止引用任何已有 hook_id；凡是服务于已有伏笔的预热、补充、变体或前置碎片，都属于该伏笔的 advance/defer，不是新伏笔
+- open 只能使用 \`[new] 描述\`，不得自造 hook_id，不得使用 \`H008-H015\` 这类范围 ID；advance/resolve/defer 必须逐个填写真实存在的 hook_id
+- 没有真正独立的新问题时，open 写“无”；不要为了满足数量感，把已有伏笔拆成衍生小伏笔
 - 如果这章是纯高压/战斗章节没有伏笔处理空间，至少也要有 1 条 advance 或 defer 声明
 - 本章"## 当前任务"如果天然对应某个 hook 的兑现动作，必须在 resolve 里显式声明对应 hook_id
 
@@ -201,6 +205,10 @@ defer:
 **Hard rules**:
 - If any hook in input pending_hooks is already "pressured" or "near_payoff" AND has not advanced in ≥ 5 chapters, it **must** go into advance or resolve — deferring is not allowed.
 - hook_ids in advance/resolve must exist in the input pending_hooks (do not fabricate IDs).
+- Any hook_id present in pending_hooks already exists, including deferred, inactive, or chapter-scheduled rows. Never put such an id under open and never write \`[new] Hxxx\`; place it under advance / resolve / defer according to this chapter's action.
+- A \`[new]\` description or reason must not reference any existing hook_id. A warm-up beat, variant, precursor fragment, or supporting clue for an existing hook belongs under that hook's advance/defer action; it is not a new hook.
+- open may only use \`[new] description\`; never invent a hook_id or use ranges such as \`H008-H015\`. advance/resolve/defer must name real hook_ids one by one.
+- Write \`none\` under open when there is no genuinely independent new question. Do not split existing hooks into derivative mini-hooks merely to create hook volume.
 - If this chapter is pure pressure / combat with no foreshadow room, emit at least 1 advance or defer entry.
 - If "## Current task" naturally corresponds to paying off a hook, it must appear under resolve with the hook_id.
 

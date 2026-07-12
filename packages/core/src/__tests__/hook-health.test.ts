@@ -153,6 +153,34 @@ describe("analyzeHookHealth", () => {
     expect(issues.some((issue) => issue.description.includes("Opened 2 new hooks"))).toBe(true);
   });
 
+  it("does not invent old hook debt for an opening chapter", () => {
+    const issues = analyzeHookHealth({
+      language: "zh",
+      chapterNumber: 1,
+      hooks: [
+        createHook({ hookId: "seed", startChapter: 0, status: "deferred", lastAdvancedChapter: 0 }),
+        createHook({ hookId: "new-a", startChapter: 1, lastAdvancedChapter: 1 }),
+        createHook({ hookId: "new-b", startChapter: 1, lastAdvancedChapter: 1 }),
+      ],
+      delta: createDelta({
+        chapter: 1,
+        hookOps: {
+          upsert: [
+            createHook({ hookId: "new-a", startChapter: 1, lastAdvancedChapter: 1 }),
+            createHook({ hookId: "new-b", startChapter: 1, lastAdvancedChapter: 1 }),
+          ],
+          mention: [],
+          resolve: [],
+          defer: [],
+        },
+      }),
+      existingHookIds: ["seed"],
+      newHookBurstThreshold: 2,
+    });
+
+    expect(issues.some((issue) => issue.description.includes("没有回收任何旧债"))).toBe(false);
+  });
+
   it("does not count absorbed duplicate-family upserts as genuinely new hooks", () => {
     const issues = analyzeHookHealth({
       language: "en",

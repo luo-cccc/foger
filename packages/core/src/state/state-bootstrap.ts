@@ -527,15 +527,24 @@ async function resolveContiguousArtifactChapterProgress(bookDir: string): Promis
 async function loadDurableArtifactChapterNumbers(bookDir: string): Promise<number[]> {
   const chaptersDir = join(bookDir, "chapters");
   const indexPath = join(chaptersDir, "index.json");
-  const [indexChapters, fileChapters] = await Promise.all([
+  const [indexState, fileChapters] = await Promise.all([
     readFile(indexPath, "utf-8")
       .then((raw) => {
-        const parsed = JSON.parse(raw) as Array<{ number?: unknown }>;
-        return parsed
-          .map((entry) => entry?.number)
-          .filter((entry): entry is number => typeof entry === "number" && Number.isInteger(entry) && entry > 0);
+        const parsed = JSON.parse(raw) as Array<{ number?: unknown; status?: unknown }>;
+        const durable: number[] = [];
+        const blocked = new Set<number>();
+        for (const entry of parsed) {
+          const number = entry?.number;
+          if (typeof number !== "number" || !Number.isInteger(number) || number < 1) continue;
+          if (entry.status === "audit-failed" || entry.status === "state-degraded") {
+            blocked.add(number);
+          } else {
+            durable.push(number);
+          }
+        }
+        return { durable, blocked };
       })
-      .catch(() => [] as number[]),
+      .catch(() => ({ durable: [] as number[], blocked: new Set<number>() })),
     readdir(chaptersDir)
       .then((entries) => entries.flatMap((entry) => {
         const match = entry.match(/^(\d+)_/);
@@ -543,7 +552,10 @@ async function loadDurableArtifactChapterNumbers(bookDir: string): Promise<numbe
       }))
       .catch(() => [] as number[]),
   ]);
-  return [...indexChapters, ...fileChapters];
+  return [
+    ...indexState.durable,
+    ...fileChapters.filter((chapter) => !indexState.blocked.has(chapter)),
+  ];
 }
 
 async function pathExists(path: string): Promise<boolean> {

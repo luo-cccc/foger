@@ -76,7 +76,7 @@ function runClaimGate(input: ClaimGateTextInput): ReadonlyArray<ClaimGateIssue> 
   }
 
   for (const claim of input.compiled.usable) {
-    if (claim.claimType === "prohibition" && textMentionsClaim(text, claim)) {
+    if (claim.claimType === "prohibition" && detectsProhibitedContent(input.text, claim)) {
       issues.push(issue({
         severity: "critical",
         category: "claim-prohibition",
@@ -146,6 +146,126 @@ function runClaimGate(input: ClaimGateTextInput): ReadonlyArray<ClaimGateIssue> 
   }
 
   return issues;
+}
+
+function detectsProhibitedContent(text: string, claim: CanonClaim): boolean {
+  const normalized = normalizeText(text);
+  const targets = extractProhibitedTargets(claim);
+  if (targets.some((target) => containsUnnegatedTarget(normalized, target))) {
+    return true;
+  }
+  return detectsSemanticProhibitionViolation(normalized, claim, targets);
+}
+
+function detectsSemanticProhibitionViolation(
+  text: string,
+  claim: CanonClaim,
+  targets: ReadonlyArray<string>,
+): boolean {
+  const prohibition = normalizeText([claim.content, ...claim.constraints.forbiddenUses, ...targets].join(" "));
+  const scopeTerms = extractProhibitionScopeTerms(claim.content, targets);
+  const scopeHit = scopeTerms.length === 0 || scopeTerms.some((term) => text.includes(term));
+  if (!scopeHit) return false;
+
+  if (/(?:打怪|升级|刷级|成长循环|progression|level(?:ing)?)/iu.test(prohibition)) {
+    const progression = containsAnyUnnegatedTarget(text, [
+      "升级", "升阶", "进阶", "变强", "强化", "提升一级", "突破一级",
+      "level up", "power up", "grow stronger",
+    ]);
+    const repetitiveOrAutomatic = /(?:每次|每回|每当|每点亮|每修复|反复|循环|自动|无条件|固定).{0,18}(?:升级|升阶|进阶|变强|强化|提升|突破)|(?:升级|升阶|进阶|变强|强化|提升|突破).{0,18}(?:一级|一阶|一层|一次|自动|无条件|固定)|(?:every|each|automatically|unconditionally).{0,24}(?:level|stronger|power)/iu.test(text);
+    if (progression && repetitiveOrAutomatic) return true;
+  }
+
+  if (/(?:治愈|找回|恢复|复原|回来|recover|restore|heal)/iu.test(prohibition)) {
+    if (containsAnyUnnegatedTarget(text, [
+      "恢复", "找回", "复原", "重新拥有", "回来了", "治好了",
+      "recover", "restore", "regain", "came back", "healed",
+    ])) return true;
+  }
+
+  if (/(?:顿悟|爆种|临阵突破|sudden breakthrough|power spike)/iu.test(prohibition)) {
+    if (containsAnyUnnegatedTarget(text, [
+      "顿悟", "爆种", "临阵突破", "突然突破", "凭空掌握", "瞬间掌握",
+      "sudden breakthrough", "instant mastery", "power spike",
+    ])) return true;
+  }
+
+  if (/(?:降智|失去判断|无条件配合|idiot plot|act stupid)/iu.test(prohibition)) {
+    if (containsAnyUnnegatedTarget(text, [
+      "无条件配合", "突然犯蠢", "放弃思考", "失去判断", "毫无理由地相信",
+      "act stupid", "stops thinking", "without question",
+    ])) return true;
+  }
+
+  return false;
+}
+
+function extractProhibitionScopeTerms(content: string, targets: ReadonlyArray<string>): string[] {
+  let scope = normalizeText(content);
+  for (const target of targets) {
+    scope = scope.replace(target, " ");
+  }
+  scope = scope
+    .split(/[（(]/u, 1)[0]!
+    .replace(/^(?:严禁|禁止|不得|不能|不可|不要|切勿|must\s+not|do\s+not|don't|never)\s*/iu, "")
+    .replace(/(?:变成|成为|演变为|turn(?:s|ed)?\s+into|become(?:s)?).*/iu, "")
+    .trim();
+
+  const terms = new Set<string>();
+  for (const match of scope.match(/[\u4e00-\u9fff]{2,}/gu) ?? []) {
+    const cleaned = match.replace(/(?:主角|配角|角色|行为|内容|情节|核心冲突)/gu, "");
+    if (cleaned.length >= 2 && cleaned.length <= 8) terms.add(cleaned);
+    if (cleaned.length > 3) {
+      for (let index = 0; index <= cleaned.length - 2; index += 1) {
+        terms.add(cleaned.slice(index, index + 2));
+      }
+    }
+  }
+  for (const token of scope.match(/[a-z][a-z0-9-]{3,}/giu) ?? []) {
+    if (!/^(must|never|into|become|turn)$/i.test(token)) terms.add(token.toLowerCase());
+  }
+  return [...terms];
+}
+
+function containsAnyUnnegatedTarget(text: string, targets: ReadonlyArray<string>): boolean {
+  return targets.some((target) => containsUnnegatedTarget(text, normalizeText(target)));
+}
+
+function extractProhibitedTargets(claim: CanonClaim): string[] {
+  const targets = new Set<string>();
+  for (const forbiddenUse of claim.constraints.forbiddenUses) {
+    const normalized = normalizeText(forbiddenUse);
+    if (normalized.length >= 2) targets.add(normalized);
+  }
+
+  const content = normalizeText(claim.content);
+  const quoted = [...content.matchAll(/[“"'‘]([^”"'’]{2,})[”"'’]/gu)]
+    .map((match) => match[1]?.trim() ?? "")
+    .filter((value) => value.length >= 2);
+  if (quoted.length > 0) {
+    for (const value of quoted) targets.add(value);
+    return [...targets];
+  }
+
+  const directive = content
+    .split(/[（(]/u, 1)[0]!
+    .replace(/^(?:严禁|禁止|不得|不能|不可|不要|切勿|must\s+not|do\s+not|don't|never)\s*/iu, "")
+    .replace(/^(?:出现|包含|写入|写出|写|使用|include|write|use)\s*/iu, "")
+    .trim();
+  if (directive.length >= 2) targets.add(directive);
+  return [...targets];
+}
+
+function containsUnnegatedTarget(text: string, target: string): boolean {
+  let index = text.indexOf(target);
+  while (index >= 0) {
+    // "无条件" means unconditional, not grammatical negation.
+    const prefix = text.slice(Math.max(0, index - 32), index).replace(/无条件/gu, "");
+    const negated = /(?:不|未|无|非|别|禁止|避免|防止|不得|不能|不可|绝不|严禁|并非|不是|没有|without|avoid|forbid|must\s+not|do\s+not|don't|never)[^。！？.!?]{0,24}$/iu.test(prefix);
+    if (!negated) return true;
+    index = text.indexOf(target, index + target.length);
+  }
+  return false;
 }
 
 function issue(params: {

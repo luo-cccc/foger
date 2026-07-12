@@ -3,6 +3,7 @@ import {
   deleteServiceConfig,
   matchServiceConfigEntryForDetail,
   rehydrateServiceConnectionStatus,
+  savedModelForService,
   saveServiceConfig,
 } from "./service-detail-state";
 
@@ -51,6 +52,22 @@ describe("matchServiceConfigEntryForDetail", () => {
 
   it("matches non-custom services by service id", () => {
     expect(matchServiceConfigEntryForDetail(entries, "moonshot")).toEqual(entries[0]);
+  });
+});
+
+describe("savedModelForService", () => {
+  it("restores the selected service default model", () => {
+    expect(savedModelForService({
+      service: "openrouter",
+      defaultModel: "deepseek/deepseek-v4-pro",
+    }, "openrouter")).toBe("deepseek/deepseek-v4-pro");
+  });
+
+  it("does not leak the global default into another service form", () => {
+    expect(savedModelForService({
+      service: "openrouter",
+      defaultModel: "deepseek/deepseek-v4-pro",
+    }, "deepseek")).toBe("");
   });
 });
 

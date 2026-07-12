@@ -139,7 +139,13 @@ export function BookDetail({
   const activity = useMemo(() => deriveBookActivity(sse.messages, bookId), [bookId, sse.messages]);
   const writing = writeRequestPending || activity.writing;
   const drafting = draftRequestPending || activity.drafting;
-  const latestPersistedChapter = data ? data.nextChapter - 1 : 0;
+  const latestPersistedChapter = data?.chapters.reduce(
+    (latest, chapter) => Math.max(latest, chapter.number),
+    0,
+  ) ?? 0;
+  const latestChapter = data?.chapters.find((chapter) => chapter.number === latestPersistedChapter);
+  const continuationBlocked = latestChapter?.status === "audit-failed"
+    || latestChapter?.status === "state-degraded";
   const latestStateDegradedChapter = data?.chapters.at(-1)?.status === "state-degraded"
     ? data.chapters.at(-1)?.number
     : undefined;
@@ -513,7 +519,16 @@ export function BookDetail({
         <div className="flex flex-wrap gap-2">
           <button
             onClick={handleWriteNext}
-            disabled={writing || drafting}
+            disabled={writing || drafting || continuationBlocked}
+            title={latestChapter?.status === "audit-failed"
+              ? (book.language === "en"
+                  ? `Chapter ${latestChapter.number} failed audit. Revise or rewrite it before continuing.`
+                  : `第 ${latestChapter.number} 章审稿未通过，请先修订或重写。`)
+              : latestChapter?.status === "state-degraded"
+                ? (book.language === "en"
+                    ? `Chapter ${latestChapter.number} has degraded state. Repair or rewrite it before continuing.`
+                    : `第 ${latestChapter.number} 章状态结算失败，请先修复状态或重写。`)
+                : undefined}
             data-testid="write-next-button"
             className="flex items-center gap-2 px-5 py-2.5 text-sm font-bold bg-primary text-primary-foreground rounded-xl hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20 disabled:opacity-50"
           >
@@ -522,7 +537,7 @@ export function BookDetail({
           </button>
           <button
             onClick={handleDraft}
-            disabled={writing || drafting}
+            disabled={writing || drafting || continuationBlocked}
             className="flex items-center gap-2 px-5 py-2.5 text-sm font-bold bg-secondary text-foreground rounded-xl hover:bg-secondary/80 transition-all border border-border/50 disabled:opacity-50"
           >
             {drafting ? <div className="w-4 h-4 border-2 border-muted-foreground/20 border-t-muted-foreground rounded-full animate-spin" /> : <Wand2 size={16} />}

@@ -3,6 +3,7 @@ import {
   clearBookCreateSessionId,
   filterModelGroups,
   getBookCreateSessionId,
+  getBookContinuationBlock,
   getChatScrollBehavior,
   getProjectChatSessionId,
   pickModelSelection,
@@ -11,6 +12,22 @@ import {
   setProjectChatSessionId,
   isChatScrollNearBottom,
 } from "./chat-page-state";
+
+describe("getBookContinuationBlock", () => {
+  it("blocks continuation when the latest chapter failed audit", () => {
+    expect(getBookContinuationBlock([
+      { number: 1, status: "ready-for-review" },
+      { number: 2, status: "audit-failed" },
+    ])).toEqual({ chapterNumber: 2, status: "audit-failed" });
+  });
+
+  it("allows continuation when the latest chapter is reviewable", () => {
+    expect(getBookContinuationBlock([
+      { number: 2, status: "audit-failed" },
+      { number: 3, status: "ready-for-review" },
+    ])).toBeNull();
+  });
+});
 
 describe("book-create session localStorage helpers", () => {
   const storage = new Map<string, string>();
@@ -164,13 +181,27 @@ describe("pickModelSelection", () => {
     });
   });
 
-  it("prefers the configured service even when its configured model is stale", () => {
+  it("preserves the configured model when it is missing from the static model bank", () => {
     expect(pickModelSelection(grouped, null, null, {
       service: "moonshot",
       model: "kimi-k3",
     })).toEqual({
-      model: "kimi-k2.5",
+      model: "kimi-k3",
       service: "moonshot",
+    });
+  });
+
+  it("does not downgrade a live OpenRouter model to openrouter/auto", () => {
+    expect(pickModelSelection([{
+      service: "openrouter",
+      label: "OpenRouter",
+      models: [{ id: "openrouter/auto" }],
+    }], null, null, {
+      service: "openrouter",
+      model: "deepseek/deepseek-v4-pro",
+    })).toEqual({
+      model: "deepseek/deepseek-v4-pro",
+      service: "openrouter",
     });
   });
 

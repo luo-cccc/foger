@@ -67,7 +67,7 @@ describe("persistChapterArtifacts", () => {
       now: () => "2026-04-01T00:00:00.000Z",
     });
 
-    expect(saveChapter).toHaveBeenCalledTimes(1);
+    expect(saveChapter).toHaveBeenCalledWith({ persistTruth: true });
     expect(saveTruthFiles).toHaveBeenCalledTimes(1);
     expect(saveChapterIndex).toHaveBeenCalledWith([
       expect.objectContaining({
@@ -93,6 +93,59 @@ describe("persistChapterArtifacts", () => {
     expect(logSnapshotStage).toHaveBeenCalledTimes(1);
     expect(snapshotState).toHaveBeenCalledTimes(1);
     expect(syncCurrentStateFactHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps audit-failed prose for review without advancing story truth or snapshots", async () => {
+    const saveChapter = vi.fn().mockResolvedValue(undefined);
+    const saveTruthFiles = vi.fn().mockResolvedValue(undefined);
+    const saveChapterIndex = vi.fn().mockResolvedValue(undefined);
+    const markBookActiveIfNeeded = vi.fn().mockResolvedValue(undefined);
+    const persistAuditDriftGuidance = vi.fn().mockResolvedValue(undefined);
+    const snapshotState = vi.fn().mockResolvedValue(undefined);
+    const syncCurrentStateFactHistory = vi.fn().mockResolvedValue(undefined);
+    const logSnapshotStage = vi.fn();
+
+    await persistChapterArtifacts({
+      chapterNumber: 2,
+      chapterTitle: "Failed Chapter",
+      status: "audit-failed",
+      auditResult: createAuditResult({
+        passed: false,
+        issues: [createIssue({ severity: "critical", description: "blocking issue" })],
+        summary: "failed",
+      }),
+      finalWordCount: 999,
+      lengthWarnings: ["too long"],
+      degradedIssues: [],
+      tokenUsage: ZERO_USAGE,
+      loadChapterIndex: async () => [] satisfies ReadonlyArray<ChapterMeta>,
+      saveChapter,
+      saveTruthFiles,
+      saveChapterIndex,
+      markBookActiveIfNeeded,
+      persistAuditDriftGuidance,
+      snapshotState,
+      syncCurrentStateFactHistory,
+      logSnapshotStage,
+      now: () => "2026-04-01T00:00:00.000Z",
+    });
+
+    expect(saveChapter).toHaveBeenCalledWith({ persistTruth: false });
+    expect(saveTruthFiles).not.toHaveBeenCalled();
+    expect(saveChapterIndex).toHaveBeenCalledWith([
+      expect.objectContaining({
+        number: 2,
+        status: "audit-failed",
+        auditIssues: ["[critical] blocking issue"],
+      }),
+    ]);
+    expect(markBookActiveIfNeeded).not.toHaveBeenCalled();
+    expect(persistAuditDriftGuidance).toHaveBeenCalledWith([
+      expect.objectContaining({ severity: "critical", description: "blocking issue" }),
+    ]);
+    expect(logSnapshotStage).not.toHaveBeenCalled();
+    expect(snapshotState).not.toHaveBeenCalled();
+    expect(syncCurrentStateFactHistory).not.toHaveBeenCalled();
   });
 
   it("skips truth persistence and snapshots for state-degraded chapters while preserving review note", async () => {
@@ -130,7 +183,7 @@ describe("persistChapterArtifacts", () => {
       now: () => "2026-04-01T00:00:00.000Z",
     });
 
-    expect(saveChapter).toHaveBeenCalledTimes(1);
+    expect(saveChapter).toHaveBeenCalledWith({ persistTruth: false });
     expect(saveTruthFiles).not.toHaveBeenCalled();
     expect(saveChapterIndex).toHaveBeenCalledWith([
       expect.objectContaining({
@@ -147,6 +200,7 @@ describe("persistChapterArtifacts", () => {
       injectedIssues: ["[warning] state mismatch"],
     });
     expect(persistAuditDriftGuidance).toHaveBeenCalledWith([]);
+    expect(markBookActiveIfNeeded).not.toHaveBeenCalled();
     expect(logSnapshotStage).not.toHaveBeenCalled();
     expect(snapshotState).not.toHaveBeenCalled();
     expect(syncCurrentStateFactHistory).not.toHaveBeenCalled();
