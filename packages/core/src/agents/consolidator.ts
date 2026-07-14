@@ -119,7 +119,7 @@ export class ConsolidatorAgent extends BaseAgent {
           role: "user",
           content: `Volume: ${vol.name} (Chapters ${vol.startCh}-${vol.endCh})\n\nChapter summaries:\n${header}\n${volSummaryRows}`,
         },
-      ], { temperature: 0.3 });
+      ], { temperature: 0.3, stream: false, callPhase: "consolidate" });
 
       newSummaries.push(`\n## ${vol.name} (Ch.${vol.startCh}-${vol.endCh})\n\n${response.content.trim()}`);
     }

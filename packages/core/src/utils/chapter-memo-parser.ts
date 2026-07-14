@@ -20,6 +20,8 @@ export class PlannerParseError extends Error {
 // - 20 chars: long enough to catch obvious empty sections (whitespace,
 //   "(略)", "TODO") but short enough to accept genuinely sparse memos for
 //   breath/transition chapters (Phase 6 sparse-memo principle).
+// - 10 chars for the slow/transition function because one concrete sentence
+//   is sufficient; forcing filler here caused unnecessary Planner retries.
 // - 1 char for "## 不要做" / "## Do not" because "无" / "N/A" / "none" /
 //   "—" are all legitimate for a chapter with no extra prohibitions; we
 //   only need to ensure the section is not whitespace-only.
@@ -33,7 +35,7 @@ const REQUIRED_SECTIONS: ReadonlyArray<RequiredSection> = [
   { zh: "## 当前任务", en: "## Current task", minContentChars: 20 },
   { zh: "## 读者此刻在等什么", en: "## What the reader is waiting for right now", minContentChars: 20 },
   { zh: "## 该兑现的 / 暂不掀的", en: "## To pay off / to keep buried", minContentChars: 20 },
-  { zh: "## 日常/过渡承担什么任务", en: "## What the slow / transitional beats carry", minContentChars: 20 },
+  { zh: "## 日常/过渡承担什么任务", en: "## What the slow / transitional beats carry", minContentChars: 10 },
   { zh: "## 关键抉择过三连问", en: "## Three-question check on the key choice", minContentChars: 20 },
   { zh: "## 章尾必须发生的改变", en: "## Required end-of-chapter change", minContentChars: 20 },
   { zh: "## 本章 hook 账", en: "## Hook ledger for this chapter", minContentChars: 20 },
@@ -144,12 +146,17 @@ function extractGoal(body: string): string {
 }
 
 function extractThreadRefs(body: string): string[] {
-  const block = extractAnyHeading(body, THREAD_HEADINGS);
+  const block = extractAnyHeadingRaw(body, THREAD_HEADINGS);
   if (!block || /^(无|none|n\/a|na|—|-|\(none\))$/i.test(block.trim())) {
     return [];
   }
-  const matches = block.match(/\b[A-Za-z][A-Za-z0-9_-]*\d+[A-Za-z0-9_-]*\b/g) ?? [];
-  return [...new Set(matches)];
+  const listRefs = block
+    .split(/\r?\n/)
+    .map((line) => line.trim().replace(/^[-*]\s*/, ""))
+    .filter((line) => /^[A-Za-z][A-Za-z0-9_-]*$/.test(line))
+    .filter((line) => !/^(?:none|n\/a|na)$/i.test(line));
+  const legacyMatches = block.match(/\b[A-Za-z][A-Za-z0-9_-]*\d+[A-Za-z0-9_-]*\b/g) ?? [];
+  return [...new Set([...listRefs, ...legacyMatches])];
 }
 
 function extractVolumeKrBinding(body: string): { refs: string[]; rationale: string } {

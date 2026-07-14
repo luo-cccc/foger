@@ -196,7 +196,7 @@ describe("persistChapterArtifacts", () => {
     const reviewNote = saveChapterIndex.mock.calls[0]?.[0]?.[0]?.reviewNote as string;
     expect(JSON.parse(reviewNote)).toMatchObject({
       kind: "state-degraded",
-      baseStatus: "audit-failed",
+      baseStatus: "ready-for-review",
       injectedIssues: ["[warning] state mismatch"],
     });
     expect(persistAuditDriftGuidance).toHaveBeenCalledWith([]);

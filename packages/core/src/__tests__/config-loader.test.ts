@@ -16,6 +16,7 @@ const ENV_KEYS = [
   "INKOS_LLM_STREAM",
   "INKOS_LLM_EXTRA_top_p",
   "INKOS_DEFAULT_LANGUAGE",
+  "INKOS_ROUTE_MINIMAX_KEY",
 ] as const;
 
 describe("loadProjectConfig local provider auth", () => {
@@ -150,6 +151,56 @@ describe("loadProjectConfig local provider auth", () => {
     expect(config.llm.baseUrl).toBe("https://api.minimaxi.com/v1");
     expect(config.llm.model).toBe("MiniMax-M2.7");
     expect(config.llm.apiKey).toBe("sk-minimax");
+  });
+
+  it("hydrates model override apiKeyEnv from the matching project service secret", async () => {
+    root = await mkdtemp(join(tmpdir(), "inkos-config-loader-override-secret-"));
+    for (const key of ENV_KEYS) {
+      previousEnv.set(key, process.env[key]);
+      process.env[key] = "";
+    }
+
+    await writeFile(join(root, "inkos.json"), JSON.stringify({
+      name: "override-secret-project",
+      version: "0.1.0",
+      language: "zh",
+      llm: {
+        configSource: "studio",
+        services: [
+          { service: "openrouter", baseUrl: "https://openrouter.ai/api/v1", temperature: 0.7 },
+          { service: "minimax", baseUrl: "https://api.minimaxi.com/v1", temperature: 0.9 },
+        ],
+        defaultModel: "deepseek/deepseek-v4-flash",
+      },
+      modelOverrides: {
+        writer: {
+          model: "MiniMax-M3",
+          provider: "openai",
+          service: "minimax",
+          baseUrl: "https://api.minimaxi.com/v1",
+          apiKeyEnv: "INKOS_ROUTE_MINIMAX_KEY",
+          apiFormat: "chat",
+          stream: false,
+        },
+      },
+    }, null, 2), "utf-8");
+    await mkdir(join(root, ".inkos"), { recursive: true });
+    await writeFile(
+      join(root, ".inkos", "secrets.json"),
+      JSON.stringify({ services: {
+        openrouter: { apiKey: "sk-openrouter" },
+        minimax: { apiKey: "sk-minimax-override" },
+      } }, null, 2),
+      "utf-8",
+    );
+
+    const config = await loadProjectConfig(root, { consumer: "studio" });
+
+    expect(config.modelOverrides?.writer).toMatchObject({
+      service: "minimax",
+      apiKeyEnv: "INKOS_ROUTE_MINIMAX_KEY",
+    });
+    expect(process.env.INKOS_ROUTE_MINIMAX_KEY).toBe("sk-minimax-override");
   });
 
   it("loads custom service config using custom secret key and entry baseUrl", async () => {

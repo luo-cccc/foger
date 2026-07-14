@@ -6,11 +6,15 @@ import type { CanonBundle } from "../models/canon.js";
 
 const ZERO_USAGE = { promptTokens: 0, completionTokens: 0, totalTokens: 0 } as const;
 
-function makeAgent(llmOverride?: (messages: unknown) => string): CanonExtractor {
+function makeAgent(
+  llmOverride?: (messages: unknown) => string,
+  stream = false,
+  optionsSeen?: unknown[],
+): CanonExtractor {
   const client = {
     provider: "openai",
     apiFormat: "chat",
-    stream: false,
+    stream,
     defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
   } as unknown as LLMClient;
 
@@ -18,7 +22,8 @@ function makeAgent(llmOverride?: (messages: unknown) => string): CanonExtractor 
 
   if (llmOverride) {
     vi.spyOn(agent as unknown as { chat: (...a: unknown[]) => Promise<unknown> }, "chat").mockImplementation(
-      async (messages) => {
+      async (messages, options) => {
+        optionsSeen?.push(options);
         const content = llmOverride(messages);
         return { content, usage: ZERO_USAGE };
       },
@@ -89,6 +94,7 @@ describe("CanonExtractor", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkos-canon-"));
     try {
       writeFoundation(tmp);
+      const optionsSeen: unknown[] = [];
       const agent = makeAgent(() =>
         JSON.stringify({
           claims: [
@@ -107,11 +113,14 @@ describe("CanonExtractor", () => {
           protagonistSystem: { name: "林辞" },
           systemRelations: { mode: "hybrid", auditRules: ["主角例外不得泛化"] },
         }),
+        true,
+        optionsSeen,
       );
 
       const result = await agent.extract(tmp, "zh");
       expect(result.usedFallback).toBe(false);
       expect(result.claims).toHaveLength(1);
+      expect(optionsSeen[0]).toMatchObject({ stream: false, callPhase: "extract" });
 
       const bundle: CanonBundle = {
         claims: { claims: [...result.claims] },
@@ -130,6 +139,84 @@ describe("CanonExtractor", () => {
     }
   });
 
+  it("normalizes nullable optional fields without falling back", async () => {
+    const os = require("node:os");
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkos-canon-"));
+    try {
+      writeFoundation(tmp);
+      const agent = makeAgent(() => JSON.stringify({
+        claims: [{
+          id: "w-1",
+          domain: "world",
+          claimType: "objective_rule",
+          content: "鐏垫皵鎭掑畾",
+          scope: {
+            appliesTo: ["all"],
+            excludes: null,
+            geography: "旧城",
+            timeRange: null,
+          },
+          authority: { source: "story_frame", priority: "hard" },
+          visibility: { characterKnownBy: [], hiddenFrom: [] },
+          relations: null,
+          constraints: null,
+        }],
+        worldSystem: { objectiveRules: ["鐏垫皵鎭掑畾"] },
+        protagonistSystem: {},
+        systemRelations: {},
+      }));
+
+      const result = await agent.extract(tmp, "zh");
+      expect(result.usedFallback).toBe(false);
+      expect(result.claims[0]?.scope.geography).toEqual(["旧城"]);
+      expect(result.claims[0]?.relations).toBeUndefined();
+      expect(result.claims[0]?.constraints.requiresCost).toEqual([]);
+      expect(result.protagonistSystem).toBeNull();
+      expect(result.systemRelations).toBeNull();
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("normalizes style claims so POV rules cannot become hidden or cost-bound story facts", async () => {
+    const os = require("node:os");
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkos-canon-"));
+    try {
+      writeFoundation(tmp);
+      const agent = makeAgent(() => JSON.stringify({
+        claims: [{
+          id: "style-1",
+          domain: "world",
+          claimType: "objective_rule",
+          content: "叙事视角严格锁定在林辞感知范围内，不使用上帝视角。",
+          scope: { appliesTo: ["林辞"] },
+          authority: { source: "story_frame", priority: "hard" },
+          visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["林辞"] },
+          constraints: { requiresCost: ["失去线索"], forbiddenUses: [] },
+        }],
+        worldSystem: {},
+        protagonistSystem: null,
+        systemRelations: null,
+      }));
+
+      const result = await agent.extract(tmp, "zh");
+
+      expect(result.claims[0]).toMatchObject({
+        domain: "style",
+        scope: { appliesTo: ["all"] },
+        visibility: { characterKnownBy: [], hiddenFrom: [] },
+        constraints: { requiresCost: [] },
+      });
+      expect(result.claims[0]?.visibility.readerKnownFrom).toBeUndefined();
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("falls back when the LLM returns schema-invalid JSON", async () => {
     const os = require("node:os");
     const fs = require("node:fs");
@@ -141,6 +228,43 @@ describe("CanonExtractor", () => {
       const result = await agent.extract(tmp, "zh");
       expect(result.usedFallback).toBe(true);
       expect(result.warnings.some((w) => /fallback/i.test(w))).toBe(true);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("salvages complete claims from a truncated LLM JSON envelope", async () => {
+    const os = require("node:os");
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkos-canon-"));
+    try {
+      writeFoundation(tmp);
+      const completeClaim = {
+        id: "world-1",
+        domain: "world",
+        claimType: "objective_rule",
+        content: "灵气枯竭后无法自行恢复",
+        scope: { appliesTo: ["all"] },
+        authority: { source: "story_frame", priority: "hard" },
+        visibility: { characterKnownBy: [], hiddenFrom: [] },
+        constraints: { requiresCost: [], forbiddenUses: [] },
+      };
+      const truncated = `{"claims":[${JSON.stringify(completeClaim)},{"id":"broken"`;
+      const agent = makeAgent(() => truncated);
+
+      const result = await agent.extract(tmp, "zh");
+
+      expect(result.usedFallback).toBe(true);
+      expect(result.claims).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          claimType: "objective_rule",
+          content: "灵气枯竭后无法自行恢复",
+        }),
+      ]));
+      expect(result.claims.some((claim) => claim.claimType === "prohibition")).toBe(true);
+      expect(result.worldSystem.objectiveRules).toContain("灵气枯竭后无法自行恢复");
+      expect(result.warnings.join(" ")).toContain("recovered 1 complete claim");
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

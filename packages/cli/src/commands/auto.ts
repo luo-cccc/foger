@@ -112,6 +112,11 @@ export const autoCommand = new Command("auto")
             `Chapter ${result.chapterNumber} finished in state-degraded status, stopping auto-write. Run "inkos write repair-state ${bookId} ${result.chapterNumber}" first, then re-run inkos auto.`,
           );
         }
+        if (result.status === "audit-failed") {
+          throw new Error(
+            `Chapter ${result.chapterNumber} finished in audit-failed status, stopping auto-write. Revise or rewrite that chapter before re-running inkos auto.`,
+          );
+        }
       }
 
       if (opts.json) {

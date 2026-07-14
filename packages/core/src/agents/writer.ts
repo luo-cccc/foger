@@ -157,14 +157,24 @@ export class WriterAgent extends BaseAgent {
 
   private async settlerChat(
     messages: ReadonlyArray<LLMMessage>,
-    options?: { readonly temperature?: number; readonly maxTokens?: number },
+    options?: {
+      readonly temperature?: number;
+      readonly maxTokens?: number;
+      readonly stream?: boolean;
+      readonly callPhase?: string;
+    },
   ) {
     if (!this.settlerCtx) {
       return this.chat(messages, options);
     }
     return chatCompletion(this.settlerCtx.client, this.settlerCtx.model, messages, {
       ...options,
+      agentName: "settler",
+      callPhase: options?.callPhase ?? "settle",
       onStreamProgress: this.settlerCtx.onStreamProgress,
+      onCallTelemetry: this.settlerCtx.onCallTelemetry,
+      timeoutMs: this.settlerCtx.defaultTimeoutMs,
+      signal: this.settlerCtx.signal,
     });
   }
 
@@ -630,7 +640,7 @@ export class WriterAgent extends BaseAgent {
         { role: "system", content: observerSystem },
         { role: "user", content: observerUser },
       ],
-      { temperature: 0.5 },
+      { temperature: 0.5, stream: false, callPhase: "settle-observe" },
     );
     const observations = observerResponse.content;
 
@@ -672,7 +682,7 @@ export class WriterAgent extends BaseAgent {
       ),
       volumeOutline: this.capLegacyContext("volume_outline", params.volumeOutline, LEGACY_WRITER_CONTEXT_BUDGET.volumeOutline),
       observations,
-      selectedEvidenceBlock: params.selectedEvidenceBlock,
+      selectedEvidenceBlock: governedControlBlock ? undefined : params.selectedEvidenceBlock,
       governedControlBlock,
       validationFeedback: params.validationFeedback,
     });
@@ -682,7 +692,7 @@ export class WriterAgent extends BaseAgent {
         { role: "system", content: settlerSystem },
         { role: "user", content: settlerUser },
       ],
-      { temperature: 0.3 },
+      { temperature: 0.3, stream: false, callPhase: "settle" },
     );
 
     let mergedSettlement: ReturnType<typeof parseSettlementOutput> & {
@@ -1058,12 +1068,10 @@ ${trimmed}
 
   private buildSettlerGovernedControlBlock(
     chapterIntent: string,
-    contextPackage: ContextPackage,
+    _contextPackage: ContextPackage,
     ruleStack: RuleStack,
     language: "zh" | "en",
   ): string {
-    const selectedContext = renderNarrativeSelectedContext(contextPackage.selectedContext, language)
-      .replace(/^### /gm, "- ");
     const overrides = ruleStack.activeOverrides.length > 0
       ? ruleStack.activeOverrides
         .map((override) => `- ${override.from} -> ${override.to}: ${override.reason} (${override.target})`)
@@ -1072,11 +1080,8 @@ ${trimmed}
     const narrativeIntent = buildNarrativeIntentBrief(chapterIntent, language);
 
     if (language === "en") {
-      return `\n## Chapter Control Inputs
+      return `\n## Settlement Control Inputs
 ${narrativeIntent || "(none)"}
-
-### Selected Context
-${selectedContext || "- none"}
 
 ### Rule Stack
 - Hard guardrails: ${ruleStack.sections.hard.join(", ") || "(none)"}
@@ -1084,14 +1089,13 @@ ${selectedContext || "- none"}
 - Diagnostic rules: ${ruleStack.sections.diagnostic.join(", ") || "(none)"}
 
 ### Active Overrides
-${overrides}\n`;
+${overrides}
+
+These controls identify planned targets and ids; they are not evidence that an event happened. Create truth-file changes only from the chapter text and Observer log.\n`;
     }
 
-    return `\n## 本章控制输入
+    return `\n## 状态结算控制输入
 ${narrativeIntent || "(无)"}
-
-### 已选上下文
-${selectedContext || "- none"}
 
 ### 规则栈
 - 硬护栏：${ruleStack.sections.hard.join("、") || "(无)"}
@@ -1099,7 +1103,9 @@ ${selectedContext || "- none"}
 - 诊断规则：${ruleStack.sections.diagnostic.join("、") || "(无)"}
 
 ### 当前覆盖
-${overrides}\n`;
+${overrides}
+
+这些控制项只用于识别计划目标和 ID，不代表事件已经发生。truth files 的任何变化都必须有本章正文或 Observer 观察日志的直接证据。\n`;
   }
 
   /**
@@ -1415,7 +1421,6 @@ ${overrides}\n`;
       return undefined;
     }
   }
-
 
   /**
    * Extract dialogue fingerprints from recent chapters.

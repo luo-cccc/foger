@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BookConfig } from "../models/book.js";
 import type { PlanChapterOutput } from "../agents/planner.js";
-import { ComposerAgent, composeGovernedChapter } from "../agents/composer.js";
+import {
+  ComposerAgent,
+  DEFAULT_ATTENTION_INPUT_TOKENS,
+  composeGovernedChapter,
+  contextBudgetFromClient,
+} from "../agents/composer.js";
 
 const require = createRequire(import.meta.url);
 const hasNodeSqlite = (() => {
@@ -607,8 +612,9 @@ describe("ComposerAgent", () => {
       chapterNumber: 4,
       plan,
       contextBudget: {
-        contextWindowTokens: 900,
+        contextWindowTokens: 100_000,
         reservedOutputTokens: 0,
+        attentionInputTokens: 900,
       },
       compressibleContextCompiler: async (request: {
         readonly protectedEntries: ReadonlyArray<{ readonly source: string }>;
@@ -646,6 +652,19 @@ describe("ComposerAgent", () => {
       compressedSources: expect.arrayContaining(["story/chapter_summaries.md#recent_titles"]),
       protectedSources: expect.arrayContaining(["story/author_intent.md"]),
       semanticSources: expect.arrayContaining(["runtime/current_arc"]),
+    });
+  });
+
+  it("caps selected input by an attention budget even for large-context models", () => {
+    const budget = contextBudgetFromClient({
+      _piModel: { contextWindow: 128_000 },
+      defaults: { maxTokens: 8_000 },
+    } as ConstructorParameters<typeof ComposerAgent>[0]["client"]);
+
+    expect(budget).toEqual({
+      contextWindowTokens: 128_000,
+      reservedOutputTokens: 8_000,
+      attentionInputTokens: DEFAULT_ATTENTION_INPUT_TOKENS,
     });
   });
 

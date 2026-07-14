@@ -19,6 +19,8 @@ describe("parseStudioLLMTelemetryEvent", () => {
       model: "gpt-test",
       durationMs: 1200,
       timeoutMs: 5000,
+      attemptCount: 3,
+      retryCount: 2,
       promptTokens: 100,
       completionTokens: 200,
       totalTokens: 300,
@@ -29,6 +31,8 @@ describe("parseStudioLLMTelemetryEvent", () => {
       operationId: "operation-123",
       status: "partial",
       totalTokens: 300,
+      attemptCount: 3,
+      retryCount: 2,
       partialContentLength: 800,
     }));
   });

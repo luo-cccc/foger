@@ -7,6 +7,7 @@ import {
   shouldRefetchBookCollections,
   shouldRefetchBookView,
   shouldRefetchDaemonStatus,
+  type SidebarBookSummary,
 } from "./use-book-activity";
 
 function msg(event: string, data: unknown, timestamp: number): SSEMessage {
@@ -159,7 +160,7 @@ describe("shouldRefetchDaemonStatus", () => {
 
 describe("applyBookCollectionEvent", () => {
   it("upserts a created book from the event payload without requiring a refetch", () => {
-    const books = [
+    const books: SidebarBookSummary[] = [
       { id: "alpha", title: "Alpha", genre: "urban", status: "active", chaptersWritten: 3 },
     ];
 

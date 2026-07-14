@@ -19,10 +19,14 @@ export interface LLMCallTelemetryAggregate {
   readonly prompt: {
     readonly chars: number;
     readonly estimatedTokens: number;
+    readonly maxChars: number;
+    readonly maxEstimatedTokens: number;
   };
 }
 
 export interface LLMCallTelemetrySummary extends LLMCallTelemetryAggregate {
+  readonly byAgent: Readonly<Record<string, LLMCallTelemetryAggregate>>;
+  readonly byPhase: Readonly<Record<string, LLMCallTelemetryAggregate>>;
   readonly byAgentPhase: Readonly<Record<string, LLMCallTelemetryAggregate>>;
   readonly byServiceModel: Readonly<Record<string, LLMCallTelemetryAggregate>>;
   readonly byAgentServiceModel: Readonly<Record<string, LLMCallTelemetryAggregate>>;
@@ -54,6 +58,8 @@ interface MutableAggregate {
   prompt: {
     chars: number;
     estimatedTokens: number;
+    maxChars: number;
+    maxEstimatedTokens: number;
   };
 }
 
@@ -65,7 +71,7 @@ function createAggregate(): MutableAggregate {
     totalDurationMs: 0,
     statuses: { success: 0, timeout: 0, error: 0, partial: 0 },
     usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-    prompt: { chars: 0, estimatedTokens: 0 },
+    prompt: { chars: 0, estimatedTokens: 0, maxChars: 0, maxEstimatedTokens: 0 },
   };
 }
 
@@ -82,6 +88,11 @@ function addTelemetry(aggregate: MutableAggregate, telemetry: LLMCallTelemetry):
   aggregate.usage.totalTokens += telemetry.usage.totalTokens;
   aggregate.prompt.chars += telemetry.promptAssembly.totalChars;
   aggregate.prompt.estimatedTokens += telemetry.promptAssembly.estimatedTokens;
+  aggregate.prompt.maxChars = Math.max(aggregate.prompt.maxChars, telemetry.promptAssembly.totalChars);
+  aggregate.prompt.maxEstimatedTokens = Math.max(
+    aggregate.prompt.maxEstimatedTokens,
+    telemetry.promptAssembly.estimatedTokens,
+  );
 }
 
 function addToGroup(
@@ -97,6 +108,8 @@ export function summarizeLLMCallTelemetry(
   records: ReadonlyArray<LLMCallTelemetry>,
 ): LLMCallTelemetrySummary {
   const total = createAggregate();
+  const byAgent: Record<string, MutableAggregate> = {};
+  const byPhase: Record<string, MutableAggregate> = {};
   const byAgentPhase: Record<string, MutableAggregate> = {};
   const byServiceModel: Record<string, MutableAggregate> = {};
   const byAgentServiceModel: Record<string, MutableAggregate> = {};
@@ -110,6 +123,8 @@ export function summarizeLLMCallTelemetry(
 
   for (const telemetry of records) {
     addTelemetry(total, telemetry);
+    addToGroup(byAgent, telemetry.agent, telemetry);
+    addToGroup(byPhase, telemetry.phase, telemetry);
     addToGroup(byAgentPhase, `${telemetry.agent}:${telemetry.phase}`, telemetry);
     addToGroup(byServiceModel, `${telemetry.service}:${telemetry.model}`, telemetry);
     addToGroup(
@@ -145,6 +160,8 @@ export function summarizeLLMCallTelemetry(
 
   return {
     ...total,
+    byAgent,
+    byPhase,
     byAgentPhase,
     byServiceModel,
     byAgentServiceModel,

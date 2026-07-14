@@ -3,6 +3,7 @@ import { streamSSE } from "hono/streaming";
 import { serve } from "@hono/node-server";
 import { gzipSync } from "node:zlib";
 import { randomUUID } from "node:crypto";
+import type { BookSummary } from "../shared/contracts.js";
 import {
   StateManager,
   SessionIdSchema,
@@ -54,22 +55,9 @@ import {
   resolveLLMTimeoutMs,
   resolveEffectiveLLMConfig,
   ReviseModeSchema,
-
   InputGovernanceModeSchema,
   GLOBAL_ENV_PATH,
-
-
-
-
-
-
-
-
-
-
   Scheduler,
-
-
   SessionKindSchema,
   isExplicitWriteChapterCommand,
   isWriteNextInstruction,
@@ -79,19 +67,10 @@ import {
 
   inferLanguage,
   deriveBookIdFromTitle,
-
-
-
-
-
-
-
-
+  isBookFoundationComplete,
   toPosixPath,
   type ActionPayload,
   type ActionSource,
-
-
   createSubAgentTool,
   type ResolvedModel,
   type PipelineConfig,
@@ -536,7 +515,6 @@ async function normalizeAgentAttachments(
   return out;
 }
 
-
 function shouldRunDirectWriteNext(args: {
   readonly instruction: string;
   readonly agentBookId: string | null | undefined;
@@ -786,7 +764,6 @@ function validateAgentActionExecution(args: {
     );
   }
 
-
   return undefined;
 }
 
@@ -1014,14 +991,7 @@ async function executeConfirmedProductionAction(args: {
   }
 }
 
-interface StudioBookListSummary {
-  readonly id: string;
-  readonly title: string;
-  readonly genre: string;
-  readonly status: string;
-  readonly chaptersWritten: number;
-  readonly [key: string]: unknown;
-}
+type StudioBookListSummary = BookSummary;
 
 // --- Event bus for SSE ---
 
@@ -1081,13 +1051,7 @@ function broadcast(event: string, data: unknown): void {
 }
 
 async function completeBookExists(bookDir: string): Promise<boolean> {
-  try {
-    await access(join(bookDir, "book.json"));
-    await access(join(bookDir, "story", "story_bible.md"));
-    return true;
-  } catch {
-    return false;
-  }
+  return isBookFoundationComplete(bookDir);
 }
 
 function resolveArchitectBookIdFromArgs(args?: Record<string, unknown>): string | null {
@@ -2032,7 +1996,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
       defaultTimeoutMs,
       signal: overrides?.signal,
       foundationReviewRetries: currentConfig.foundation?.reviewRetries ?? 2,
-      writingReviewRetries: currentConfig.writing?.reviewRetries ?? 1,
+      writingReviewRetries: currentConfig.writing?.reviewRetries ?? 2,
       chapterReviewMode,
       revisionGate,
       modelOverrides: currentConfig.modelOverrides,
@@ -2057,6 +2021,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
         broadcast("llm:telemetry", {
           ...(overrides?.sessionIdForSSE ? { sessionId: overrides.sessionIdForSSE } : {}),
           ...(telemetryBookId ? { bookId: telemetryBookId } : {}),
+          ...(telemetry.operationId ? { operationId: telemetry.operationId } : {}),
           agent: telemetry.agent,
           phase: telemetry.phase,
           status: telemetry.status,
@@ -2064,9 +2029,13 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
           model: telemetry.model,
           durationMs: telemetry.durationMs,
           timeoutMs: telemetry.timeoutMs,
+          attemptCount: telemetry.attemptCount,
+          retryCount: telemetry.retryCount,
           promptTokens: telemetry.usage.promptTokens,
           completionTokens: telemetry.usage.completionTokens,
           totalTokens: telemetry.usage.totalTokens,
+          promptEstimatedTokens: telemetry.promptAssembly.estimatedTokens,
+          usageEstimated: telemetry.usageEstimated ?? false,
           partialContentLength: telemetry.partialContentLength,
           errorMessage: telemetry.errorMessage,
         });
@@ -2256,7 +2225,6 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
     // run (or a server restart) can also drop it — so a bare 404 is ambiguous
     // ("done" vs "never existed"). Check disk: if the foundation is fully
     // written, the book really is ready; report that truthfully.
-    const { isBookFoundationComplete } = await import("@actalk/inkos-core");
     if (await isBookFoundationComplete(state.bookDir(id))) {
       return c.json({ status: "ready" });
     }

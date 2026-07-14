@@ -653,7 +653,6 @@ function normalizeExplicitChapter(value: number | undefined): number {
   return value;
 }
 
-
 function appendWarning(warnings: string[], warning: string): void {
   if (!warnings.includes(warning)) {
     warnings.push(warning);

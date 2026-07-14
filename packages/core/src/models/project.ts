@@ -88,7 +88,7 @@ export const FoundationConfigSchema = z.object({
 export type FoundationConfig = z.infer<typeof FoundationConfigSchema>;
 
 export const WritingConfigSchema = z.object({
-  reviewRetries: z.number().int().min(0).max(10).default(1),
+  reviewRetries: z.number().int().min(0).max(10).default(2),
   reviewMode: z.enum(["auto", "manual"]).default("auto"),
   revisionGate: z.enum(["strict", "lenient", "always"]).default("strict"),
 });
@@ -123,7 +123,7 @@ export const ProjectConfigSchema = z.object({
     reviewRetries: 2,
   }),
   writing: WritingConfigSchema.default({
-    reviewRetries: 1,
+    reviewRetries: 2,
   }),
   modelOverrides: z.record(z.string(), ModelOverrideValueSchema).optional(),
   inputGovernanceMode: InputGovernanceModeSchema.default("v2"),

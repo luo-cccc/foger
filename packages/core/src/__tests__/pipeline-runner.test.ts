@@ -2895,8 +2895,8 @@ describe("PipelineRunner", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it("runs at most one automatic repair iteration during writeNextChapter", async () => {
-    const { root, runner, bookId } = await createRunnerFixture();
+  it("honors an explicit one-iteration automatic repair limit", async () => {
+    const { root, runner, bookId } = await createRunnerFixture({ writingReviewRetries: 1 });
     const draftBody = "甲".repeat(220);
     const revisedBody = "乙".repeat(220);
 
@@ -3810,7 +3810,13 @@ describe("PipelineRunner", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it("syncs the latest edited chapter body back into truth files without requiring state-degraded status", async () => {
+  it.each([
+    { initialStatus: "approved" as const, expectedStatus: "ready-for-review" as const },
+    { initialStatus: "audit-failed" as const, expectedStatus: "audit-failed" as const },
+  ])("syncs the latest edited chapter body while preserving the $initialStatus audit gate", async ({
+    initialStatus,
+    expectedStatus,
+  }) => {
     const { root, runner, state, bookId } = await createRunnerFixture({
       inputGovernanceMode: "v2",
       externalContext: "把注意力收回师债主线。",
@@ -3863,11 +3869,13 @@ describe("PipelineRunner", () => {
       state.saveChapterIndex(bookId, [{
         number: 1,
         title: "夜灯",
-        status: "approved" as ChapterMeta["status"],
+        status: initialStatus as ChapterMeta["status"],
         wordCount: 55,
         createdAt: now,
         updatedAt: now,
-        auditIssues: [],
+        auditIssues: initialStatus === "audit-failed"
+          ? ["[critical] unresolved continuity issue"]
+          : [],
         lengthWarnings: [],
       }]),
     ]);
@@ -3903,7 +3911,7 @@ describe("PipelineRunner", () => {
     ).resyncChapterArtifacts(bookId, 1);
     const savedIndex = await state.loadChapterIndex(bookId);
 
-    expect(result.status).toBe("ready-for-review");
+    expect(result.status).toBe(expectedStatus);
     expect(result.chapterNumber).toBe(1);
     expect(settleSpy).toHaveBeenCalledWith(expect.objectContaining({
       allowReapply: true,
@@ -3920,7 +3928,10 @@ describe("PipelineRunner", () => {
     );
     await expect(readFile(join(storyDir, "current_state.md"), "utf-8")).resolves.toBe("synced state");
     await expect(readFile(join(storyDir, "pending_hooks.md"), "utf-8")).resolves.toBe("synced hooks");
-    expect(savedIndex[0]?.status).toBe("ready-for-review");
+    expect(savedIndex[0]?.status).toBe(expectedStatus);
+    if (initialStatus === "audit-failed") {
+      expect(savedIndex[0]?.auditIssues).toContain("[critical] unresolved continuity issue");
+    }
 
     await rm(root, { recursive: true, force: true });
   });
@@ -5447,15 +5458,19 @@ describe("PipelineRunner", () => {
       expect(result.auditResult.issues).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            category: "paragraph-shape",
             description: expect.stringContaining("段落被切得过碎"),
           }),
           expect.objectContaining({
-            category: "paragraph-shape",
             description: expect.stringContaining("连续出现"),
           }),
         ]),
       );
+      expect(result.auditResult.issues.filter((issue) =>
+        issue.description.includes("段落被切得过碎"),
+      )).toHaveLength(1);
+      expect(result.auditResult.issues.filter((issue) =>
+        issue.description.includes("连续出现"),
+      )).toHaveLength(1);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -6419,6 +6434,72 @@ describe("PipelineRunner", () => {
     });
 
     expect(result.auditResult.issues.filter((issue) => issue.category === "节奏单调")).toHaveLength(2);
+    expect(result.blockingCount).toBe(1);
+    expect(result.criticalCount).toBe(0);
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("deduplicates matching LLM and deterministic audit issues before persistence", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const bookDir = state.bookDir(bookId);
+    const book = await state.loadBookConfig(bookId);
+    const description = "Short paragraph pileup.";
+
+    const result = await (
+      runner as unknown as {
+        evaluateMergedAudit: (params: {
+          auditor: Pick<ContinuityAuditor, "auditChapter">;
+          book: BookConfig;
+          bookDir: string;
+          chapterContent: string;
+          chapterNumber: number;
+          language: "zh" | "en";
+          runPostWriteChecks: (content: string) => ReadonlyArray<AuditIssue>;
+        }) => Promise<{
+          auditResult: AuditResult;
+          aiTellCount: number;
+          blockingCount: number;
+          criticalCount: number;
+          revisionBlockingIssues: ReadonlyArray<AuditIssue>;
+        }>;
+      }
+    ).evaluateMergedAudit({
+      auditor: {
+        auditChapter: vi.fn().mockResolvedValue(
+          createAuditResult({
+            passed: false,
+            issues: [{
+              severity: "warning",
+              category: "style",
+              description,
+              suggestion: "Vary paragraph length.",
+            }],
+            summary: "needs revision",
+          }),
+        ),
+      },
+      book,
+      bookDir,
+      chapterContent: "Tarin checked the numbered seal against the manifest before the gate closed.",
+      chapterNumber: 1,
+      language: "en",
+      runPostWriteChecks: () => [{
+        severity: "warning",
+        category: "paragraph-shape",
+        description: "  Short   paragraph pileup.  ",
+        suggestion: "Break up the short-paragraph sequence.",
+      }],
+    });
+
+    const matchesDescription = (issue: AuditIssue): boolean =>
+      issue.severity === "warning"
+      && issue.description.replace(/\s+/gu, " ").trim() === description;
+
+    expect(result.auditResult.issues.filter(matchesDescription)).toEqual([
+      expect.objectContaining({ category: "style", description }),
+    ]);
+    expect(result.revisionBlockingIssues.filter(matchesDescription)).toHaveLength(1);
     expect(result.blockingCount).toBe(1);
     expect(result.criticalCount).toBe(0);
 

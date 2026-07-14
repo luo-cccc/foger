@@ -39,19 +39,12 @@ import {
   Trash2,
 } from "lucide-react";
 import { InkosLogo } from "./InkosLogo";
+import type { BookListResponse } from "../shared/contracts";
 
 // 历史记录里的会话混装多种类型（chat / book-create），用图标区分。
 function SessionKindIcon({ kind, className }: { readonly kind?: string; readonly className?: string }) {
   const Icon = kind === "book-create" ? BookPlus : MessageSquare;
   return <Icon size={13} className={className} />;
-}
-
-interface BookSummary {
-  readonly id: string;
-  readonly title: string;
-  readonly genre: string;
-  readonly status: string;
-  readonly chaptersWritten: number;
 }
 
 interface Nav {
@@ -74,7 +67,7 @@ export function Sidebar({ nav, activePage, sse, t }: {
   sse: { messages: ReadonlyArray<SSEMessage> };
   t: TFunction;
 }) {
-  const { data, refetch: refetchBooks, mutate: mutateBooks } = useApi<{ books: ReadonlyArray<BookSummary> }>("/books");
+  const { data, refetch: refetchBooks, mutate: mutateBooks } = useApi<BookListResponse>("/books");
   const { data: daemon, refetch: refetchDaemon } = useApi<{ running: boolean }>("/daemon");
   const sessions = useChatStore((s) => s.sessions);
   const sessionIdsByBook = useChatStore((s) => s.sessionIdsByBook);

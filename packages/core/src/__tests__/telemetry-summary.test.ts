@@ -61,6 +61,8 @@ describe("summarizeLLMCallTelemetry", () => {
       usage: { promptTokens: 20, completionTokens: 10, totalTokens: 30 },
       prompt: { chars: 180, estimatedTokens: 45 },
     });
+    expect(summary.byAgent.writer).toMatchObject({ calls: 2, retries: 2 });
+    expect(summary.byPhase.write).toMatchObject({ calls: 2, retries: 2 });
     expect(summary.byAgentPhase["writer:write"]).toMatchObject({ calls: 2, retries: 2 });
     expect(summary.byServiceModel["openrouter:deepseek/v4"]).toMatchObject({ calls: 2, retries: 2 });
     expect(summary.byAgentServiceModel["auditor:minimax:m3"]).toMatchObject({ calls: 1, retries: 0 });
@@ -81,7 +83,9 @@ describe("summarizeLLMCallTelemetry", () => {
       totalDurationMs: 0,
       statuses: { success: 0, timeout: 0, error: 0, partial: 0 },
       usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-      prompt: { chars: 0, estimatedTokens: 0 },
+      prompt: { chars: 0, estimatedTokens: 0, maxChars: 0, maxEstimatedTokens: 0 },
+      byAgent: {},
+      byPhase: {},
       byAgentPhase: {},
       byServiceModel: {},
       byAgentServiceModel: {},

@@ -3,6 +3,7 @@ import type { AssistantMessage, Model, Api } from "@mariozechner/pi-ai";
 import {
   __resetFixedTemperatureWarnings,
   chatCompletion,
+  type LLMCallTelemetry,
   type LLMClient,
 } from "../llm/provider.js";
 
@@ -184,6 +185,31 @@ describe("chatCompletion via pi-ai", () => {
     expect(mockStreamSimple).toHaveBeenCalledOnce();
   });
 
+  it("rejects an oversized prompt locally before invoking the provider transport", async () => {
+    const records: LLMCallTelemetry[] = [];
+
+    await expect(chatCompletion(
+      makeClient(),
+      "test-model",
+      [{ role: "user", content: "oversized prompt ".repeat(20) }],
+      {
+        maxPromptEstimatedTokens: 5,
+        onCallTelemetry: (record) => records.push(record),
+      },
+    )).rejects.toThrow(/Prompt budget exceeded before request/);
+
+    expect(mockStreamSimple).not.toHaveBeenCalled();
+    expect(mockCompleteSimple).not.toHaveBeenCalled();
+    expect(records).toEqual([
+      expect.objectContaining({
+        status: "error",
+        attemptCount: 0,
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        promptAssembly: expect.objectContaining({ estimatedTokens: expect.any(Number) }),
+      }),
+    ]);
+  });
+
   it("aborts a delayed LLM stub before returning a response", async () => {
     const previousStub = process.env.INKOS_AGENT_LLM_STUB;
     const previousDelay = process.env.INKOS_AGENT_LLM_STUB_DELAY_MS;
@@ -219,6 +245,61 @@ describe("chatCompletion via pi-ai", () => {
     );
 
     expect(error.message).toContain("empty response");
+  });
+
+  it("retries a pi-ai non-stream call when the provider returns empty content", async () => {
+    mockCompleteSimple
+      .mockResolvedValueOnce(makeAssistantMessage(""))
+      .mockResolvedValueOnce(makeAssistantMessage("recovered after empty response"));
+
+    const records: Array<{ attemptCount: number; retryCount: number; status: string }> = [];
+    const result = await chatCompletion(
+      makeClient(0.7, { stream: false }),
+      "test-model",
+      [{ role: "user", content: "settle" }],
+      { onCallTelemetry: (record) => records.push(record) },
+    );
+
+    expect(result.content).toBe("recovered after empty response");
+    expect(mockCompleteSimple).toHaveBeenCalledTimes(2);
+    expect(records).toEqual([
+      expect.objectContaining({ attemptCount: 2, retryCount: 1, status: "success" }),
+    ]);
+  });
+
+  it("estimates missing provider usage and includes retry prompt cost", async () => {
+    mockCompleteSimple
+      .mockResolvedValueOnce(makeAssistantMessage(""))
+      .mockResolvedValueOnce({
+        ...makeAssistantMessage("恢复后的正文"),
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+      });
+
+    const records: LLMCallTelemetry[] = [];
+    const result = await chatCompletion(
+      makeClient(0.7, { stream: false }),
+      "test-model",
+      [{ role: "user", content: "写一段正文" }],
+      { onCallTelemetry: (record) => records.push(record) },
+    );
+
+    expect(result.usageEstimated).toBe(true);
+    expect(result.usage.promptTokens).toBeGreaterThan(0);
+    expect(result.usage.completionTokens).toBeGreaterThan(0);
+    expect(result.usage.totalTokens).toBe(result.usage.promptTokens + result.usage.completionTokens);
+    expect(records[0]).toMatchObject({
+      attemptCount: 2,
+      retryCount: 1,
+      usageEstimated: true,
+      usage: result.usage,
+    });
   });
 
   it("wraps 400 API errors with a user-friendly message", async () => {
@@ -267,6 +348,21 @@ describe("chatCompletion via pi-ai", () => {
 
     expect(result.content).toBe("recovered");
     expect(mockStreamSimple).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries pi-ai Connection error responses", async () => {
+    mockCompleteSimple
+      .mockRejectedValueOnce(new Error("Connection error"))
+      .mockResolvedValueOnce(makeAssistantMessage("recovered connection"));
+
+    const result = await chatCompletion(
+      makeClient(0.7, { stream: false }),
+      "test-model",
+      [{ role: "user", content: "repair foundation" }],
+    );
+
+    expect(result.content).toBe("recovered connection");
+    expect(mockCompleteSimple).toHaveBeenCalledTimes(2);
   });
 
   it("passes temperature and maxTokens to streamSimple", async () => {
@@ -359,6 +455,22 @@ describe("chatCompletion via pi-ai", () => {
     const result = await chatCompletion(client, "test-model", [{ role: "user", content: "hi" }]);
 
     expect(result.content).toBe("offline hello");
+    expect(mockCompleteSimple).toHaveBeenCalledOnce();
+    expect(mockStreamSimple).not.toHaveBeenCalled();
+  });
+
+  it("supports a per-call non-streaming override for structured responses", async () => {
+    mockCompleteSimple.mockResolvedValue(makeAssistantMessage("structured hello"));
+
+    const client = makeClient(0.7, { stream: true });
+    const result = await chatCompletion(
+      client,
+      "test-model",
+      [{ role: "user", content: "return JSON" }],
+      { stream: false },
+    );
+
+    expect(result.content).toBe("structured hello");
     expect(mockCompleteSimple).toHaveBeenCalledOnce();
     expect(mockStreamSimple).not.toHaveBeenCalled();
   });
@@ -543,6 +655,67 @@ describe("chatCompletion via pi-ai", () => {
 
     expect(result.content).toBe("推理通道文本");
     expect(fetchMock).toHaveBeenCalledOnce();
+
+    vi.unstubAllGlobals();
+  });
+
+  it("retries a native non-stream chat when the provider returns an empty JSON body", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => "",
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => JSON.stringify({
+          choices: [{ message: { content: "recovered" } }],
+          usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = makeClient(0.7, {
+      service: "custom",
+      stream: false,
+      _piModel: {
+        ...MOCK_PI_MODEL,
+        provider: "openai",
+        baseUrl: "https://gateway.example/v1",
+      },
+    });
+    const result = await chatCompletion(client, "architect-model", [{ role: "user", content: "build" }]);
+
+    expect(result.content).toBe("recovered");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("retries native chat after a standard fetch transport failure", async () => {
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => JSON.stringify({
+          choices: [{ message: { content: "network recovered" } }],
+          usage: { prompt_tokens: 2, completion_tokens: 2, total_tokens: 4 },
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = makeClient(0.7, {
+      service: "custom",
+      stream: false,
+      _piModel: {
+        ...MOCK_PI_MODEL,
+        provider: "openai",
+        baseUrl: "https://gateway.example/v1",
+      },
+    });
+    const result = await chatCompletion(client, "settler-model", [{ role: "user", content: "settle" }]);
+
+    expect(result.content).toBe("network recovered");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
 
     vi.unstubAllGlobals();
   });

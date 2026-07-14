@@ -143,4 +143,26 @@ describe("inkos write next review mode", () => {
       },
     }]);
   });
+
+  it("stops a multi-chapter batch after audit-failed without starting another chapter", async () => {
+    loadBookConfigMock.mockResolvedValue({ language: "zh" });
+    loadConfigMock.mockResolvedValue({ llm: {}, writing: { reviewRetries: 1 } });
+    writeNextChapterMock.mockResolvedValueOnce({
+      chapterNumber: 4,
+      title: "第四章",
+      wordCount: 3000,
+      auditResult: { passed: false, issues: [], summary: "needs review" },
+      revised: false,
+      status: "audit-failed",
+    });
+
+    const { writeCommand } = await import("../commands/write.js");
+    await writeCommand.parseAsync(
+      ["node", "write", "next", "demo-book", "--count", "3"],
+      { from: "node" },
+    );
+
+    expect(writeNextChapterMock).toHaveBeenCalledTimes(1);
+    expect(logMock).toHaveBeenCalledWith("需要先处理审计问题，已停止后续连写。");
+  });
 });

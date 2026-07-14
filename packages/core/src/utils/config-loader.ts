@@ -6,6 +6,7 @@ import {
 } from "./effective-llm-config.js";
 import { loadLLMEnvLayers, GLOBAL_CONFIG_DIR, GLOBAL_ENV_PATH } from "./llm-env.js";
 import { isApiKeyOptionalForEndpoint } from "./llm-endpoint-auth.js";
+import { loadSecrets } from "../llm/secrets.js";
 
 export { GLOBAL_CONFIG_DIR, GLOBAL_ENV_PATH, isApiKeyOptionalForEndpoint };
 
@@ -25,5 +26,25 @@ export async function loadProjectConfig(
     cli: options?.cli,
     requireApiKey: options?.requireApiKey,
   });
+  await hydrateModelOverrideApiKeys(result.config, root);
   return result.config;
+}
+
+/**
+ * Full model overrides are resolved synchronously by PipelineRunner. Bridge
+ * project service secrets into their declared apiKeyEnv at config-load time,
+ * while keeping the secret out of inkos.json and preserving explicit env vars.
+ */
+async function hydrateModelOverrideApiKeys(config: ProjectConfig, root: string): Promise<void> {
+  if (!config.modelOverrides) return;
+
+  const secrets = await loadSecrets(root);
+  for (const value of Object.values(config.modelOverrides)) {
+    if (typeof value === "string" || !value.apiKeyEnv) continue;
+    if (process.env[value.apiKeyEnv]?.trim()) continue;
+
+    const service = value.service ?? config.llm.service;
+    const apiKey = secrets.services[service]?.apiKey?.trim();
+    if (apiKey) process.env[value.apiKeyEnv] = apiKey;
+  }
 }

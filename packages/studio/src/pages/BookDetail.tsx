@@ -7,6 +7,8 @@ import { useColors } from "../hooks/use-colors";
 import { deriveBookActivity, shouldRefetchBookView } from "../hooks/use-book-activity";
 import { localizeKnownRuntimeMessage } from "../lib/error-copy";
 import { getPipelineFailureAction, type PipelineFailureStage } from "../lib/pipeline-failure-advice";
+import { summarizeChapterIssues } from "../lib/chapter-quality-summary";
+import type { BookDetailResponse } from "../shared/contracts";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Button } from "../components/ui/button";
 import {
@@ -40,29 +42,8 @@ import {
   Hand,
   Settings2,
   Square,
+  AlertTriangle,
 } from "lucide-react";
-
-interface ChapterMeta {
-  readonly number: number;
-  readonly title: string;
-  readonly status: string;
-  readonly wordCount: number;
-  readonly operationId?: string;
-}
-
-interface BookData {
-  readonly book: {
-    readonly id: string;
-    readonly title: string;
-    readonly genre: string;
-    readonly status: string;
-    readonly chapterWordCount: number;
-    readonly targetChapters?: number;
-    readonly language?: string;
-  };
-  readonly chapters: ReadonlyArray<ChapterMeta>;
-  readonly nextChapter: number;
-}
 
 type ReviseMode = "spot-fix" | "polish" | "rewrite" | "rework" | "anti-detect";
 type ExportFormat = "txt" | "md" | "epub";
@@ -132,6 +113,7 @@ function translateChapterStatus(status: string, t: TFunction): string {
     "needs-revision": () => t("chapter.needsRevision"),
     "imported": () => t("chapter.imported"),
     "audit-failed": () => t("chapter.auditFailed"),
+    "state-degraded": () => t("chapter.stateDegraded"),
   };
   return map[status]?.() ?? status;
 }
@@ -142,6 +124,8 @@ const STATUS_CONFIG: Record<string, { color: string; icon: React.ReactNode }> = 
   drafted: { color: "text-muted-foreground bg-muted/20", icon: <FileText size={12} /> },
   "needs-revision": { color: "text-destructive bg-destructive/10", icon: <RotateCcw size={12} /> },
   imported: { color: "text-blue-500 bg-blue-500/10", icon: <Download size={12} /> },
+  "audit-failed": { color: "text-destructive bg-destructive/10", icon: <AlertTriangle size={12} /> },
+  "state-degraded": { color: "text-orange-600 bg-orange-500/10", icon: <Settings2 size={12} /> },
 };
 
 export function BookDetail({
@@ -158,7 +142,7 @@ export function BookDetail({
   sse: { messages: ReadonlyArray<SSEMessage> };
 }) {
   const c = useColors(theme);
-  const { data, loading, error, refetch } = useApi<BookData>(`/books/${bookId}`);
+  const { data, loading, error, refetch } = useApi<BookDetailResponse>(`/books/${bookId}`);
   const [writeRequestPending, setWriteRequestPending] = useState(false);
   const [draftRequestPending, setDraftRequestPending] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -550,6 +534,13 @@ export function BookDetail({
   const { book, chapters } = data;
   const totalWords = chapters.reduce((sum, ch) => sum + (ch.wordCount ?? 0), 0);
   const reviewCount = chapters.filter((ch) => ch.status === "ready-for-review").length;
+  const latestIssueSummary = summarizeChapterIssues(
+    latestChapter?.auditIssues,
+    latestChapter?.lengthWarnings,
+  );
+  const latestNeedsReviewNotice = latestChapter !== undefined
+    && (latestChapter.status === "ready-for-review" || latestChapter.status === "audit-failed" || latestChapter.status === "state-degraded")
+    && (latestIssueSummary.total > 0 || latestChapter.status !== "ready-for-review");
 
   const currentWordCount = settingsWordCount ?? book.chapterWordCount;
   const currentTargetChapters = settingsTargetChapters ?? book.targetChapters ?? 0;
@@ -735,6 +726,49 @@ export function BookDetail({
           ) : (
             <span>{t("book.pipelineDrafting")}</span>
           )}
+        </div>
+      )}
+
+      {latestNeedsReviewNotice && latestChapter && (
+        <div
+          data-testid="chapter-quality-notice"
+          className={`flex flex-wrap items-start justify-between gap-3 rounded-xl border px-4 py-3 text-sm ${
+            latestChapter.status === "ready-for-review"
+              ? "border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-200"
+              : "border-destructive/30 bg-destructive/5 text-destructive"
+          }`}
+        >
+          <div className="flex min-w-0 items-start gap-2">
+            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+            <div className="min-w-0">
+              <div className="font-medium">
+                {book.language === "en"
+                  ? latestChapter.status === "ready-for-review"
+                    ? `Chapter ${latestChapter.number} has ${latestIssueSummary.warning + latestIssueSummary.info} minor review item(s). Continuation is allowed.`
+                    : latestChapter.status === "state-degraded"
+                      ? `Chapter ${latestChapter.number} has degraded state and is blocked until repaired.`
+                      : `Chapter ${latestChapter.number} has ${latestIssueSummary.critical || "blocking"} blocking audit issue(s).`
+                  : latestChapter.status === "ready-for-review"
+                    ? `第 ${latestChapter.number} 章有 ${latestIssueSummary.warning + latestIssueSummary.info} 个轻微问题，需人工审核；可以继续下一章。`
+                    : latestChapter.status === "state-degraded"
+                      ? `第 ${latestChapter.number} 章状态降级，修复前已阻断后续写作。`
+                      : `第 ${latestChapter.number} 章有 ${latestIssueSummary.critical || "阻断性"} 个严重问题，需先修订。`}
+              </div>
+              {latestIssueSummary.samples.length > 0 && (
+                <div className="mt-1 truncate text-xs opacity-80">
+                  {latestIssueSummary.samples.join(" · ")}
+                </div>
+              )}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => nav.toChapter(bookId, latestChapter.number)}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-current/20 bg-background/40 px-3 py-1.5 text-xs font-medium hover:bg-background/70"
+          >
+            <Eye size={13} />
+            {book.language === "en" ? "Review chapter" : "查看章节"}
+          </button>
         </div>
       )}
 
@@ -939,6 +973,20 @@ export function BookDetail({
                       {STATUS_CONFIG[ch.status]?.icon}
                       {translateChapterStatus(ch.status, t)}
                     </div>
+                    {(() => {
+                      const issueSummary = summarizeChapterIssues(ch.auditIssues, ch.lengthWarnings);
+                      if (issueSummary.total === 0) return null;
+                      return (
+                        <div
+                          data-testid={`chapter-issues-${ch.number}`}
+                          className="mt-1 flex flex-wrap items-center gap-1 text-[10px] font-medium"
+                        >
+                          {issueSummary.critical > 0 && <span className="text-destructive">{issueSummary.critical} critical</span>}
+                          {issueSummary.warning > 0 && <span className="text-amber-600 dark:text-amber-300">{issueSummary.warning} warning</span>}
+                          {issueSummary.info > 0 && <span className="text-muted-foreground">{issueSummary.info} info</span>}
+                        </div>
+                      );
+                    })()}
                   </td>
                   <td className="px-6 py-4 text-right">
                     <div className="flex gap-1.5 justify-end opacity-0 group-hover:opacity-100 transition-opacity">

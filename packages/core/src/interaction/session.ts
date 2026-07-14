@@ -241,6 +241,3 @@ export function appendInteractionEvent(
     events: [...session.events, event],
   };
 }
-
-
-

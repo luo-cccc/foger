@@ -43,6 +43,7 @@ import { recordReaderClaimReveals } from "../state/claim-visibility.js";
 import { saveCanonBundle } from "../state/canon-store.js";
 import type { CompiledChapterClaims } from "../utils/chapter-claim-compiler.js";
 import { detectVisibleRevealClaimIds } from "../utils/claim-gate.js";
+import { validateChapterMemoCommitments } from "../utils/chapter-memo-commitments.js";
 import {
   detectAttemptedKrRefs,
   detectVisibleKrRefs,
@@ -63,6 +64,11 @@ import {
 } from "./chapter-state-recovery.js";
 import { persistChapterArtifacts } from "./chapter-persistence.js";
 import { runChapterReviewCycle } from "./chapter-review-cycle.js";
+import {
+  deriveAuditPassed,
+  resolveChapterReviewStatus,
+  type ChapterQualityStatus,
+} from "./chapter-quality-gate.js";
 import { validateChapterTruthPersistence } from "./chapter-truth-validation.js";
 import {
   loadPersistedGovernedChapterInput,
@@ -71,6 +77,11 @@ import {
   savePersistedPlan,
 } from "./persisted-governed-plan.js";
 import type { OnPipelineDiagnostic, PipelineDiagnostic } from "./diagnostics.js";
+import {
+  createContextCompilationCache,
+  type ContextCompilationCache,
+  type ContextCompilationCacheStats,
+} from "../utils/context-compilation-cache.js";
 
 const SEQUENCE_LEVEL_CATEGORIES = new Set([
   "Pacing Monotony", "节奏单调",
@@ -89,6 +100,21 @@ function toAuditRepairScope(value: string | undefined): AuditIssue["repairScope"
   return value === "local" || value === "structural" || value === "unknown"
     ? value
     : undefined;
+}
+
+function deduplicateAuditIssues(issues: ReadonlyArray<AuditIssue>): AuditIssue[] {
+  const seen = new Set<string>();
+  return issues.filter((issue) => {
+    const normalizedDescription = String(issue.description ?? "")
+      .normalize("NFKC")
+      .replace(/\s+/gu, " ")
+      .trim()
+      .toLowerCase();
+    const key = JSON.stringify([issue.severity, normalizedDescription]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 interface ImportFoundationSourceOptions {
@@ -462,6 +488,7 @@ export class PipelineRunner {
   private readonly state: StateManager;
   private readonly config: PipelineConfig;
   private readonly agentClients = new Map<string, LLMClient>();
+  private readonly contextCompilationCache: ContextCompilationCache;
   private readonly telemetryWriteQueues = new Map<string, Promise<void>>();
   private readonly activeOperationIds = new Map<string, string>();
   private memoryIndexFallbackWarned = false;
@@ -469,6 +496,10 @@ export class PipelineRunner {
   constructor(config: PipelineConfig) {
     this.config = config;
     this.state = new StateManager(config.projectRoot);
+    this.contextCompilationCache = createContextCompilationCache(
+      32,
+      join(config.projectRoot, ".inkos", "runtime", "context-compilation-cache.json"),
+    );
   }
 
   private localize(language: LengthLanguage, messages: { zh: string; en: string }): string {
@@ -710,6 +741,10 @@ export class PipelineRunner {
 
   public createAgentContext(agent: string, bookId?: string): AgentContext {
     return this.agentCtxFor(agent, bookId);
+  }
+
+  public getContextCompilationCacheStats(): ContextCompilationCacheStats {
+    return this.contextCompilationCache.stats();
   }
 
   private createTelemetrySink(bookId?: string): OnCallTelemetry | undefined {
@@ -1439,7 +1474,7 @@ export class PipelineRunner {
     const hasDurableSnapshot = await stat(
       join(bookDir, "story", "snapshots", String(targetChapter)),
     ).then((entry) => entry.isDirectory()).catch(() => false);
-    const stateRepairIssue: AuditIssue | undefined = result.passed && !hasDurableSnapshot
+    const stateRepairIssue: AuditIssue | undefined = deriveAuditPassed(result) && !hasDurableSnapshot
       ? {
           severity: "warning",
           category: "state-sync-required",
@@ -1455,13 +1490,15 @@ export class PipelineRunner {
     const effectiveResult: AuditResult = stateRepairIssue
       ? { ...result, issues: [...result.issues, stateRepairIssue] }
       : result;
+    const quality = resolveChapterReviewStatus({
+      auditResult: effectiveResult,
+      stateDegraded: stateRepairIssue !== undefined,
+    });
     const updated = index.map((ch) =>
       ch.number === targetChapter
         ? {
             ...ch,
-            status: (stateRepairIssue
-              ? "state-degraded"
-              : result.passed ? "ready-for-review" : "audit-failed") as ChapterMeta["status"],
+            status: quality.status as ChapterMeta["status"],
             updatedAt: new Date().toISOString(),
             auditIssues: effectiveResult.issues.map((i) => `[${i.severity}] ${i.description}`),
             reviewNote: stateRepairIssue
@@ -1482,13 +1519,17 @@ export class PipelineRunner {
     }
 
     await this.emitWebhook(
-      effectiveResult.passed ? "audit-passed" : "audit-failed",
+      quality.status === "ready-for-review" ? "audit-passed" : "audit-failed",
       bookId,
       targetChapter,
       { summary: effectiveResult.summary, issueCount: effectiveResult.issues.length },
     );
 
-    return { ...effectiveResult, chapterNumber: targetChapter };
+    return {
+      ...effectiveResult,
+      passed: deriveAuditPassed(effectiveResult),
+      chapterNumber: targetChapter,
+    };
   }
 
   /** Revise the latest (or specified) chapter based on audit issues. */
@@ -1701,7 +1742,13 @@ export class PipelineRunner {
       }
       this.logLengthWarnings(lengthWarnings);
       const hardLengthPassed = chapterMeta.lengthTelemetry === undefined || lengthWarnings.length === 0;
-      const truthAccepted = effectivePostRevision.auditResult.passed && hardLengthPassed;
+      const revisionQuality = resolveChapterReviewStatus({
+        auditResult: effectivePostRevision.auditResult,
+        hardLengthPassed,
+      });
+      const revisionStatus: Exclude<ChapterQualityStatus, "state-degraded"> =
+        revisionQuality.status === "audit-failed" ? "audit-failed" : "ready-for-review";
+      const truthAccepted = revisionStatus === "ready-for-review";
 
       // Save revised chapter file
       this.logStage(stageLanguage, {
@@ -1746,7 +1793,7 @@ export class PipelineRunner {
         ch.number === targetChapter
           ? {
               ...ch,
-              status: (truthAccepted ? "ready-for-review" : "audit-failed") as ChapterMeta["status"],
+              status: revisionStatus,
               wordCount: normalizedRevision.wordCount,
               updatedAt: new Date().toISOString(),
               auditIssues: effectivePostRevision.auditResult.issues.map((i) => `[${i.severity}] ${i.description}`),
@@ -1789,7 +1836,7 @@ export class PipelineRunner {
         wordCount: normalizedRevision.wordCount,
         fixedIssues: reviseOutput.fixedIssues,
         applied: true,
-        status: truthAccepted ? "ready-for-review" : "audit-failed",
+        status: revisionStatus,
         lengthWarnings,
         lengthTelemetry,
         ...(recovery.kind === "none" ? {} : { recovery }),
@@ -2291,51 +2338,61 @@ export class PipelineRunner {
       }
     }
 
-    const resolvedStatus = chapterStatus ?? (
-      auditResult.passed && lengthWarnings.length === 0
-        ? "ready-for-review"
-        : "audit-failed"
-    );
+    const finalAuditResult: AuditResult = {
+      ...auditResult,
+      issues: deduplicateAuditIssues(auditResult.issues),
+    };
+    auditResult = {
+      ...finalAuditResult,
+      passed: deriveAuditPassed(finalAuditResult),
+    };
+
+    const quality = resolveChapterReviewStatus({
+      auditResult,
+      hardLengthPassed: lengthWarnings.length === 0,
+      stateDegraded: chapterStatus === "state-degraded",
+    });
+    const resolvedStatus = quality.status;
     this.throwIfAborted();
     await this.state.beginChapterPersistence(bookId, chapterNumber, this.activeOperationIds.get(bookId));
     try {
       await persistChapterArtifacts({
-      chapterNumber,
-      chapterTitle: persistenceOutput.title,
-      status: resolvedStatus,
-      auditResult,
-      finalWordCount,
-      lengthWarnings,
-      lengthTelemetry,
-      degradedIssues,
-      tokenUsage: totalUsage,
-      operationId: this.activeOperationIds.get(bookId),
-      loadChapterIndex: () => this.state.loadChapterIndex(bookId),
-      saveChapter: ({ persistTruth }) => writer.saveChapter(
-        bookDir,
-        persistenceOutput,
-        gp.numericalSystem,
-        pipelineLang,
-        { persistTruth },
-      ),
-      saveTruthFiles: async () => {
-        await writer.saveNewTruthFiles(bookDir, persistenceOutput, pipelineLang);
-        await this.syncLegacyStructuredStateFromMarkdown(bookDir, chapterNumber, persistenceOutput);
-        this.logStage(stageLanguage, { zh: "同步记忆索引", en: "syncing memory indexes" });
-        await this.syncNarrativeMemoryIndex(bookId);
-      },
-      saveChapterIndex: (index) => this.state.saveChapterIndex(bookId, index),
-      markBookActiveIfNeeded: () => this.markBookActiveIfNeeded(bookId),
-      persistAuditDriftGuidance: (issues) => this.persistAuditDriftGuidance({
-        bookDir,
         chapterNumber,
-        issues,
-        language: stageLanguage,
-      }).catch(() => undefined),
-      snapshotState: () => this.state.snapshotState(bookId, chapterNumber),
-      syncCurrentStateFactHistory: () => this.syncCurrentStateFactHistory(bookId, chapterNumber),
-      logSnapshotStage: () =>
-        this.logStage(stageLanguage, { zh: "更新章节索引与快照", en: "updating chapter index and snapshots" }),
+        chapterTitle: persistenceOutput.title,
+        status: resolvedStatus,
+        auditResult,
+        finalWordCount,
+        lengthWarnings,
+        lengthTelemetry,
+        degradedIssues,
+        tokenUsage: totalUsage,
+        operationId: this.activeOperationIds.get(bookId),
+        loadChapterIndex: () => this.state.loadChapterIndex(bookId),
+        saveChapter: ({ persistTruth }) => writer.saveChapter(
+          bookDir,
+          persistenceOutput,
+          gp.numericalSystem,
+          pipelineLang,
+          { persistTruth },
+        ),
+        saveTruthFiles: async () => {
+          await writer.saveNewTruthFiles(bookDir, persistenceOutput, pipelineLang);
+          await this.syncLegacyStructuredStateFromMarkdown(bookDir, chapterNumber, persistenceOutput);
+          this.logStage(stageLanguage, { zh: "同步记忆索引", en: "syncing memory indexes" });
+          await this.syncNarrativeMemoryIndex(bookId);
+        },
+        saveChapterIndex: (index) => this.state.saveChapterIndex(bookId, index),
+        markBookActiveIfNeeded: () => this.markBookActiveIfNeeded(bookId),
+        persistAuditDriftGuidance: (issues) => this.persistAuditDriftGuidance({
+          bookDir,
+          chapterNumber,
+          issues,
+          language: stageLanguage,
+        }).catch(() => undefined),
+        snapshotState: () => this.state.snapshotState(bookId, chapterNumber),
+        syncCurrentStateFactHistory: () => this.syncCurrentStateFactHistory(bookId, chapterNumber),
+        logSnapshotStage: () =>
+          this.logStage(stageLanguage, { zh: "更新章节索引与快照", en: "updating chapter index and snapshots" }),
       });
       await this.state.commitChapterPersistence(bookId, chapterNumber, this.activeOperationIds.get(bookId));
     } catch (error) {
@@ -2354,7 +2411,7 @@ export class PipelineRunner {
     if (this.config.notifyChannels && this.config.notifyChannels.length > 0) {
       const statusEmoji = resolvedStatus === "state-degraded"
         ? "🧯"
-        : auditResult.passed ? "✅" : "⚠️";
+        : quality.warning > 0 || quality.critical > 0 ? "⚠️" : "✅";
       const chapterLength = formatLengthCount(finalWordCount, lengthSpec.countingMode);
       await dispatchNotification(this.config.notifyChannels, {
         title: `${statusEmoji} ${book.title} 第${chapterNumber}章`,
@@ -2363,7 +2420,9 @@ export class PipelineRunner {
           revised ? "📝 已自动修正" : "",
           resolvedStatus === "state-degraded"
             ? "状态结算: 已降级保存，需先修复 state 再继续"
-            : `审稿: ${auditResult.passed ? "通过" : "需人工审核"}`,
+            : quality.warning > 0
+              ? `审稿: 发现 ${quality.warning} 个轻微问题，待人工审核`
+              : "审稿: 通过",
           ...auditResult.issues
             .filter((i) => i.severity !== "info")
             .map((i) => `- [${i.severity}] ${i.description}`),
@@ -2376,7 +2435,7 @@ export class PipelineRunner {
     await this.emitWebhook("pipeline-complete", bookId, chapterNumber, {
       title: persistenceOutput.title,
       wordCount: finalWordCount,
-      passed: auditResult.passed,
+      passed: deriveAuditPassed(auditResult),
       revised,
       status: resolvedStatus,
     });
@@ -2685,25 +2744,27 @@ export class PipelineRunner {
       await this.state.snapshotState(bookId, targetChapter);
 
       const finalStatus: "ready-for-review" | "audit-failed" = targetMeta.status === "state-degraded"
-      ? resolveStateDegradedBaseStatus(targetMeta)
-      : "ready-for-review";
+        ? resolveStateDegradedBaseStatus(targetMeta)
+        : targetMeta.status === "audit-failed"
+          ? "audit-failed"
+          : "ready-for-review";
 
       if (targetMeta.status === "state-degraded") {
         const degradedMetadata = parseStateDegradedReviewNote(targetMeta.reviewNote);
         const injectedIssues = new Set(degradedMetadata?.injectedIssues ?? []);
         index[targetIndex] = {
-        ...targetMeta,
-        status: finalStatus,
-        updatedAt: new Date().toISOString(),
-        auditIssues: targetMeta.auditIssues.filter((issue) => !injectedIssues.has(issue)),
-        reviewNote: undefined,
-      };
+          ...targetMeta,
+          status: finalStatus,
+          updatedAt: new Date().toISOString(),
+          auditIssues: targetMeta.auditIssues.filter((issue) => !injectedIssues.has(issue)),
+          reviewNote: undefined,
+        };
       } else {
         index[targetIndex] = {
-        ...targetMeta,
-        status: "ready-for-review",
-        updatedAt: new Date().toISOString(),
-      };
+          ...targetMeta,
+          status: finalStatus,
+          updatedAt: new Date().toISOString(),
+        };
       }
       await this.state.saveChapterIndex(bookId, index);
       restoreOriginalIndexOnFailure = false;
@@ -2713,21 +2774,21 @@ export class PipelineRunner {
         await this.markBookActiveIfNeeded(bookId);
       }
       return {
-      chapterNumber: targetChapter,
-      title: targetMeta.title,
-      wordCount: targetMeta.wordCount,
-      auditResult: {
-        passed: finalStatus !== "audit-failed",
-        issues: [],
-        summary: finalStatus === "audit-failed"
-          ? "chapter truth/state resynced from edited body, but chapter still needs audit fixes"
-          : "chapter truth/state resynced from edited body",
-      },
-      revised: false,
-      status: finalStatus,
-      lengthWarnings: targetMeta.lengthWarnings,
-      lengthTelemetry: targetMeta.lengthTelemetry,
-      tokenUsage: targetMeta.tokenUsage,
+        chapterNumber: targetChapter,
+        title: targetMeta.title,
+        wordCount: targetMeta.wordCount,
+        auditResult: {
+          passed: finalStatus !== "audit-failed",
+          issues: [],
+          summary: finalStatus === "audit-failed"
+            ? "chapter truth/state resynced from edited body, but chapter still needs audit fixes"
+            : "chapter truth/state resynced from edited body",
+        },
+        revised: false,
+        status: finalStatus,
+        lengthWarnings: targetMeta.lengthWarnings,
+        lengthTelemetry: targetMeta.lengthTelemetry,
+        tokenUsage: targetMeta.tokenUsage,
       };
     } catch (error) {
       if (restoredPreviousTruth) {
@@ -3175,6 +3236,9 @@ ${matrix}`,
         return [
           ...baseIssues,
           ...ledgerIssues,
+          ...(memoBody
+            ? validateChapterMemoCommitments(memoBody, content, params.language)
+            : []),
           ...this.runPostWriteClaimGateForChapter(content, params.bookId, compiledClaims),
           ...this.runPostWriteVolumeGateForChapter(
             content,
@@ -3887,30 +3951,28 @@ ${matrix}`,
       language: params.language,
     });
     const postWriteIssues = params.runPostWriteChecks?.(params.chapterContent) ?? [];
-    const hasBlockedWords = sensitiveResult.found.some((f) => f.severity === "block");
-    const hasPostWriteCritical = postWriteIssues.some((issue) => issue.severity === "critical");
-    const issues: ReadonlyArray<AuditIssue> = [
+    const issues: ReadonlyArray<AuditIssue> = deduplicateAuditIssues([
       ...llmAudit.issues,
       ...aiTells.issues,
       ...sensitiveResult.issues,
       ...postWriteIssues,
       ...longSpanFatigue.issues,
-    ];
+    ]);
     // revisionBlockingIssues excludes long-span-fatigue issues by
     // construction (not by category name) so that an LLM-reported issue
     // sharing a category label with a long-span issue is still counted.
-    const revisionBlockingIssues: ReadonlyArray<AuditIssue> = [
+    const revisionBlockingIssues: ReadonlyArray<AuditIssue> = deduplicateAuditIssues([
       ...llmAudit.issues,
       ...aiTells.issues,
       ...sensitiveResult.issues,
       ...postWriteIssues,
-    ];
+    ]);
 
+    const mergedAuditResult: AuditResult = { ...llmAudit, issues };
     return {
       auditResult: {
-        ...llmAudit,
-        passed: (hasBlockedWords || hasPostWriteCritical) ? false : llmAudit.passed,
-        issues,
+        ...mergedAuditResult,
+        passed: deriveAuditPassed(mergedAuditResult),
       },
       aiTellCount: aiTells.issues.length,
       blockingCount: revisionBlockingIssues.filter((issue) => issue.severity === "warning" || issue.severity === "critical").length,
@@ -4089,7 +4151,11 @@ ${matrix}`,
       chapterNumber,
       plan,
       contextBudget: contextBudgetFromClient(composerCtx.client),
-      compressibleContextCompiler: (request) => composer.compileCompressibleContext(request),
+      contextCompilationCache: this.contextCompilationCache,
+      compressibleContextCompiler: (request) => composer.compileCompressibleContext(
+        request,
+        this.contextCompilationCache,
+      ),
       onContextCompression: this.config.onContextCompression,
       claimValidator: new ClaimValidatorAgent(this.agentCtxFor("claim-validator", book.id)),
       volumeAuditor: new VolumeAuditorAgent(this.agentCtxFor("volume-auditor", book.id)),

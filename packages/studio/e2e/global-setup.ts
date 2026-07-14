@@ -1,7 +1,7 @@
 import { execSync, spawn } from "child_process";
 import { fileURLToPath } from "url";
 import path from "path";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createWriteStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -27,8 +27,10 @@ export default async function globalSetup(): Promise<void> {
   const workspaceRoot = path.resolve(path.dirname(thisFile), "../../../");
   const apiPort = readRequiredPort("INKOS_STUDIO_PORT");
   const clientPort = readRequiredPort("INKOS_STUDIO_CLIENT_PORT");
+  const llmMode = readLlmMode();
+  const linkedSourceRoot = path.resolve(process.env.INKOS_LINKED_SOURCE_ROOT?.trim() || workspaceRoot);
   const e2eProjectRoot = mkdtempSync(path.join(tmpdir(), "inkos-studio-e2e-"));
-  ensureE2eProject(e2eProjectRoot);
+  ensureE2eProject(e2eProjectRoot, llmMode, linkedSourceRoot);
   execSync("pnpm --filter @actalk/inkos-core build", {
     cwd: workspaceRoot,
     stdio: "inherit",
@@ -41,7 +43,8 @@ export default async function globalSetup(): Promise<void> {
     cwd: studioRoot,
     env: {
       ...process.env,
-      INKOS_AGENT_LLM_STUB: "1",
+      INKOS_AGENT_LLM_STUB: llmMode === "live" ? "" : "1",
+      INKOS_E2E_LLM_MODE: llmMode,
       INKOS_STUDIO_PORT: String(apiPort),
       INKOS_STUDIO_CLIENT_PORT: String(clientPort),
       INKOS_PROJECT_ROOT: e2eProjectRoot,
@@ -57,7 +60,11 @@ export default async function globalSetup(): Promise<void> {
   }
   writeFileSync(
     runtimeFile,
-    `${JSON.stringify({ pid: child.pid ?? null, projectRoot: e2eProjectRoot })}\n`,
+    `${JSON.stringify({
+      pid: child.pid ?? null,
+      launcherPid: Number(process.env.INKOS_E2E_LAUNCHER_PID) || null,
+      projectRoot: e2eProjectRoot,
+    })}\n`,
     "utf-8",
   );
   process.env.INKOS_E2E_PROJECT_ROOT = e2eProjectRoot;
@@ -78,10 +85,24 @@ function readRequiredPort(name: string): number {
   return value;
 }
 
-function ensureE2eProject(projectRoot: string): void {
+function readLlmMode(): "stub" | "live" {
+  const value = process.env.INKOS_E2E_LLM_MODE?.trim() || "stub";
+  if (value !== "stub" && value !== "live") {
+    throw new Error(`INKOS_E2E_LLM_MODE must be "stub" or "live", received "${value}".`);
+  }
+  return value;
+}
+
+function ensureE2eProject(projectRoot: string, llmMode: "stub" | "live", sourceRoot: string): void {
   mkdirSync(projectRoot, { recursive: true });
   mkdirSync(path.join(projectRoot, "books"), { recursive: true });
   mkdirSync(path.join(projectRoot, ".inkos"), { recursive: true });
+
+  if (llmMode === "live") {
+    copyLiveProjectConfig(projectRoot, sourceRoot);
+    return;
+  }
+
   writeFileSync(
     path.join(projectRoot, "inkos.json"),
     `${JSON.stringify({
@@ -133,6 +154,27 @@ function ensureE2eProject(projectRoot: string): void {
     "utf-8",
   );
   seedE2eBook(projectRoot);
+}
+
+function copyLiveProjectConfig(projectRoot: string, sourceRoot: string): void {
+  const sourceConfig = path.join(sourceRoot, "inkos.json");
+  if (!existsSync(sourceConfig)) {
+    throw new Error(`Linked live E2E requires ${sourceConfig}.`);
+  }
+
+  copyFileSync(sourceConfig, path.join(projectRoot, "inkos.json"));
+  const sourceSecrets = path.join(sourceRoot, ".inkos", "secrets.json");
+  if (existsSync(sourceSecrets)) {
+    copyFileSync(sourceSecrets, path.join(projectRoot, ".inkos", "secrets.json"));
+  }
+
+  writeFileSync(
+    path.join(projectRoot, ".env"),
+    "# Linked live E2E inherits provider environment variables from the launcher.\n",
+    "utf-8",
+  );
+  writeFileSync(path.join(projectRoot, ".node-version"), "22\n", "utf-8");
+  writeFileSync(path.join(projectRoot, ".nvmrc"), "22\n", "utf-8");
 }
 
 function seedE2eBook(projectRoot: string): void {

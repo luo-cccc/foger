@@ -28,6 +28,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:e2e": "node scripts/run-e2e.mjs",
+    "test:linked": "node scripts/run-e2e.mjs --grep @linked",
+    "test:linked:live": "node scripts/run-e2e.mjs --linked-live --grep @linked",
     "lint": "npm run typecheck",
     "pretypecheck": "pnpm --filter @actalk/inkos-core build",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit"

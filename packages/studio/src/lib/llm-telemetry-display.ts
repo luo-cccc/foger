@@ -17,6 +17,8 @@ export interface StudioLLMTelemetryEvent {
   readonly model: string;
   readonly durationMs: number;
   readonly timeoutMs?: number;
+  readonly attemptCount?: number;
+  readonly retryCount?: number;
   readonly promptTokens: number;
   readonly completionTokens: number;
   readonly totalTokens: number;
@@ -73,6 +75,8 @@ export function parseStudioLLMTelemetryEvent(data: unknown): StudioLLMTelemetryE
     model: record.model,
     durationMs: record.durationMs,
     ...(typeof record.timeoutMs === "number" ? { timeoutMs: record.timeoutMs } : {}),
+    ...(typeof record.attemptCount === "number" ? { attemptCount: record.attemptCount } : {}),
+    ...(typeof record.retryCount === "number" ? { retryCount: record.retryCount } : {}),
     promptTokens: record.promptTokens,
     completionTokens: record.completionTokens,
     totalTokens: record.totalTokens,

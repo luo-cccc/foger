@@ -18,6 +18,8 @@ import {
   resolveCliLanguage,
 } from "../localization.js";
 
+const DOCTOR_API_PROBE_TIMEOUT_MS = 3_000;
+
 function buildDoctorProbePlans(
   preferredApiFormat: "chat" | "responses" | undefined,
   preferredStream: boolean | undefined,
@@ -90,7 +92,7 @@ async function fetchDoctorModels(
   try {
     const res = await fetchWithProxy(modelsUrl, {
       headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(DOCTOR_API_PROBE_TIMEOUT_MS),
     }, proxyUrl);
     if (!res.ok) return [];
     const json = await res.json() as { data?: Array<{ id: string }> };
@@ -321,6 +323,7 @@ export const doctorCommand = new Command("doctor")
         const plans = llmConfig.provider === "openai"
           ? buildDoctorProbePlans(llmConfig.apiFormat, llmConfig.stream)
           : [{ apiFormat: (llmConfig.apiFormat ?? "chat") as "chat" | "responses", stream: llmConfig.stream ?? true }];
+        const probeSignal = AbortSignal.timeout(DOCTOR_API_PROBE_TIMEOUT_MS);
 
         for (const model of modelCandidates) {
           for (const plan of plans) {
@@ -333,7 +336,11 @@ export const doctorCommand = new Command("doctor")
               });
               const response = await chatCompletion(client, model, [
                 { role: "user", content: "Say OK" },
-              ], { maxTokens: 16 });
+              ], {
+                maxTokens: 16,
+                retry: false,
+                signal: probeSignal,
+              });
 
               connected = true;
               detectedDetail = `OK (model: ${model}, apiFormat=${plan.apiFormat}, stream=${plan.stream}, tokens: ${response.usage.totalTokens})`;

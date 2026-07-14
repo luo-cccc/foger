@@ -71,8 +71,11 @@ export const statusCommand = new Command("status")
               title: ch.title,
               status: ch.status,
               wordCount: ch.wordCount,
-              ...(ch.status === "audit-failed" || ch.status === "state-degraded"
-                ? { issues: ch.auditIssues }
+              ...(ch.auditIssues.length > 0 || ch.lengthWarnings.length > 0
+                ? {
+                    issues: ch.auditIssues,
+                    ...(ch.lengthWarnings.length > 0 ? { lengthWarnings: ch.lengthWarnings } : {}),
+                  }
                 : {}),
             })),
           } : {}),
@@ -100,9 +103,10 @@ export const statusCommand = new Command("status")
                     ? "x"
                     : "~";
               log(`    [${icon}] Ch.${ch.number} "${ch.title}" | ${formatLengthCount(ch.wordCount, countingMode)} | ${ch.status}`);
-              if ((ch.status === "audit-failed" || ch.status === "state-degraded") && ch.auditIssues.length > 0) {
+              if (ch.auditIssues.length > 0 || ch.lengthWarnings.length > 0) {
                 const criticals = ch.auditIssues.filter((i: string) => i.startsWith("[critical]"));
                 const warnings = ch.auditIssues.filter((i: string) => i.startsWith("[warning]"));
+                const infos = ch.auditIssues.filter((i: string) => i.startsWith("[info]"));
                 if (criticals.length > 0) {
                   for (const issue of criticals) {
                     log(`        ${issue}`);
@@ -116,6 +120,12 @@ export const statusCommand = new Command("status")
                   } else {
                     log(`        + ${warnings.length} warning(s)`);
                   }
+                }
+                if (infos.length > 0) {
+                  log(`        + ${infos.length} info item(s)`);
+                }
+                for (const warning of ch.lengthWarnings) {
+                  log(`        [critical] ${warning}`);
                 }
               }
             }

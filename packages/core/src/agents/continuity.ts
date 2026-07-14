@@ -11,6 +11,7 @@ import {
   readCharacterContext,
   readCurrentStateWithFallback,
 } from "../utils/outline-paths.js";
+import { renderMemoAsNarrativeBlock } from "../utils/narrative-control.js";
 import { join } from "node:path";
 
 export interface AuditResult {
@@ -528,12 +529,15 @@ overall_score 评分校准：
       : "";
 
     const memoBlock = options?.chapterMemo
-      ? isEnglish
-        ? `\n## Chapter Memo (for memo drift checks)\nGoal: ${options.chapterMemo.goal}\n\n${options.chapterMemo.body}\n`
-        : `\n## 章节备忘（用于 memo 偏离检测）\ngoal：${options.chapterMemo.goal}\n\n${options.chapterMemo.body}\n`
+      ? `\n${renderMemoAsNarrativeBlock(options.chapterMemo, undefined, resolvedLanguage)}\n`
       : "";
-    const reducedControlBlock = options?.chapterIntent && options.contextPackage && options.ruleStack
-      ? this.buildReducedControlBlock(options.chapterIntent, options.contextPackage, options.ruleStack, resolvedLanguage)
+    const reducedControlBlock = options?.contextPackage && options.ruleStack
+      ? this.buildReducedControlBlock(
+          options.chapterMemo ? "" : options.chapterIntent ?? "",
+          options.contextPackage,
+          options.ruleStack,
+          resolvedLanguage,
+        )
       : "";
     const styleGuideBlock = reducedControlBlock.length === 0
       ? isEnglish
@@ -571,7 +575,11 @@ ${chapterContent}`;
       { role: "system" as const, content: systemPrompt },
       { role: "user" as const, content: userPrompt },
     ];
-    const chatOptions = { temperature: options?.temperature ?? 0.3 };
+    const chatOptions = {
+      temperature: options?.temperature ?? 0.3,
+      stream: false,
+      callPhase: "audit",
+    };
 
     const response = await this.chat(chatMessages, chatOptions);
 
@@ -659,6 +667,7 @@ ${chapterContent}`;
     language: PromptLanguage,
   ): string {
     const selectedContext = contextPackage.selectedContext
+      .filter((entry) => entry.source !== "runtime/chapter_memo")
       .map((entry) => `- ${entry.source}: ${entry.reason}${entry.excerpt ? ` | ${entry.excerpt}` : ""}`)
       .join("\n");
     const overrides = ruleStack.activeOverrides.length > 0

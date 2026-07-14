@@ -1,8 +1,6 @@
-export interface StudioBookDetail {
-  readonly book: { readonly id: string };
-  readonly chapters: ReadonlyArray<unknown>;
-  readonly nextChapter: number;
-}
+import type { BookDetailResponse } from "../shared/contracts.js";
+
+export type StudioBookDetail = BookDetailResponse;
 
 interface StudioBookCreateStatus {
   readonly status?: string;

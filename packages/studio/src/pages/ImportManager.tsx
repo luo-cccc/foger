@@ -4,11 +4,7 @@ import type { Theme } from "../hooks/use-theme";
 import type { TFunction } from "../hooks/use-i18n";
 import { useColors } from "../hooks/use-colors";
 import { FileInput, BookCopy } from "lucide-react";
-
-interface BookSummary {
-  readonly id: string;
-  readonly title: string;
-}
+import type { BookListResponse } from "../shared/contracts";
 
 interface Nav { toDashboard: () => void; toBook: (bookId: string) => void }
 
@@ -16,7 +12,7 @@ type Tab = "chapters" | "canon";
 
 export function ImportManager({ nav, theme, t, initialTab }: { nav: Nav; theme: Theme; t: TFunction; initialTab?: Tab }) {
   const c = useColors(theme);
-  const { data: booksData } = useApi<{ books: ReadonlyArray<BookSummary> }>("/books");
+  const { data: booksData } = useApi<BookListResponse>("/books");
   const [tab, setTab] = useState<Tab>(initialTab ?? "chapters");
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);

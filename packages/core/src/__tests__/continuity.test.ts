@@ -446,10 +446,11 @@ describe("ContinuityAuditor", () => {
       expect(systemPrompt).not.toContain("7 段正文");
       expect(systemPrompt).not.toContain("大纲偏离检测");
 
-      // User prompt injects the memo for drift-checking.
-      expect(userPrompt).toContain("## 章节备忘（用于 memo 偏离检测）");
-      expect(userPrompt).toContain("goal：陆焚抢回残刃并离开");
-      expect(userPrompt).toContain("## 章尾必须发生的改变");
+      // User prompt receives the compact, fingerprinted execution contract.
+      expect(userPrompt).toContain("## 章节执行合同");
+      expect(userPrompt).toContain("目标: 陆焚抢回残刃并离开");
+      expect(userPrompt).toContain("### 正文必须落地");
+      expect(userPrompt).not.toContain("## 读者此刻在等什么");
       // Legacy volume-outline block is gone.
       expect(userPrompt).not.toContain("## 卷纲");
     } finally {

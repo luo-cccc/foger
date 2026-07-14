@@ -7,6 +7,7 @@ import type { TFunction } from "../hooks/use-i18n";
 import { useColors } from "../hooks/use-colors";
 import { deriveActiveBookIds, shouldRefetchBookCollections } from "../hooks/use-book-activity";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import type { BookListResponse } from "../shared/contracts";
 import {
   Plus,
   BookOpen,
@@ -23,15 +24,6 @@ import {
   Download,
   FileInput,
 } from "lucide-react";
-
-interface BookSummary {
-  readonly id: string;
-  readonly title: string;
-  readonly genre: string;
-  readonly status: string;
-  readonly chaptersWritten: number;
-  readonly language?: string;
-}
 
 interface Nav {
   toBook: (id: string) => void;
@@ -129,7 +121,7 @@ function BookMenu({ bookId, bookTitle, nav, t, onDelete, onOpenChange }: {
 export function Dashboard({ nav, sse, theme, t }: { nav: Nav; sse: { messages: ReadonlyArray<SSEMessage> }; theme: Theme; t: TFunction }) {
   const c = useColors(theme);
   const [menuOpenBookId, setMenuOpenBookId] = useState<string | null>(null);
-  const { data, loading, error, refetch } = useApi<{ books: ReadonlyArray<BookSummary> }>("/books");
+  const { data, loading, error, refetch } = useApi<BookListResponse>("/books");
   const writingBooks = useMemo(() => deriveActiveBookIds(sse.messages), [sse.messages]);
   const serviceStoreServices = useServiceStore((s) => s.services);
   const fetchServices = useServiceStore((s) => s.fetchServices);

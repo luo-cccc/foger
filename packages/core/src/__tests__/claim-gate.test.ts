@@ -205,6 +205,42 @@ describe("claim gates", () => {
     ]);
   });
 
+  it("does not treat known entities and a generic discovery verb as a hidden-truth reveal", () => {
+    const secret = claim({
+      id: "mentor-secret",
+      claimType: "secret_truth",
+      content: "沈牧之并非逃亡，而是故意制造失踪假象，让陆竟弛从外部追查；他是举报者。",
+      visibility: { readerKnownFrom: 20, characterKnownBy: [], hiddenFrom: ["陆竟弛"] },
+    });
+
+    const issues = runPostWriteClaimGate({
+      text: "陆竟弛回到汇通银行，发现导师沈牧之失踪前留下了一把旧钥匙。",
+      compiled: compiled({ mustHide: [secret] }),
+      phase: "post",
+    });
+
+    expect(issues).toEqual([]);
+  });
+
+  it("still blocks a high-confidence reveal of the hidden mentor truth", () => {
+    const secret = claim({
+      id: "mentor-secret",
+      claimType: "secret_truth",
+      content: "沈牧之并非逃亡，而是故意制造失踪假象，让陆竟弛从外部追查；他是举报者。",
+      visibility: { readerKnownFrom: 20, characterKnownBy: [], hiddenFrom: ["陆竟弛"] },
+    });
+
+    const issues = runPostWriteClaimGate({
+      text: "陆竟弛终于明白，沈牧之并非逃亡，而是故意制造失踪假象，以举报者身份引他从外部追查。",
+      compiled: compiled({ mustHide: [secret] }),
+      phase: "post",
+    });
+
+    expect(issues).toEqual([
+      expect.objectContaining({ severity: "critical", category: "claim-character-knowledge-leak" }),
+    ]);
+  });
+
   it("does not treat hiddenFrom character names alone as hidden claim leaks", () => {
     const secret = claim({
       id: "s-role-name",
@@ -496,6 +532,24 @@ describe("claim gates", () => {
     });
 
     expect(issues.map((issue) => issue.category)).not.toContain("claim-hard-rule-bypass");
+    expect(issues.map((issue) => issue.category)).not.toContain("claim-cost-missing");
+  });
+
+  it("does not demand a cost when prose merely mentions a broad system fact", () => {
+    const systemFact = claim({
+      id: "system-fact",
+      domain: "organization",
+      claimType: "institution_rule",
+      content: "汇通银行内部存在代号清道夫的坏账处理系统。",
+      constraints: { requiresCost: ["遭到系统追杀"], forbiddenUses: [] },
+    });
+
+    const issues = runPostWriteClaimGate({
+      text: "旧终端的目录里出现了清道夫三个字，陆竟弛把它抄进笔记。",
+      compiled: compiled({ usable: [systemFact], costRequired: [systemFact] }),
+      phase: "post",
+    });
+
     expect(issues.map((issue) => issue.category)).not.toContain("claim-cost-missing");
   });
 

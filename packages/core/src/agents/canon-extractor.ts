@@ -60,6 +60,13 @@ export class CanonExtractor extends BaseAgent {
     ]);
 
     const protagonist = roleCards.find((r) => r.tier === "major");
+    const deterministicBaseline = heuristicExtract({
+      storyFrame,
+      volumeMap,
+      roleCards,
+      prohibitions: bookRules?.rules.prohibitions ?? [],
+      protagonistName: protagonist?.name ?? bookRules?.rules.protagonist?.name,
+    });
 
     try {
       const result = await this.extractWithLlm({
@@ -70,20 +77,15 @@ export class CanonExtractor extends BaseAgent {
         protagonistName: protagonist?.name ?? bookRules?.rules.protagonist?.name,
         language,
       });
-      return { ...result, usedFallback: false };
+      return result.usedFallback
+        ? mergeCanonExtractions(deterministicBaseline, result)
+        : result;
     } catch (error) {
-      const fallback = heuristicExtract({
-        storyFrame,
-        volumeMap,
-        roleCards,
-        prohibitions: bookRules?.rules.prohibitions ?? [],
-        protagonistName: protagonist?.name ?? bookRules?.rules.protagonist?.name,
-      });
       return {
-        ...fallback,
+        ...deterministicBaseline,
         usedFallback: true,
         warnings: [
-          ...fallback.warnings,
+          ...deterministicBaseline.warnings,
           "LLM canon extraction failed, used heuristic fallback: " +
             (error instanceof Error ? error.message : String(error)),
         ],
@@ -106,12 +108,16 @@ export class CanonExtractor extends BaseAgent {
           'Return {"claims":[CanonClaim...],"worldSystem":{...},"protagonistSystem":{...}|null,"systemRelations":{...}|null}.',
           "CanonClaim fields: id(string), domain(one of world|protagonist|character|organization|power|relationship|history|style), claimType(one of objective_rule|institution_rule|character_exception|belief|rumor|secret_truth|temporary_state|prohibition), content(string), scope{appliesTo:string[],excludes?,geography?,timeRange?}, authority{source:string,priority:hard|strong|soft}, visibility{readerKnownFrom?:number,characterKnownBy:string[],hiddenFrom:string[]}, relations?{conflictsWith?:string[],resolvesBy?:string,dependsOn?:string[]}, constraints?{nonGeneralizable?:boolean,requiresCost:string[],forbiddenUses:string[]}.",
           "Defaults matter: character_exception MUST set constraints.nonGeneralizable=true unless content explains a generalization. secret_truth MUST set a visibility boundary. Extract objective world rules as objective_rule with priority hard; book prohibitions as prohibition with priority hard.",
+          "Style/POV/terminology constraints use domain=style, are always visible (no readerKnownFrom or hiddenFrom), and never require a story-world cost. Set requiresCost only for an actively exercised ability or rule with a direct on-page cost, never for merely discovering or mentioning a fact, organization, or system.",
+          "Keep the JSON bounded: output at most 12 high-value claims, keep each content field under 180 characters, omit decorative details and temporary flavor, and always close the JSON object. Prioritize objective rules, prohibitions, protagonist exceptions, institutional rules, and secret truths.",
         ].join("\n")
       : [
           "你是 InkOS 的设定抽取器。读取散文基础设定，只输出严格 JSON。",
           '返回 {"claims":[CanonClaim...],"worldSystem":{...},"protagonistSystem":{...}|null,"systemRelations":{...}|null}。',
           "CanonClaim 字段：id(字符串), domain(取 world|protagonist|character|organization|power|relationship|history|style 之一), claimType(取 objective_rule|institution_rule|character_exception|belief|rumor|secret_truth|temporary_state|prohibition 之一), content(字符串), scope{appliesTo:string[],excludes?,geography?,timeRange?}, authority{source:string,priority:hard|strong|soft}, visibility{readerKnownFrom?:数字,characterKnownBy:string[],hiddenFrom:string[]}, relations?{conflictsWith?:string[],resolvesBy?:string,dependsOn?:string[]}, constraints?{nonGeneralizable?:布尔,requiresCost:string[],forbiddenUses:string[]}。",
           "默认值很重要：character_exception 必须设置 constraints.nonGeneralizable=true（除非 content 解释可泛化条件）；secret_truth 必须设置可见性边界；世界客观规则抽成 objective_rule 且 priority=hard；本书禁令抽成 prohibition 且 priority=hard。",
+          "叙事视角、文风、术语等写作约束必须使用 domain=style，始终可见（不设 readerKnownFrom / hiddenFrom），也不绑定故事世界代价。requiresCost 只用于角色实际施展能力或绕过规则时必然支付的直接代价，不能用于单纯发现或提及某个事实、组织或系统。",
+          "控制 JSON 规模：最多输出 12 条高价值 claim，每条 content 不超过 180 字；省略装饰性细节和临时风味，必须闭合 JSON。优先抽取客观规则、禁令、主角例外、制度规则和秘密真相。",
         ].join("\n");
 
     const roleBlock = input.roleCards
@@ -133,7 +139,12 @@ export class CanonExtractor extends BaseAgent {
         { role: "system", content: system },
         { role: "user", content: user },
       ],
-      { temperature: 0.2, maxTokens: 8192 },
+      {
+        temperature: 0.2,
+        maxTokens: 4096,
+        stream: false,
+        callPhase: "extract",
+      },
     );
 
     return parseLlmCanon(response.content);
@@ -141,27 +152,166 @@ export class CanonExtractor extends BaseAgent {
 }
 
 function parseLlmCanon(raw: string): ExtractedCanon {
-  const json = extractJson(raw);
-  const llmSchema = z.object({
-    claims: z.array(CanonClaimSchema).optional(),
-    worldSystem: WorldSystemSchema.optional(),
-    protagonistSystem: ProtagonistSystemSchema.nullable().optional(),
-    systemRelations: SystemRelationSchema.nullable().optional(),
-  });
-  const parsed = llmSchema.safeParse(json);
-  if (!parsed.success) {
-    throw new Error("LLM canon output failed schema validation: " + parsed.error.message);
-  }
+  try {
+    const json = normalizeLlmCanonEnvelope(extractJson(raw));
+    const llmSchema = z.object({
+      claims: z.array(CanonClaimSchema).optional(),
+      worldSystem: WorldSystemSchema.optional(),
+      protagonistSystem: ProtagonistSystemSchema.nullable().optional(),
+      systemRelations: SystemRelationSchema.nullable().optional(),
+    });
+    const parsed = llmSchema.safeParse(json);
+    if (!parsed.success) {
+      throw new Error("LLM canon output failed schema validation: " + parsed.error.message);
+    }
 
-  const claims = (parsed.data.claims ?? []).map((c) => CanonClaimSchema.parse(c));
+    const claims = (parsed.data.claims ?? []).map((c) => normalizeExtractedClaim(CanonClaimSchema.parse(c)));
+    return {
+      claims,
+      worldSystem: parsed.data.worldSystem ?? WorldSystemSchema.parse({}),
+      protagonistSystem: parsed.data.protagonistSystem ?? null,
+      systemRelations: parsed.data.systemRelations ?? null,
+      warnings: [],
+      usedFallback: false,
+    };
+  } catch (error) {
+    const claims = salvageCompleteClaims(raw);
+    if (claims.length === 0) throw error;
+    return {
+      claims,
+      worldSystem: WorldSystemSchema.parse({
+        objectiveRules: claims
+          .filter((claim) => claim.claimType === "objective_rule")
+          .map((claim) => claim.content),
+        taboos: claims
+          .filter((claim) => claim.claimType === "prohibition")
+          .map((claim) => claim.content),
+      }),
+      protagonistSystem: null,
+      systemRelations: null,
+      warnings: [
+        `LLM canon JSON was incomplete; recovered ${claims.length} complete claim objects instead of discarding the full extraction.`,
+      ],
+      usedFallback: true,
+    };
+  }
+}
+
+function mergeCanonExtractions(
+  baseline: ExtractedCanon,
+  recovered: ExtractedCanon,
+): ExtractedCanon {
+  const claims = [...baseline.claims];
+  const seenIds = new Set(claims.map((claim) => claim.id));
+  const seenContent = new Set(claims.map((claim) => `${claim.claimType}:${claim.content}`));
+  for (const claim of recovered.claims) {
+    const contentKey = `${claim.claimType}:${claim.content}`;
+    if (seenIds.has(claim.id) || seenContent.has(contentKey)) continue;
+    seenIds.add(claim.id);
+    seenContent.add(contentKey);
+    claims.push(claim);
+  }
+  const objectiveRules = [...new Set([
+    ...baseline.worldSystem.objectiveRules,
+    ...recovered.worldSystem.objectiveRules,
+  ])];
+  const taboos = [...new Set([
+    ...baseline.worldSystem.taboos,
+    ...recovered.worldSystem.taboos,
+  ])];
   return {
     claims,
-    worldSystem: parsed.data.worldSystem ?? WorldSystemSchema.parse({}),
-    protagonistSystem: parsed.data.protagonistSystem ?? null,
-    systemRelations: parsed.data.systemRelations ?? null,
-    warnings: [],
-    usedFallback: false,
+    worldSystem: WorldSystemSchema.parse({
+      ...baseline.worldSystem,
+      objectiveRules,
+      taboos,
+    }),
+    protagonistSystem: recovered.protagonistSystem ?? baseline.protagonistSystem,
+    systemRelations: recovered.systemRelations ?? baseline.systemRelations,
+    warnings: [...baseline.warnings, ...recovered.warnings],
+    usedFallback: true,
   };
+}
+
+function salvageCompleteClaims(raw: string): CanonClaim[] {
+  const claimsKey = raw.search(/"claims"\s*:/i);
+  if (claimsKey < 0) return [];
+  const arrayStart = raw.indexOf("[", claimsKey);
+  if (arrayStart < 0) return [];
+
+  const claims: CanonClaim[] = [];
+  const seenIds = new Set<string>();
+  let objectStart = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = arrayStart + 1; index < raw.length; index += 1) {
+    const char = raw[index]!;
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      if (depth === 0) objectStart = index;
+      depth += 1;
+      continue;
+    }
+    if (char !== "}" || depth === 0) continue;
+    depth -= 1;
+    if (depth !== 0 || objectStart < 0) continue;
+    try {
+      const candidate = JSON.parse(raw.slice(objectStart, index + 1));
+      const parsed = CanonClaimSchema.safeParse(candidate);
+      if (parsed.success && !seenIds.has(parsed.data.id)) {
+        seenIds.add(parsed.data.id);
+        claims.push(normalizeExtractedClaim(parsed.data));
+      }
+    } catch {
+      // Skip malformed individual objects and keep scanning for later complete claims.
+    }
+    objectStart = -1;
+  }
+  return claims;
+}
+
+const STYLE_CLAIM_PATTERN = /叙事视角|第一人称|第三人称|有限视角|上帝视角|叙事人称|文风|措辞|术语|point of view|\bpov\b|narrative perspective|terminology|prose style/iu;
+
+function normalizeExtractedClaim(claim: CanonClaim): CanonClaim {
+  if (claim.domain !== "style" && !STYLE_CLAIM_PATTERN.test(claim.content)) return claim;
+  return CanonClaimSchema.parse({
+    ...claim,
+    domain: "style",
+    scope: { ...claim.scope, appliesTo: ["all"] },
+    visibility: { characterKnownBy: [], hiddenFrom: [] },
+    constraints: { ...claim.constraints, requiresCost: [] },
+  });
+}
+
+function normalizeLlmCanonEnvelope(input: unknown): unknown {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+
+  const root = { ...(input as Record<string, unknown>) };
+  if (Array.isArray(root.protagonistSystem)
+    || (root.protagonistSystem && typeof root.protagonistSystem === "object"
+      && typeof (root.protagonistSystem as Record<string, unknown>).name !== "string")) {
+    root.protagonistSystem = null;
+  }
+  if (Array.isArray(root.systemRelations)
+    || (root.systemRelations && typeof root.systemRelations === "object"
+      && typeof (root.systemRelations as Record<string, unknown>).mode !== "string")) {
+    root.systemRelations = null;
+  }
+  return root;
 }
 
 function extractJson(raw: string): unknown {

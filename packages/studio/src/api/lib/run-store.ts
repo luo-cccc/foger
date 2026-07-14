@@ -1,7 +1,4 @@
-/**
- * In-memory event store for run lifecycle tracking.
- * Ported from PR #96 (Te9ui1a) — immutable updates, pub/sub per run.
- */
+/** In-memory run lifecycle store with immutable updates and per-run subscriptions. */
 
 import { randomUUID } from "node:crypto";
 import type {

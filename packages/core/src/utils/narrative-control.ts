@@ -1,4 +1,8 @@
 import type { ChapterIntent, ChapterMemo, ContextPackage } from "../models/input-governance.js";
+import {
+  compileChapterExecutionContract,
+  renderChapterExecutionContract,
+} from "./chapter-execution-contract.js";
 
 const HOOK_ID_PATTERN = /\bH\d+\b/gi;
 const HOOK_SLUG_PATTERN = /\b[a-z]+(?:-[a-z]+){1,3}\b/g;
@@ -43,34 +47,42 @@ export function sanitizeNarrativeControlText(
  * Render a ChapterMemo + optional ChapterIntent into a sanitized narrative
  * control block for the writer / reviser prompt.
  *
- * The memo body contains the populated planning contract produced by the
- * planner LLM. We emit its headings at top level so the writer sees each
- * commitment as its own task-unit instead of one flattened "memo" block.
+ * The raw planner memo remains an audit artifact. Downstream agents receive
+ * the host-compiled execution contract so the same compact, fingerprinted
+ * commitments drive writing, auditing, and revision.
  */
 export function renderMemoAsNarrativeBlock(
   memo: ChapterMemo,
   intent: ChapterIntent | undefined,
   language: "zh" | "en" = "zh",
 ): string {
-  const s = (text: string) => sanitizeNarrativeControlText(text, language);
   const isEn = language === "en";
-  const sections: string[] = [];
-
-  sections.push(`## ${isEn ? "Goal" : "目标"}\n- ${s(memo.goal)}`);
+  const contract = compileChapterExecutionContract(memo);
+  const sections: string[] = [renderChapterExecutionContract(contract, language)];
 
   if (intent?.arcContext) {
-    sections.push(`## ${isEn ? "Arc Context" : "弧线背景"}\n- ${s(intent.arcContext)}`);
+    const arcContext = sanitizeNarrativeControlText(intent.arcContext, language);
+    const cappedArcContext = arcContext.length > 600
+      ? `${arcContext.slice(0, 597)}...`
+      : arcContext;
+    sections.push(`## ${isEn ? "Arc Context" : "弧线背景"}\n- ${cappedArcContext}`);
   }
 
-  if (memo.threadRefs.length > 0) {
-    const threads = memo.threadRefs.map((id) => `- ${id}`).join("\n");
-    sections.push(`## ${isEn ? "Thread Refs" : "关联线索"}\n${threads}`);
-  }
-
-  // Emit the populated memo body at top level so each heading is a task.
-  if (memo.body.trim().length > 0) {
-    sections.push(s(memo.body));
-  }
+  sections.push(isEn
+    ? [
+        "## Delivery contract",
+        "- Character identity, allegiance, role, timeline, and death status from the selected context are authoritative.",
+        "- The final scene must visibly deliver every item in Required end-of-chapter change.",
+        "- Every advance/resolve hook needs a concrete scene, action, object, dialogue, or information change.",
+        "- If compression is required, preserve the opening causal setup and the final required change; remove repetition and explanation first.",
+      ].join("\n")
+    : [
+        "## 交付合同",
+        "- 上下文中的角色身份、阵营、职务、生死、时间线和关系是事实权威。",
+        "- 最后一场必须明确落地“章尾必须发生的改变”中的每一项。",
+        "- 每个 advance/resolve 伏笔都必须有具体场景、动作、物件、对话或信息变化作为证据。",
+        "- 如果需要压缩，保留开头的因果铺垫和最后的承诺落点，优先删除重复和解释。",
+      ].join("\n"));
 
   return sections.join("\n\n");
 }

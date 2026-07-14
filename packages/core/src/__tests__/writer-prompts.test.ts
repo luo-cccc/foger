@@ -4,6 +4,7 @@ import type { GenreProfile } from "../models/genre-profile.js";
 import { LengthSpecSchema } from "../models/length-governance.js";
 import { buildWriterSystemPrompt, buildGoldenOpeningDiscipline } from "../agents/writer-prompts.js";
 import { BookRulesSchema } from "../models/book-rules.js";
+import { buildWritingMethodologySection } from "../utils/writing-methodology.js";
 
 const BOOK: BookConfig = {
   id: "prompt-book",
@@ -145,6 +146,46 @@ describe("buildWriterSystemPrompt", () => {
     expect(prompt).toContain("## 硬性禁令");
     expect(prompt).toContain("Do not reveal the mastermind");
     expect(prompt).toContain("Keep the prose restrained");
+  });
+
+  it("omits the duplicated built-in methodology but keeps custom style guidance", () => {
+    const methodology = buildWritingMethodologySection("zh");
+    const prompt = buildWriterSystemPrompt(
+      BOOK,
+      GENRE,
+      null,
+      "# Book Rules",
+      "# Genre Body",
+      `# 本书文风\n\n- 冷静克制。\n\n${methodology}`,
+      undefined,
+      3,
+      "creative",
+      "zh",
+      "governed",
+    );
+
+    expect(prompt).toContain("冷静克制");
+    expect(prompt).not.toContain("写作方法论参考（完整版）");
+    expect(prompt).not.toContain("六步走人物心理分析");
+  });
+
+  it("keeps the full methodology for legacy prompts", () => {
+    const methodology = buildWritingMethodologySection("zh");
+    const prompt = buildWriterSystemPrompt(
+      BOOK,
+      GENRE,
+      null,
+      "# Book Rules",
+      "# Genre Body",
+      methodology,
+      undefined,
+      3,
+      "creative",
+      "zh",
+      "legacy",
+    );
+
+    expect(prompt).toContain("写作方法论参考（完整版）");
   });
 
   it("injects the creative constitution and six pillars of immersion as prose (zh)", () => {

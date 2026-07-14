@@ -162,7 +162,7 @@ describe("WriterAgent", () => {
     expect(prompt).not.toContain("MIDDLE-MARKER");
   });
 
-  it("uses compact summary context plus selected long-range evidence during governed settlement", async () => {
+  it("uses compact control data plus focused truth working sets during governed settlement", async () => {
     const root = await mkdtemp(join(tmpdir(), "inkos-writer-test-"));
     const bookDir = join(root, "book");
     const storyDir = join(bookDir, "story");
@@ -351,11 +351,13 @@ describe("WriterAgent", () => {
       });
 
       const settlePrompt = (chatSpy.mock.calls[2]?.[0] as ReadonlyArray<{ content: string }> | undefined)?.[1]?.content ?? "";
-      expect(settlePrompt).toContain("## 本章控制输入");
-      expect(settlePrompt).toContain("story/chapter_summaries.md#99");
+      expect(settlePrompt).toContain("## 状态结算控制输入");
+      expect(settlePrompt).toContain("计划目标和 ID，不代表事件已经发生");
+      expect(settlePrompt).not.toContain("story/chapter_summaries.md#99");
+      expect(settlePrompt).not.toContain("story/volume_outline.md");
       expect(settlePrompt).toContain("| 99 | Locked Gate |");
-      expect(settlePrompt).toContain("## Hook Debt Briefs");
-      expect(settlePrompt).toContain("mentor-oath | cadence: slow-burn");
+      expect(settlePrompt).not.toContain("## 已选长程证据");
+      expect(settlePrompt).not.toContain("## Hook Debt Briefs");
       expect(settlePrompt).toContain("| stale-ledger | 14 | mystery | open | 70 | 120 | 中程 | 无 |  | 否 |  |  | Old ledger debt is dormant but unresolved |");
       expect(settlePrompt).not.toContain("| 1 | Guild Trail |");
       expect(settlePrompt).not.toContain("old-seal");

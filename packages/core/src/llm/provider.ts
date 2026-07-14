@@ -17,7 +17,6 @@ import { isApiKeyOptionalForEndpoint } from "../utils/llm-endpoint-auth.js";
 import { isLlmStubEnabled, stubChatCompletion } from "../agent/llm-stub.js";
 import { createLeadingThinkTagStripper, stripLeadingThinkBlock } from "./think-tag-stripper.js";
 
-
 // === Streaming Monitor Types ===
 
 export interface StreamProgress {
@@ -49,6 +48,8 @@ export interface LLMCallTelemetry {
     readonly completionTokens: number;
     readonly totalTokens: number;
   };
+  /** True when missing provider usage or retry cost was completed locally. */
+  readonly usageEstimated?: boolean;
   readonly errorMessage?: string;
   readonly partialContentLength?: number;
   readonly partialContent?: string;
@@ -173,6 +174,8 @@ export interface LLMResponse {
     readonly completionTokens: number;
     readonly totalTokens: number;
   };
+  /** True when missing provider usage or retry cost was completed locally. */
+  readonly usageEstimated?: boolean;
 }
 
 export interface LLMMessage {
@@ -333,6 +336,17 @@ export class PartialResponseError extends Error {
   }
 }
 
+/** A provider returned an empty or malformed JSON response body. */
+export class LLMResponseParseError extends Error {
+  readonly bodyLength: number;
+
+  constructor(message: string, bodyLength: number, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = "LLMResponseParseError";
+    this.bodyLength = bodyLength;
+  }
+}
+
 export class CallTimeoutError extends PartialResponseError {
   readonly timeoutMs: number;
   constructor(partialContent: string, timeoutMs: number) {
@@ -466,6 +480,44 @@ function buildPromptAssemblyTelemetry(
     duplicateSourceGroups: [...sourcesByHash.entries()]
       .filter(([, group]) => group.length > 1)
       .map(([contentHash, group]) => ({ contentHash, sources: group })),
+  };
+}
+
+function resolvePromptPreflightLimit(explicitLimit?: number): number | undefined {
+  if (typeof explicitLimit === "number" && Number.isFinite(explicitLimit) && explicitLimit > 0) {
+    return Math.floor(explicitLimit);
+  }
+  const raw = process.env.INKOS_MAX_PROMPT_ESTIMATED_TOKENS_PER_CALL?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return undefined;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function normalizeSuccessfulUsage(
+  result: LLMResponse,
+  promptAssembly: LLMPromptAssemblyTelemetry,
+  attemptCount: number,
+): LLMResponse {
+  const rawPrompt = Math.max(0, result.usage.promptTokens || 0);
+  const rawCompletion = Math.max(0, result.usage.completionTokens || 0);
+  const rawTotal = Math.max(0, result.usage.totalTokens || 0);
+  const promptTokens = rawPrompt || promptAssembly.estimatedTokens;
+  const completionTokens = rawCompletion || estimateTextTokens(result.content);
+  const retryPromptTokens = Math.max(0, attemptCount - 1) * promptAssembly.estimatedTokens;
+  const currentAttemptTotal = Math.max(rawTotal, promptTokens + completionTokens);
+  const usageEstimated = rawPrompt === 0
+    || rawCompletion === 0
+    || rawTotal === 0
+    || retryPromptTokens > 0;
+
+  return {
+    ...result,
+    usage: {
+      promptTokens: promptTokens + retryPromptTokens,
+      completionTokens,
+      totalTokens: currentAttemptTotal + retryPromptTokens,
+    },
+    ...(usageEstimated ? { usageEstimated: true } : {}),
   };
 }
 
@@ -663,11 +715,18 @@ function collectErrorText(error: unknown, depth = 0): string {
 function isTransientLLMTransportError(error: unknown): boolean {
   const text = collectErrorText(error);
   return [
+    "Connection error",
+    "connection error",
+    "Unable to connect",
+    "unable to connect",
     "terminated",
     "UND_ERR_SOCKET",
     "ECONNRESET",
     "ETIMEDOUT",
     "EPIPE",
+    "fetch failed",
+    "ECONNREFUSED",
+    "ENOTFOUND",
     "socket hang up",
     "other side closed",
     "network socket disconnected",
@@ -717,6 +776,8 @@ function isRetryableLLMError(error: unknown): boolean {
   // PartialResponseError = 流在生成中途被掐断（网关切长连接等）。重试会完整
   // 重新生成一次，比把半截内容当成功交付（截断的章节/设定文件）要正确。
   return error instanceof PartialResponseError
+    || error instanceof LLMResponseParseError
+    || collectErrorText(error).toLowerCase().includes("llm returned empty response")
     || isAbortError(error)
     || isTransientLLMTransportError(error)
     || isTransientLLMHttpError(error);
@@ -893,6 +954,44 @@ async function readErrorResponse(res: Response): Promise<string> {
   return `${res.status} ${text || res.statusText}`.trim();
 }
 
+function parseLLMJson(raw: string, source: string): unknown {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    throw new LLMResponseParseError(
+      `LLM returned an empty JSON response from ${source} (${raw.length} characters)`,
+      raw.length,
+    );
+  }
+
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch (error) {
+    throw new LLMResponseParseError(
+      `LLM returned malformed JSON from ${source} (${raw.length} characters)`,
+      raw.length,
+      error,
+    );
+  }
+}
+
+async function readLLMJson<T>(response: Response, source: string): Promise<T> {
+  const responseWithText = response as Response & { text?: () => Promise<string> };
+  if (typeof responseWithText.text === "function") {
+    try {
+      return parseLLMJson(await responseWithText.text(), source) as T;
+    } catch (error) {
+      if (error instanceof LLMResponseParseError) throw error;
+      throw new LLMResponseParseError(`Unable to read JSON response from ${source}`, 0, error);
+    }
+  }
+
+  try {
+    return await response.json() as T;
+  } catch (error) {
+    throw new LLMResponseParseError(`Unable to read JSON response from ${source}`, 0, error);
+  }
+}
+
 type ParsedSseEvent = {
   readonly event?: string;
   readonly data?: string;
@@ -1019,7 +1118,7 @@ async function chatCompletionViaCustomAnthropicCompatible(
   }
 
   if (!client.stream) {
-    const json = await response.json() as any;
+    const json = await readLLMJson<any>(response, "Anthropic response");
     const content = extractAnthropicContent(json);
     if (!content) {
       throw wrapLLMError(new Error("LLM returned empty response"), errorCtx);
@@ -1052,7 +1151,7 @@ async function chatCompletionViaCustomAnthropicCompatible(
       buffer = parsed.rest;
       for (const event of parsed.events) {
         if (!event.data) continue;
-        const json = JSON.parse(event.data);
+        const json = parseLLMJson(event.data, "Anthropic stream event") as any;
         if (json.type === "message_start" && json.message?.usage) {
           usage.promptTokens = json.message.usage.input_tokens ?? usage.promptTokens;
         }
@@ -1129,7 +1228,7 @@ async function chatCompletionViaCustomOpenAICompatible(
     }
 
     if (!client.stream) {
-      const json = await response.json() as any;
+      const json = await readLLMJson<any>(response, "Responses API response");
       const content = extractResponsesContent(json);
       if (!content) {
         throw wrapLLMError(new Error("LLM returned empty response"), errorCtx);
@@ -1162,7 +1261,7 @@ async function chatCompletionViaCustomOpenAICompatible(
         buffer = parsed.rest;
         for (const event of parsed.events) {
           if (!event.data) continue;
-          const json = JSON.parse(event.data);
+          const json = parseLLMJson(event.data, "Responses API stream event") as any;
           if (json.type === "response.output_text.delta" && typeof json.delta === "string") {
             content += json.delta;
             monitor.onChunk(json.delta);
@@ -1237,7 +1336,7 @@ async function chatCompletionViaCustomOpenAICompatible(
   }
 
   if (!client.stream) {
-    const json = await response.json() as any;
+    const json = await readLLMJson<any>(response, "OpenAI-compatible response");
     // MiniMax M2.x 等模型可能把思考内容以 <think>...</think> 内联在 content 开头，
     // 剥掉起始处的完整 think 块，防止思考内容混进章节/对话正文（issue #329）。
     const content = stripLeadingThinkBlock(extractChatContent(json));
@@ -1282,7 +1381,7 @@ async function chatCompletionViaCustomOpenAICompatible(
           sawTerminal = true;
           continue;
         }
-        const json = JSON.parse(event.data);
+        const json = parseLLMJson(event.data, "OpenAI-compatible stream event") as any;
         if (json?.choices?.[0]?.finish_reason) {
           sawTerminal = true;
         }
@@ -1335,6 +1434,8 @@ export async function chatCompletion(
   options?: {
     readonly temperature?: number;
     readonly maxTokens?: number;
+    /** Per-call transport override for atomic structured responses. */
+    readonly stream?: boolean;
     readonly webSearch?: boolean;
     readonly onStreamProgress?: OnStreamProgress;
     readonly onTextDelta?: (text: string) => void;
@@ -1353,11 +1454,40 @@ export async function chatCompletion(
     readonly signal?: AbortSignal;
     /** Optional source attribution for prompt-cost and duplication diagnostics. */
     readonly promptSources?: ReadonlyArray<LLMPromptSourceInput>;
+    /** Reject locally before transport when the estimated prompt exceeds this limit. */
+    readonly maxPromptEstimatedTokens?: number;
   },
 ): Promise<LLMResponse> {
   throwIfSignalAborted(options?.signal);
+  const effectiveClient: LLMClient = options?.stream === undefined
+    ? client
+    : { ...client, stream: options.stream };
   const startedAt = Date.now();
   const promptAssembly = buildPromptAssemblyTelemetry(messages, options?.promptSources);
+  const promptPreflightLimit = resolvePromptPreflightLimit(options?.maxPromptEstimatedTokens);
+  if (promptPreflightLimit !== undefined && promptAssembly.estimatedTokens > promptPreflightLimit) {
+    const error = new Error(
+      `Prompt budget exceeded before request: estimated ${promptAssembly.estimatedTokens} input tokens, maximum ${promptPreflightLimit}.`,
+    );
+    options?.onCallTelemetry?.({
+      agent: options?.agentName ?? options?.callPhase ?? "unknown",
+      model,
+      service: effectiveClient.service ?? "unknown",
+      apiFormat: effectiveClient.apiFormat,
+      stream: effectiveClient.stream,
+      phase: options?.callPhase ?? "unknown",
+      durationMs: Date.now() - startedAt,
+      attemptCount: 0,
+      retryCount: 0,
+      promptAssembly,
+      status: "error",
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      errorMessage: error.message,
+      ...(options?.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+      timestamp: new Date(startedAt).toISOString(),
+    });
+    throw error;
+  }
   if (isLlmStubEnabled()) {
     await waitForLlmStubDelay(options?.signal);
     throwIfSignalAborted(options?.signal);
@@ -1365,9 +1495,9 @@ export async function chatCompletion(
     options?.onCallTelemetry?.({
       agent: options?.agentName ?? options?.callPhase ?? "unknown",
       model,
-      service: client.service ?? "unknown",
-      apiFormat: client.apiFormat,
-      stream: client.stream,
+      service: effectiveClient.service ?? "unknown",
+      apiFormat: effectiveClient.apiFormat,
+      stream: effectiveClient.stream,
       phase: options?.callPhase ?? "unknown",
       durationMs: Date.now() - startedAt,
       attemptCount: 1,
@@ -1383,16 +1513,16 @@ export async function chatCompletion(
   // C1 (v2.0.0)：删除 maxTokensCap 机制。per-call 显式传的 maxTokens 永远不被裁剪。
   const resolved = {
     temperature: clampTemperatureForModel(
-      client.service,
+      effectiveClient.service,
       model,
-      options?.temperature ?? client.defaults.temperature,
+      options?.temperature ?? effectiveClient.defaults.temperature,
     ),
-    maxTokens: options?.maxTokens ?? client.defaults.maxTokens,
-    extra: client.defaults.extra,
+    maxTokens: options?.maxTokens ?? effectiveClient.defaults.maxTokens,
+    extra: effectiveClient.defaults.extra,
   };
   const onStreamProgress = options?.onStreamProgress;
   const onTextDelta = options?.onTextDelta;
-  const errorCtx = { baseUrl: client._piModel?.baseUrl ?? "(unknown)", model, service: client.service };
+  const errorCtx = { baseUrl: effectiveClient._piModel?.baseUrl ?? "(unknown)", model, service: effectiveClient.service };
 
   const timeoutMs = options?.timeoutMs;
   let attemptCount = 0;
@@ -1403,13 +1533,14 @@ export async function chatCompletion(
     errorMessage?: string,
     partialContentLength?: number,
     partialContent?: string,
+    usageEstimated?: boolean,
   ) => {
     options?.onCallTelemetry?.({
       agent: options?.agentName ?? options?.callPhase ?? "unknown",
       model,
-      service: client.service ?? "unknown",
-      apiFormat: client.apiFormat,
-      stream: client.stream,
+      service: effectiveClient.service ?? "unknown",
+      apiFormat: effectiveClient.apiFormat,
+      stream: effectiveClient.stream,
       phase: options?.callPhase ?? "unknown",
       durationMs: Date.now() - startedAt,
       attemptCount,
@@ -1417,6 +1548,7 @@ export async function chatCompletion(
       promptAssembly,
       status,
       usage,
+      ...(usageEstimated ? { usageEstimated: true } : {}),
       ...(errorMessage ? { errorMessage } : {}),
       ...(partialContentLength !== undefined ? { partialContentLength } : {}),
       ...(partialContent !== undefined ? { partialContent } : {}),
@@ -1435,14 +1567,14 @@ export async function chatCompletion(
         try {
           throwIfSignalAborted(signal);
           assertWithinContextWindow({
-            piModel: resolvePiModel(client, model),
+            piModel: resolvePiModel(effectiveClient, model),
             model,
             estimatedInputTokens: estimateLLMMessagesTokens(messages),
             reservedOutputTokens: resolved.maxTokens,
           });
-          if (shouldUseNativeCustomTransport(client)) {
+          if (shouldUseNativeCustomTransport(effectiveClient)) {
             return chatCompletionViaCustomOpenAICompatible(
-              client,
+              effectiveClient,
               model,
               messages,
               resolved,
@@ -1453,7 +1585,7 @@ export async function chatCompletion(
             );
           }
           return chatCompletionViaPiAi(
-            client,
+            effectiveClient,
             model,
             messages,
             resolved,
@@ -1481,8 +1613,9 @@ export async function chatCompletion(
         },
       },
     );
-    emitTelemetry("success", result.usage);
-    return result;
+    const normalizedResult = normalizeSuccessfulUsage(result, promptAssembly, attemptCount);
+    emitTelemetry("success", normalizedResult.usage, undefined, undefined, undefined, normalizedResult.usageEstimated);
+    return normalizedResult;
   } catch (error) {
     if (error instanceof CallTimeoutError) {
       emitTelemetry(

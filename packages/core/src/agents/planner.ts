@@ -287,7 +287,7 @@ export class PlannerAgent extends BaseAgent {
           { role: "system", content: systemPrompt },
           { role: "user", content: currentUserMessage },
         ],
-        { temperature: 0.7 },
+        { temperature: 0.7, stream: false, callPhase: "plan" },
       );
 
       try {
@@ -317,8 +317,8 @@ export class PlannerAgent extends BaseAgent {
         });
         const hookIdHint = /hook ledger/i.test(error.message) && existingHooks.length > 0
           ? language === "en"
-            ? `\nAllowed hook ids (copy exactly; do not shorten or reconstruct):\n${existingHooks.map((hook) => `- ${hook.hookId}`).join("\n")}`
-            : `\n允许使用的伏笔 ID（必须原样复制，不要截断或重组）：\n${existingHooks.map((hook) => `- ${hook.hookId}`).join("\n")}`
+            ? `\nAllowed hook ids (copy exactly; do not shorten or reconstruct):\n${existingHooks.map((hook) => `- ${hook.hookId}`).join("\n")}\nExisting ids must use advance/resolve/defer; never put them under [new]. Write \"none\" for an empty action slot.`
+            : `\n允许使用的伏笔 ID（必须原样复制，不要截断或重组）：\n${existingHooks.map((hook) => `- ${hook.hookId}`).join("\n")}\n已有 ID 必须放在 advance/resolve/defer，绝不能放进 [new]；空动作栏写“无”。`
           : "";
         currentUserMessage = `${userMessage}\n\n${retryFeedbackHeader}\n${error.message}${hookIdHint}\n${retryFeedbackTrailer}`;
       }

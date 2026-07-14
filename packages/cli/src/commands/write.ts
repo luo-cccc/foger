@@ -81,6 +81,15 @@ writeCommand
           log("");
         }
 
+        if (result.status === "audit-failed") {
+          if (!opts.json) {
+            log(language === "en"
+              ? "Audit review required before continuing. Stopping batch."
+              : "需要先处理审计问题，已停止后续连写。");
+          }
+          break;
+        }
+
         if (result.status === "state-degraded") {
           if (!opts.json) {
             log(language === "en"

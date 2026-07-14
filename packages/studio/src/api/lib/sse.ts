@@ -1,7 +1,4 @@
-/**
- * SSE stream factory for run event streaming.
- * Ported from PR #96 (Te9ui1a) — typed ReadableStream with auto-close.
- */
+/** SSE stream factory for typed run lifecycle events. */
 
 import type { RunStreamEvent } from "../../shared/contracts.js";
 

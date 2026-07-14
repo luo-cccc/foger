@@ -2,6 +2,7 @@ import type { AuditIssue, AuditResult } from "../agents/continuity.js";
 import type { ChapterMeta } from "../models/chapter.js";
 import type { LengthTelemetry } from "../models/length-governance.js";
 import { buildStateDegradedReviewNote } from "./chapter-state-recovery.js";
+import { resolveChapterReviewStatus } from "./chapter-quality-gate.js";
 
 export interface ChapterPersistenceUsage {
   readonly promptTokens: number;
@@ -41,6 +42,12 @@ export async function persistChapterArtifacts(params: {
 
   const existingIndex = await params.loadChapterIndex();
   const now = params.now?.() ?? new Date().toISOString();
+  const stateDegradedBaseStatus = params.status === "state-degraded"
+    ? resolveChapterReviewStatus({
+        auditResult: params.auditResult,
+        hardLengthPassed: params.lengthWarnings.length === 0,
+      }).status
+    : undefined;
   const entry: ChapterMeta = {
     number: params.chapterNumber,
     title: params.chapterTitle,
@@ -52,7 +59,7 @@ export async function persistChapterArtifacts(params: {
     lengthWarnings: [...params.lengthWarnings],
     reviewNote: params.status === "state-degraded"
       ? buildStateDegradedReviewNote(
-          params.auditResult.passed ? "ready-for-review" : "audit-failed",
+          stateDegradedBaseStatus === "audit-failed" ? "audit-failed" : "ready-for-review",
           params.degradedIssues,
         )
       : undefined,

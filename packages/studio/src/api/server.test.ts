@@ -360,7 +360,8 @@ function cloneProjectConfig() {
 
 async function writeCompleteBookFixture(root: string, bookId: string, title = "New Book") {
   const bookDir = join(root, "books", bookId);
-  await mkdir(join(bookDir, "story"), { recursive: true });
+  await mkdir(join(bookDir, "story", "outline"), { recursive: true });
+  await mkdir(join(bookDir, "story", "roles", "主要角色"), { recursive: true });
   await writeFile(join(bookDir, "book.json"), JSON.stringify({
     id: bookId,
     title,
@@ -373,6 +374,11 @@ async function writeCompleteBookFixture(root: string, bookId: string, title = "N
     updatedAt: "2026-04-12T00:00:00.000Z",
   }, null, 2), "utf-8");
   await writeFile(join(bookDir, "story", "story_bible.md"), "# Story Bible\n\nReady.\n", "utf-8");
+  await writeFile(join(bookDir, "story", "outline", "story_frame.md"), "frame", "utf-8");
+  await writeFile(join(bookDir, "story", "outline", "volume_map.md"), "map", "utf-8");
+  await writeFile(join(bookDir, "story", "book_rules.md"), "rules", "utf-8");
+  await writeFile(join(bookDir, "story", "pending_hooks.md"), "hooks", "utf-8");
+  await writeFile(join(bookDir, "story", "roles", "主要角色", "lead.md"), "lead", "utf-8");
 }
 
 describe("createStudioServer daemon lifecycle", () => {
@@ -2680,11 +2686,8 @@ describe("createStudioServer daemon lifecycle", () => {
     expect(saveSecretsMock).not.toHaveBeenCalled();
   });
 
-
   it("rejects create requests when a complete book with the same id already exists", async () => {
-    await mkdir(join(root, "books", "existing-book", "story"), { recursive: true });
-    await writeFile(join(root, "books", "existing-book", "book.json"), JSON.stringify({ id: "existing-book" }), "utf-8");
-    await writeFile(join(root, "books", "existing-book", "story", "story_bible.md"), "# existing", "utf-8");
+    await writeCompleteBookFixture(root, "existing-book", "Existing Book");
 
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
@@ -2706,6 +2709,46 @@ describe("createStudioServer daemon lifecycle", () => {
     });
     expect(processProjectInteractionRequestMock).not.toHaveBeenCalled();
     await expect(access(join(root, "books", "existing-book", "story", "story_bible.md"))).resolves.toBeUndefined();
+  });
+
+  it("reports an async create error when foundation files exist but role cards are empty", async () => {
+    const bookDir = join(root, "books", "empty-roles-book");
+    await mkdir(join(bookDir, "story", "outline"), { recursive: true });
+    await mkdir(join(bookDir, "story", "roles", "主要角色"), { recursive: true });
+    await writeFile(join(bookDir, "book.json"), JSON.stringify({ id: "empty-roles-book" }), "utf-8");
+    await writeFile(join(bookDir, "story", "outline", "story_frame.md"), "frame", "utf-8");
+    await writeFile(join(bookDir, "story", "outline", "volume_map.md"), "map", "utf-8");
+    await writeFile(join(bookDir, "story", "book_rules.md"), "rules", "utf-8");
+    await writeFile(join(bookDir, "story", "pending_hooks.md"), "hooks", "utf-8");
+    await writeFile(join(bookDir, "story", "story_bible.md"), "pointer", "utf-8");
+    await writeFile(join(bookDir, "story", "character_matrix.md"), "# Character Matrix\n\n## Major characters\n\n(none)\n", "utf-8");
+    await writeFile(join(bookDir, "story", "roles", "主要角色", "lead.md"), " \n", "utf-8");
+    processProjectInteractionRequestMock.mockResolvedValueOnce({
+      session: { activeBookId: "empty-roles-book" },
+      details: { kind: "book_created", bookId: "empty-roles-book" },
+    });
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request("http://localhost/api/v1/books/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: "Empty Roles Book",
+        genre: "urban",
+        platform: "qidian",
+        language: "zh",
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    await vi.waitFor(async () => {
+      const status = await app.request("http://localhost/api/v1/books/empty-roles-book/create-status");
+      await expect(status.json()).resolves.toMatchObject({
+        status: "error",
+        error: "Book creation artifact is incomplete on disk.",
+      });
+    });
   });
 
   it("reports async create failures through the create-status endpoint", async () => {
@@ -4405,7 +4448,6 @@ describe("createStudioServer daemon lifecycle", () => {
       }),
     });
   });
-
 
   it("defaults the revisionGate to strict when neither book nor project sets one", async () => {
     const { createStudioServer } = await import("./server.js");

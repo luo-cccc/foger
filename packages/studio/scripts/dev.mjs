@@ -12,18 +12,26 @@ const coreRoot = join(workspaceRoot, "packages", "core");
 const e2eProjectRoot = e2e ? requiredE2eEnv("INKOS_PROJECT_ROOT") : undefined;
 const e2eApiPort = e2e ? requiredE2eEnv("INKOS_STUDIO_PORT") : undefined;
 const e2eClientPort = e2e ? requiredE2eEnv("INKOS_STUDIO_CLIENT_PORT") : undefined;
+const e2eLlmMode = e2e ? (process.env.INKOS_E2E_LLM_MODE?.trim() || "stub") : undefined;
+
+if (e2e && e2eLlmMode !== "stub" && e2eLlmMode !== "live") {
+  throw new Error(`Unsupported INKOS_E2E_LLM_MODE: ${e2eLlmMode}`);
+}
 
 const env = {
   ...process.env,
   ...(e2e ? {
-    INKOS_AGENT_LLM_STUB: "1",
+    INKOS_AGENT_LLM_STUB: e2eLlmMode === "live" ? "" : "1",
     INKOS_AGENT_LLM_STUB_DELAY_MS: process.env.INKOS_AGENT_LLM_STUB_DELAY_MS ?? "150",
   } : {}),
-  INKOS_STUDIO_PORT: e2eApiPort ?? process.env.INKOS_STUDIO_PORT ?? "4569",
+  INKOS_STUDIO_PORT: resolvePort(e2eApiPort ?? process.env.INKOS_STUDIO_PORT ?? "4569", "INKOS_STUDIO_PORT"),
   INKOS_PROJECT_ROOT: e2eProjectRoot ?? process.env.INKOS_PROJECT_ROOT ?? "../..",
 };
 
-const clientPort = e2eClientPort ?? process.env.INKOS_STUDIO_CLIENT_PORT ?? "4567";
+const clientPort = resolvePort(
+  e2eClientPort ?? process.env.INKOS_STUDIO_CLIENT_PORT ?? "4567",
+  "INKOS_STUDIO_CLIENT_PORT",
+);
 const bin = (name) => {
   const local = join(process.cwd(), "node_modules", ".bin", process.platform === "win32" ? `${name}.CMD` : name);
   return existsSync(local) ? local : name;
@@ -42,14 +50,33 @@ function requiredE2eEnv(name) {
   return value;
 }
 
+function resolvePort(value, name) {
+  const raw = String(value).trim();
+  const port = Number(raw);
+  if (!/^\d+$/.test(raw) || !Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`${name} must be a valid TCP port, received "${value}".`);
+  }
+  return String(port);
+}
+
+function commandInvocation(command, args) {
+  if (process.platform !== "win32" || !/\.(?:cmd|bat)$/i.test(command)) {
+    return { command, args };
+  }
+  return {
+    command: process.env.ComSpec || "cmd.exe",
+    args: ["/d", "/s", "/c", command, ...args],
+  };
+}
+
 function start(command, args, options = {}) {
   if (e2e) {
     logE2e(`[studio-dev] start ${command} ${args.join(" ")}`);
   }
-  const child = spawn(command, args, {
+  const invocation = commandInvocation(command, args);
+  const child = spawn(invocation.command, invocation.args, {
     stdio: "inherit",
     env,
-    shell: process.platform === "win32",
     ...options,
   });
   children.push(child);
@@ -69,7 +96,8 @@ function npmCommand() {
 }
 
 function rebuildCoreDist() {
-  execFileSync(npmCommand(), ["run", "build"], {
+  const invocation = commandInvocation(npmCommand(), ["run", "build"]);
+  execFileSync(invocation.command, invocation.args, {
     cwd: coreRoot,
     env,
     stdio: "inherit",

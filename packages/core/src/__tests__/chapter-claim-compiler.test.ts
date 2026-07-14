@@ -88,6 +88,20 @@ describe("compileChapterClaims", () => {
     expect(compiled.costRequired.map((c) => c.id)).toContain("c-1");
   });
 
+  it("keeps style and POV constraints usable even when extracted with visibility boundaries", () => {
+    const style = claim({
+      id: "style-pov",
+      domain: "style",
+      content: "叙事视角严格锁定在主角感知范围内。",
+      visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["主角"] },
+    });
+
+    const compiled = compileChapterClaims([style], { chapterNumber: 1, pov: "主角" });
+
+    expect(compiled.usable.map((entry) => entry.id)).toContain("style-pov");
+    expect(compiled.mustHide).toEqual([]);
+  });
+
   it("surfaces a hidden claim when the memo names it for revelation", () => {
     const ctx: ChapterClaimContext = { chapterNumber: 10, memo: "本章揭晓 s-1 宗门真相" };
     const compiled = compileChapterClaims([SECRET_BEFORE_CH30], ctx);

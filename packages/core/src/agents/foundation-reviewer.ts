@@ -48,7 +48,7 @@ export class FoundationReviewerAgent extends BaseAgent {
     const response = await this.chat([
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },
-    ], { temperature: 0.3 });
+    ], { temperature: 0.3, stream: false, callPhase: "foundation-review" });
 
     return this.parseReviewResult(response.content, dimensions);
   }

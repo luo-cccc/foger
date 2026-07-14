@@ -13,6 +13,32 @@ export function buildWritingMethodologySection(language: "zh" | "en"): string {
   return buildChineseMethodology();
 }
 
+/**
+ * style_guide.md stores the full built-in methodology for human reference, while
+ * runtime prompts already carry a compact craft card. Remove only the exact
+ * generated block so user-authored style guidance remains authoritative.
+ */
+export function stripBuiltInWritingMethodology(
+  styleGuide: string,
+  language: "zh" | "en",
+): string {
+  const guide = styleGuide.trim();
+  if (!guide) return "";
+
+  const builtIn = buildWritingMethodologySection(language).trim();
+  if (guide === builtIn) return "";
+
+  if (guide.endsWith(builtIn)) {
+    return guide.slice(0, -builtIn.length).trim();
+  }
+
+  if (guide.startsWith(builtIn)) {
+    return guide.slice(builtIn.length).trim();
+  }
+
+  return guide;
+}
+
 function buildChineseMethodology(): string {
   return `---
 

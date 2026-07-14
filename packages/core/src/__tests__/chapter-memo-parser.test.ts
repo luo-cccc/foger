@@ -87,6 +87,12 @@ describe("parseMemo", () => {
     expect(memo.body).toContain("## 不要做");
   });
 
+  it("preserves durable slug hook ids that do not contain digits", () => {
+    const memo = parseMemo(makeRaw({ threadRefs: ["mentor-ledger", "forged-notices"] }), 12, false);
+
+    expect(memo.threadRefs).toEqual(["mentor-ledger", "forged-notices"]);
+  });
+
   it("accepts markdown wrapped in a code fence with leading prose", () => {
     const memo = parseMemo(makeRaw({
       prefix: "好的，下面是本章 memo：\n\n",

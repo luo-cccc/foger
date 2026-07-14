@@ -298,6 +298,7 @@ const strings = {
   "chapter.needsRevision": { zh: "需修订", en: "Needs Revision" },
   "chapter.imported": { zh: "已导入", en: "Imported" },
   "chapter.auditFailed": { zh: "审计失败", en: "Audit Failed" },
+  "chapter.stateDegraded": { zh: "状态降级", en: "State Degraded" },
   "chapter.label": { zh: "第{n}章", en: "Chapter {n}" },
   "common.exportSuccess": { zh: "已导出到项目目录", en: "Exported to project directory" },
   "common.exportFormat": { zh: "导出格式", en: "Export format" },

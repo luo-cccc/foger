@@ -68,6 +68,11 @@ const SUBSECTION_KEYS: ReadonlyArray<keyof HookLedger> = ["open", "advance", "re
  */
 const PLACEHOLDER_TOKENS = /^(无|空|none|nil|null|暂无|n\/a|na|n-a|tbd|todo|待定)$/i;
 
+// Models often add a short Chinese explanation instead of writing a bare
+// placeholder, e.g. "本章无陈旧 hook" or "所有卷级伏笔：本章不处理".
+// These lines are still an empty action slot, not durable hook identifiers.
+const NO_ACTION_PLACEHOLDER = /^(?:本章(?:无|暂无)|所有(?:卷级)?(?:伏笔|hooks?)(?:\s*[:：])?.*(?:本章)?(?:不处理|不推进|无需处理)|无(?:需|可)?(?:处理|推进|变化|陈旧))/i;
+
 /** Subsection heading words that must not be parsed as hook_ids. */
 const SUBSECTION_WORDS = /^(open|advance|resolve|defer|new)$/i;
 
@@ -249,6 +254,7 @@ function extractLedgerSection(memoBody: string): string | undefined {
 function extractLedgerEntry(line: string): HookLedgerEntry | undefined {
   const cleaned = line.replace(/^-+\s*/, "").trim();
   if (cleaned.startsWith("[new]") || cleaned.startsWith("[NEW]")) return undefined;
+  if (NO_ACTION_PLACEHOLDER.test(cleaned)) return undefined;
 
   // Reject whole-line placeholders first — "- 无", "- n/a", "- none" etc.
   const firstWord = cleaned.split(/\s+/)[0] ?? "";
@@ -258,6 +264,7 @@ function extractLedgerEntry(line: string): HookLedgerEntry | undefined {
   if (!idMatch) return undefined;
 
   const candidate = idMatch[1]!;
+  if (!/^[A-Za-z]/.test(candidate)) return undefined;
   if (SUBSECTION_WORDS.test(candidate)) return undefined;
   if (PLACEHOLDER_TOKENS.test(candidate)) return undefined;
 

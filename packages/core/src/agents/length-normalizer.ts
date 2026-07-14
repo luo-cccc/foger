@@ -97,16 +97,154 @@ export class LengthNormalizerAgent extends BaseAgent {
     }
 
     const normalizedContent = bestAccepted?.normalizedContent ?? input.chapterContent;
-    const finalCount = bestAccepted?.finalCount ?? originalCount;
+    const finalCountBeforeHardBound = bestAccepted?.finalCount ?? originalCount;
+    const hardBounded = mode === "compress" && bestAccepted
+      ? this.boundOverlongContent(normalizedContent, input)
+      : undefined;
+    const finalContent = hardBounded?.normalizedContent ?? normalizedContent;
+    const finalCount = hardBounded?.finalCount ?? finalCountBeforeHardBound;
 
     return {
-      normalizedContent,
+      normalizedContent: finalContent,
       finalCount,
-      applied: normalizedContent !== input.chapterContent,
+      applied: finalContent !== input.chapterContent,
       mode,
-      warning: bestAccepted ? bestAccepted.warning : lastWarning,
+      warning: hardBounded
+        ? this.buildWarning(finalCount, input.lengthSpec)
+        : bestAccepted ? bestAccepted.warning : lastWarning,
       tokenUsage: totalUsage,
     };
+  }
+
+  private boundOverlongContent(
+    content: string,
+    input: NormalizeLengthInput,
+  ): { readonly normalizedContent: string; readonly finalCount: number } | undefined {
+    const { lengthSpec } = input;
+    if (countChapterLength(content, lengthSpec.countingMode) <= lengthSpec.hardMax) {
+      return undefined;
+    }
+
+    const requiredMarkers = this.collectRequiredMarkers(input)
+      .filter((marker) => content.includes(marker) || input.chapterContent.includes(marker));
+    let clipped = this.preserveHeadAndTail(content, lengthSpec.hardMax, lengthSpec.countingMode);
+    let markerSuffix = requiredMarkers.filter((marker) => !clipped.includes(marker));
+    if (markerSuffix.length > 0) {
+      const markerCount = countChapterLength(markerSuffix.join("\n"), lengthSpec.countingMode);
+      const contentLimit = lengthSpec.hardMax - markerCount;
+      if (contentLimit < lengthSpec.hardMin) {
+        return undefined;
+      }
+      clipped = this.preserveHeadAndTail(content, contentLimit, lengthSpec.countingMode);
+      markerSuffix = requiredMarkers.filter((marker) => !clipped.includes(marker));
+    }
+    const candidate = markerSuffix.length > 0
+      ? `${clipped.trimEnd()}\n${markerSuffix.join("\n")}`.trim()
+      : clipped.trim();
+    const finalCount = countChapterLength(candidate, lengthSpec.countingMode);
+    if (finalCount < lengthSpec.hardMin || finalCount > lengthSpec.hardMax) {
+      return undefined;
+    }
+    return { normalizedContent: candidate, finalCount };
+  }
+
+  private collectRequiredMarkers(input: NormalizeLengthInput): string[] {
+    const source = `${input.chapterIntent ?? ""}\n${input.reducedControlBlock ?? ""}`;
+    return [...source.matchAll(/\[\[[^\]\n]+\]\]/g)].map((match) => match[0]);
+  }
+
+  private truncateEnglishWords(content: string, maxWords: number): string {
+    const words = [...content.matchAll(/[A-Za-z0-9]+(?:'[A-Za-z0-9]+)?/g)];
+    const cutoff = words[maxWords - 1]?.index;
+    const end = words[maxWords - 1] && cutoff !== undefined
+      ? cutoff + words[maxWords - 1][0].length
+      : content.length;
+    return this.trimAtSentenceBoundary(content.slice(0, end), true);
+  }
+
+  private preserveHeadAndTail(
+    content: string,
+    maxCount: number,
+    countingMode: LengthSpec["countingMode"],
+  ): string {
+    if (countChapterLength(content, countingMode) <= maxCount) return content;
+
+    const headBudget = Math.max(1, Math.floor(maxCount * 0.6));
+    const tailBudget = Math.max(1, maxCount - headBudget);
+    const head = countingMode === "en_words"
+      ? this.truncateEnglishWords(content, headBudget)
+      : this.truncateZhCharacters(content, headBudget);
+    const tail = countingMode === "en_words"
+      ? this.takeLastEnglishWords(content, tailBudget)
+      : this.takeLastZhCharacters(content, tailBudget);
+    const candidate = `${head.trimEnd()}\n${tail.trimStart()}`.trim();
+
+    if (countChapterLength(candidate, countingMode) <= maxCount) return candidate;
+
+    // Sentence-boundary trimming can leave a small overrun when the two
+    // retained sections meet. Reduce the head first so the promised tail stays.
+    const reducedHeadBudget = Math.max(1, headBudget - (countChapterLength(candidate, countingMode) - maxCount));
+    const reducedHead = countingMode === "en_words"
+      ? this.truncateEnglishWords(content, reducedHeadBudget)
+      : this.truncateZhCharacters(content, reducedHeadBudget);
+    return `${reducedHead.trimEnd()}\n${tail.trimStart()}`.trim();
+  }
+
+  private takeLastEnglishWords(content: string, maxWords: number): string {
+    const words = [...content.matchAll(/[A-Za-z0-9]+(?:'[A-Za-z0-9]+)?/g)];
+    const first = words[Math.max(0, words.length - maxWords)];
+    const suffix = first?.index === undefined ? content : content.slice(first.index);
+    return this.trimFromSentenceBoundary(suffix, true);
+  }
+
+  private takeLastZhCharacters(content: string, maxCharacters: number): string {
+    const chars = Array.from(content);
+    let count = 0;
+    let start = 0;
+    for (let index = chars.length - 1; index >= 0; index -= 1) {
+      if (!/\s/.test(chars[index] ?? "")) count += 1;
+      if (count >= maxCharacters) {
+        start = index;
+        break;
+      }
+    }
+    return this.trimFromSentenceBoundary(chars.slice(start).join(""), false);
+  }
+
+  private truncateZhCharacters(content: string, maxCharacters: number): string {
+    const chars = Array.from(content);
+    let count = 0;
+    let end = chars.length;
+    for (let index = 0; index < chars.length; index += 1) {
+      if (!/\s/.test(chars[index] ?? "")) count += 1;
+      if (count >= maxCharacters) {
+        end = index + 1;
+        break;
+      }
+    }
+    return this.trimAtSentenceBoundary(chars.slice(0, end).join(""), false);
+  }
+
+  private trimAtSentenceBoundary(content: string, english: boolean): string {
+    const boundaryPattern = english
+      ? /[.!?](?:["'”’\u201d\u2019)\]]*)|\n\s*\n/g
+      : /[。！？!?；;](?:[”’」』》）)\]]*)|\n\s*\n/g;
+    let boundaryEnd = -1;
+    for (const match of content.matchAll(boundaryPattern)) {
+      boundaryEnd = (match.index ?? 0) + match[0].length;
+    }
+    if (boundaryEnd <= 0) return content;
+    const bounded = content.slice(0, boundaryEnd).trimEnd();
+    return bounded || content;
+  }
+
+  private trimFromSentenceBoundary(content: string, english: boolean): string {
+    const boundaryPattern = english
+      ? /[.!?](?:["'”’\u201d\u2019)\]]*)|\n\s*\n/
+      : /[。！？!?；;](?:[”’」』》）)\]]*)|\n\s*\n/;
+    const match = content.match(boundaryPattern);
+    if (!match || match.index === undefined) return content.trimStart();
+    return content.slice(match.index + match[0].length).trimStart() || content.trimStart();
   }
 
   private zeroUsage(): {
@@ -174,6 +312,8 @@ export class LengthNormalizerAgent extends BaseAgent {
       ],
       {
         temperature: params.strict ? 0.1 : 0.2,
+        stream: false,
+        callPhase: "normalize-length",
       },
     );
 

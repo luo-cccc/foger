@@ -142,6 +142,36 @@ defer:
     expect(ledger.defer).toEqual([]);
   });
 
+  it("ignores descriptive Chinese no-action placeholders", () => {
+    const memo = `## 本章 hook 账
+advance:
+- 本章无陈旧 hook
+resolve:
+- 所有卷级伏笔：本章不处理
+defer:
+- 无需推进
+`;
+
+    const ledger = parseHookLedger(memo);
+    expect(ledger.advance).toEqual([]);
+    expect(ledger.resolve).toEqual([]);
+    expect(ledger.defer).toEqual([]);
+  });
+
+  it("ignores natural-language notes under hook action lists instead of inventing Chinese hook ids", () => {
+    const memo = `## 本章 hook 账
+defer:
+- 其余H003以后再处理
+- 输入存在信息边界
+- 角色关系暂不推进
+- H009 "姐姐回声" → 留到后续
+`;
+
+    const ledger = parseHookLedger(memo);
+
+    expect(ledger.defer.map((entry) => entry.id)).toEqual(["H009"]);
+  });
+
   it("preserves long generated hook ids instead of truncating them", () => {
     const mysteryId = "mystery-废弃十三号信-号塔为何在-不可修复";
     const relationshipId = "relationship-林澈发现三年-前未提交的加-密算法被升级";

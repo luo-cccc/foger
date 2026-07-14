@@ -179,7 +179,7 @@ export class ChapterAnalyzerAgent extends BaseAgent {
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
       ],
-      { temperature: 0.3 },
+      { temperature: 0.3, stream: false, callPhase: "analyze" },
     );
 
     const countingMode = resolveLengthCountingMode(book.language ?? genreProfile.language);

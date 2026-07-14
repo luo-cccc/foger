@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { isLlmStubEnabled, stubChatCompletion } from "../agent/llm-stub.js";
 import { chatCompletion, type LLMCallTelemetry, type LLMClient } from "../llm/provider.js";
+import { parseCreativeOutput } from "../agents/writer-parser.js";
+import { parseMemo } from "../utils/chapter-memo-parser.js";
 
 describe("llm-stub", () => {
   const previousStubEnv = process.env.INKOS_AGENT_LLM_STUB;
@@ -103,6 +105,44 @@ describe("llm-stub", () => {
     );
 
     expect(response.content).toBe("PASS");
+  });
+
+  it("returns a chapter contract for writer prompts", () => {
+    const response = stubChatCompletion(
+      [
+        {
+          role: "system",
+          content: "Write chapter 1. Output PRE_WRITE_CHECK first, then CHAPTER_CONTENT.",
+        },
+        { role: "user", content: "请续写第1章。" },
+      ],
+      "stub-model",
+    );
+
+    const parsed = parseCreativeOutput(1, response.content, "zh_chars");
+    expect(parsed.title).toBe("潮湿的账页");
+    expect(parsed.content.length).toBeGreaterThan(900);
+    expect(parsed.content).toContain("真正的账从今晚才开始");
+    expect(parsed.preWriteCheck).toContain("章尾必须发生的改变");
+  });
+
+  it("returns a valid chapter memo for planner prompts", () => {
+    const response = stubChatCompletion(
+      [
+        {
+          role: "system",
+          content: "你是创作总编，职责是为下一章产生一份 chapter_memo。你不写正文。",
+        },
+        { role: "user", content: "请规划第1章。" },
+      ],
+      "stub-model",
+    );
+
+    const memo = parseMemo(response.content, 1, true);
+    expect(memo.goal).toContain("旧账篡改物证");
+    expect(memo.body).toContain("## 当前任务");
+    expect(memo.body).toContain("## 章尾必须发生的改变");
+    expect(memo.threadRefs).toContain("mentor-ledger");
   });
 
   it("emits the normal provider telemetry contract in stub mode", async () => {

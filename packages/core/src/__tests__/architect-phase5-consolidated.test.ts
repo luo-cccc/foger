@@ -344,6 +344,31 @@ describe("Phase 5 consolidation — parser accepts 5-section output (current_sta
     expect(out.roles?.map((role) => role.name)).toContain("林辞");
   });
 
+  it("accepts localized SECTION names and localized role-card delimiters", async () => {
+    const localizedResponse = CONSOLIDATED_RESPONSE
+      .replace("=== SECTION: story_frame ===", "=== SECTION: 故事框架 ===")
+      .replace("=== SECTION: volume_map ===", "=== SECTION: 分卷地图 ===")
+      .replace("=== SECTION: roles ===", "=== SECTION: 角色设定 ===")
+      .replace("=== SECTION: book_rules ===", "=== SECTION: 本书规则 ===")
+      .replace("=== SECTION: pending_hooks ===", "=== SECTION: 待回收钩子 ===")
+      .replaceAll("---ROLE---", "---角色---")
+      .replaceAll("---CONTENT---", "---内容---")
+      .replaceAll("tier: major", "级别：主要")
+      .replaceAll("tier: minor", "级别：次要")
+      .replaceAll("name:", "姓名：");
+    const agent = buildAgent();
+    vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValue({ content: localizedResponse, usage: ZERO_USAGE });
+
+    const out = await agent.generateFoundation(baseBook());
+
+    expect(out.storyFrame).toContain("主题与基调");
+    expect(out.volumeMap).toContain("节奏原则");
+    expect(out.bookRules).toContain("## 主角");
+    expect(out.pendingHooks).toContain("H01");
+    expect(out.roles?.map((role) => role.name)).toContain("林辞");
+  });
+
   it("accepts plain Markdown section headings without SECTION markers", async () => {
     const agent = buildAgent();
     vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")

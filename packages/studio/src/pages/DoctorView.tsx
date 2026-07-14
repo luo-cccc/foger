@@ -124,7 +124,10 @@ export function DoctorView(
               )}
             </p>
           </div>
-          <div className="text-xs text-muted-foreground">
+          <div
+            data-testid={operationId ? "operation-telemetry-call-count" : undefined}
+            className="text-xs text-muted-foreground"
+          >
             {telemetry.totalCalls > 0 ? `${telemetry.totalCalls} recent call(s)` : tr("还没有最近调用", "No recent calls yet")}
           </div>
         </div>

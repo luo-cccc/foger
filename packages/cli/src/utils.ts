@@ -149,7 +149,7 @@ export function buildPipelineConfig(
     defaultLLMConfig: config.llm,
     defaultTimeoutMs: resolveLLMTimeoutMs(process.env),
     foundationReviewRetries: config.foundation.reviewRetries,
-    writingReviewRetries: config.writing?.reviewRetries ?? 1,
+    writingReviewRetries: config.writing?.reviewRetries ?? 2,
     chapterReviewMode: extra?.chapterReviewMode,
     revisionGate: extra?.revisionGate,
     modelOverrides: config.modelOverrides,

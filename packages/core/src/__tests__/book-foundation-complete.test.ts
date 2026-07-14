@@ -55,6 +55,13 @@ describe("isBookFoundationComplete", () => {
     expect(await isBookFoundationComplete(dir)).toBe(false);
   });
 
+  it("is false when the roles directory only contains an empty Markdown file", async () => {
+    await writeFoundation(dir, { bookJson: true, storyFrame: true, volumeMap: true, bookRules: true, pendingHooks: true });
+    await mkdir(join(dir, "story", "roles", "主要角色"), { recursive: true });
+    await writeFile(join(dir, "story", "roles", "主要角色", "lead.md"), "  \n");
+    expect(await isBookFoundationComplete(dir)).toBe(false);
+  });
+
   it("accepts roles persisted to legacy character_matrix.md (the runtime's fallback source)", async () => {
     // The architect routinely writes roles to character_matrix.md instead of the
     // roles/ dir; the runtime reads either, so this book IS complete/usable.
@@ -71,6 +78,22 @@ describe("isBookFoundationComplete", () => {
       "兼容提示：新角色卡位于 `story/roles/`。",
       "",
       "## 主要角色",
+      "(none)",
+    ].join("\n"));
+    expect(await isBookFoundationComplete(dir)).toBe(false);
+  });
+
+  it("does not treat an empty English character-matrix pointer as real roles", async () => {
+    await writeFoundation(dir, { bookJson: true, storyFrame: true, volumeMap: true, bookRules: true, pendingHooks: true });
+    await writeFile(join(dir, "story", "character_matrix.md"), [
+      "# Character Matrix (compat pointer)",
+      "",
+      "## Major characters",
+      "",
+      "(none)",
+      "",
+      "## Minor characters",
+      "",
       "(none)",
     ].join("\n"));
     expect(await isBookFoundationComplete(dir)).toBe(false);

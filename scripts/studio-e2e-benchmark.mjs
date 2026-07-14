@@ -19,10 +19,15 @@ function formatMs(ms) {
 function runCommand(command, args) {
   return new Promise((resolve) => {
     const started = performance.now();
-    const child = spawn(command, args, {
+    const invocation = process.platform === "win32"
+      ? {
+          command: process.env.ComSpec || "cmd.exe",
+          args: ["/d", "/s", "/c", command, ...args],
+        }
+      : { command, args };
+    const child = spawn(invocation.command, invocation.args, {
       cwd: process.cwd(),
       env: process.env,
-      shell: process.platform === "win32",
       stdio: "inherit",
     });
     child.on("close", (code, signal) => {

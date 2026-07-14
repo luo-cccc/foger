@@ -304,9 +304,77 @@ describe("ArchitectAgent — Phase 5 prose output", () => {
     expect(chat).toHaveBeenCalledTimes(2);
     const repairMessages = chat.mock.calls[1]?.[0] as Array<{ role: string; content: string }>;
     expect(repairMessages[0]?.content).toContain("修复 InkOS architect");
+    expect(repairMessages[0]?.content).toContain("只返回缺失的 SECTION 块");
     expect(repairMessages[1]?.content).toContain("缺失 section");
-    expect(out.storyFrame).toContain("这本书讲的是");
+    expect(out.storyFrame).toContain("# frame");
     expect(out.bookRules).toContain("version");
+    expect(out.roles?.length).toBeGreaterThan(0);
+  });
+
+  it("merges a focused missing-section repair with the usable original output", async () => {
+    const agent = buildAgent();
+    const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValueOnce({
+        content: [
+          "=== SECTION: story_frame ===",
+          "# original frame",
+          "=== SECTION: volume_map ===",
+          "# original map",
+          "=== SECTION: pending_hooks ===",
+          "| hook_id | 起始章节 | 类型 | 状态 | 最近推进 | 预期回收 | 回收节奏 | 备注 |",
+        ].join("\n"),
+        usage: ZERO_USAGE,
+      })
+      .mockResolvedValueOnce({
+        content: [
+          "# 角色设定",
+          "---角色---",
+          "级别：主要",
+          "姓名：林辞",
+          "---内容---",
+          "## 核心标签",
+          "沉默但较真的账房。",
+          "# 本书规则",
+          "## 主角",
+          "- 名字：林辞",
+        ].join("\n"),
+        usage: ZERO_USAGE,
+      });
+
+    const out = await agent.generateFoundation(baseBook());
+
+    expect(out.storyFrame).toContain("original frame");
+    expect(out.volumeMap).toContain("original map");
+    expect(out.roles?.map((role) => role.name)).toContain("林辞");
+    expect(out.bookRules).toContain("名字：林辞");
+  });
+
+  it("repairs a non-empty roles section when it contains no parseable role cards", async () => {
+    const malformedRolesResponse = [
+      "=== SECTION: story_frame ===",
+      "# frame",
+      "=== SECTION: volume_map ===",
+      "# map",
+      "=== SECTION: roles ===",
+      "## 林辞",
+      "主角，但没有使用角色卡分隔格式。",
+      "=== SECTION: book_rules ===",
+      "## 主角",
+      "- 名字：林辞",
+      "=== SECTION: pending_hooks ===",
+      "| hook_id | 起始章节 | 类型 | 状态 | 最近推进 | 预期回收 | 回收节奏 | 备注 |",
+    ].join("\n");
+    const agent = buildAgent();
+    const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValueOnce({ content: malformedRolesResponse, usage: ZERO_USAGE })
+      .mockResolvedValueOnce({ content: SAMPLE_RESPONSE, usage: ZERO_USAGE });
+
+    const out = await agent.generateFoundation(baseBook());
+
+    expect(chat).toHaveBeenCalledTimes(2);
+    const repairMessages = chat.mock.calls[1]?.[0] as Array<{ role: string; content: string }>;
+    expect(repairMessages[0]?.content).toContain("至少包含一张可解析且非空的角色卡");
+    expect(repairMessages[1]?.content).toContain("缺失 section：roles");
     expect(out.roles?.length).toBeGreaterThan(0);
   });
 

@@ -62,18 +62,33 @@ export async function isBookFoundationComplete(bookDir: string): Promise<boolean
   // roles to character_matrix.md, so requiring the roles/ dir alone falsely
   // reported a complete book as "missing".
   for (const tier of ["主要角色", "major", "次要角色", "minor"]) {
-    try {
-      const entries = await readdir(join(bookDir, "story", "roles", tier));
-      if (entries.some((file) => file.endsWith(".md"))) return true;
-    } catch {
-      // Try the next locale/tier directory.
-    }
+    if (await hasNonEmptyMarkdownFile(join(bookDir, "story", "roles", tier))) return true;
   }
   try {
     const matrix = await readFile(join(bookDir, "story", "character_matrix.md"), "utf-8");
     if (hasLegacyCharacterMatrixRoles(matrix)) return true;
   } catch {
     // No legacy matrix either.
+  }
+  return false;
+}
+
+async function hasNonEmptyMarkdownFile(dir: string): Promise<boolean> {
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return false;
+  }
+
+  for (const file of entries) {
+    if (!file.endsWith(".md")) continue;
+    try {
+      const content = await readFile(join(dir, file), "utf-8");
+      if (content.trim()) return true;
+    } catch {
+      // Ignore unreadable entries and keep looking for a usable role card.
+    }
   }
   return false;
 }
@@ -91,7 +106,7 @@ function hasLegacyCharacterMatrixRoles(content: string): boolean {
     const match = /^#{2,}\s+(.+)$/.exec(line);
     if (!match) return false;
     const title = match[1].trim().replace(/[*`#]/g, "");
-    return !/^(主要角色|次要角色|major roles?|minor roles?|characters?|角色矩阵)$/i.test(title);
+    return !/^(主要角色|次要角色|major (?:roles?|characters?)|minor (?:roles?|characters?)|characters?|角色矩阵)$/i.test(title);
   });
 }
 

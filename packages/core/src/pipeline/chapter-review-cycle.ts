@@ -3,6 +3,7 @@ import type { ReviseMode, ReviseOutput } from "../agents/reviser.js";
 import type { WriteChapterOutput } from "../agents/writer.js";
 import type { ChapterIntent, ChapterMemo, ContextPackage, RuleStack } from "../models/input-governance.js";
 import type { LengthSpec } from "../models/length-governance.js";
+import { hasCriticalIssue } from "./chapter-quality-gate.js";
 import { countChapterLength, isOutsideHardRange } from "../utils/length-metrics.js";
 
 export interface ChapterReviewCycleUsage {
@@ -38,7 +39,7 @@ export interface ChapterReviewEvaluation {
   readonly revisionBlockingIssues: ReadonlyArray<AuditIssue>;
 }
 
-const DEFAULT_MAX_REVIEW_ITERATIONS = 1;
+const DEFAULT_MAX_REVIEW_ITERATIONS = 2;
 const PASS_SCORE_THRESHOLD = 85;
 const NET_IMPROVEMENT_EPSILON = 3;
 
@@ -48,6 +49,18 @@ interface ReviewSnapshot {
   readonly auditResult: AuditResult;
   readonly score: number;
   readonly lengthInRange: boolean;
+  readonly blockingCount: number;
+  readonly criticalCount: number;
+  readonly aiTellCount: number;
+}
+
+interface ReviewAssessment {
+  readonly auditResult: AuditResult;
+  readonly score: number;
+  readonly lengthInRange: boolean;
+  readonly blockingCount: number;
+  readonly criticalCount: number;
+  readonly aiTellCount: number;
 }
 
 export async function runChapterReviewCycle(params: {
@@ -132,23 +145,43 @@ export async function runChapterReviewCycle(params: {
   const assess = async (
     content: string,
     options?: { temperature?: number },
-  ): Promise<{ auditResult: AuditResult; score: number; lengthInRange: boolean }> => {
+  ): Promise<ReviewAssessment> => {
     const evaluation = await params.evaluateChapter(content, options);
-    const auditResult = evaluation.auditResult;
+    const reportedScore = evaluation.auditResult.overallScore;
+    const score = reportedScore === undefined || (reportedScore <= 0 && evaluation.auditResult.passed)
+      ? 100
+      : reportedScore;
+    const auditResult = score === reportedScore
+      ? evaluation.auditResult
+      : { ...evaluation.auditResult, overallScore: score };
     totalUsage = params.addUsage(totalUsage, auditResult.tokenUsage);
     const wordCount = countChapterLength(content, params.lengthSpec.countingMode);
     const lengthInRange = !isOutsideHardRange(wordCount, params.lengthSpec);
-    const score = auditResult.overallScore ?? 0;
 
-    return { auditResult, score, lengthInRange };
+    return {
+      auditResult,
+      score,
+      lengthInRange,
+      blockingCount: evaluation.blockingCount,
+      criticalCount: evaluation.criticalCount,
+      aiTellCount: evaluation.aiTellCount,
+    };
   };
 
-  const isPassed = (assessment: { auditResult: AuditResult; score: number; lengthInRange: boolean }): boolean =>
-    assessment.auditResult.passed && assessment.score >= PASS_SCORE_THRESHOLD && assessment.lengthInRange;
+  const isPassed = (assessment: ReviewAssessment): boolean =>
+    !hasCriticalIssue(assessment.auditResult.issues)
+    && assessment.score >= PASS_SCORE_THRESHOLD
+    && assessment.lengthInRange;
+
+  const hasMeaningfulProgress = (before: ReviewAssessment, after: ReviewAssessment): boolean =>
+    after.score >= before.score + NET_IMPROVEMENT_EPSILON
+    || after.criticalCount < before.criticalCount
+    || after.blockingCount < before.blockingCount
+    || after.aiTellCount < before.aiTellCount;
 
   // ---------------------------------------------------------------------------
-  // Scoring loop: assess → revise → assess. Default is one automatic repair pass;
-  // projects can raise it when they accept slower but more persistent repair.
+  // Scoring loop: assess → revise → assess. Default is two automatic repair
+  // passes so structural issues can converge without making retries unbounded.
   // ---------------------------------------------------------------------------
   const maxReviewIterations = Math.max(0, Math.floor(params.maxReviewIterations ?? DEFAULT_MAX_REVIEW_ITERATIONS));
   params.logStage({ zh: "审计草稿", en: "auditing draft" });
@@ -160,6 +193,9 @@ export async function runChapterReviewCycle(params: {
     auditResult: initial.auditResult,
     score: initial.score,
     lengthInRange: initial.lengthInRange,
+    blockingCount: initial.blockingCount,
+    criticalCount: initial.criticalCount,
+    aiTellCount: initial.aiTellCount,
   }];
 
   let currentAudit = initial;
@@ -210,13 +246,31 @@ export async function runChapterReviewCycle(params: {
       }
 
       params.assertChapterContentNotEmpty(reviseOutput.revisedContent, `repair iteration ${iteration + 1}`);
-      const revisedContent = params.normalizePostWriteSurface?.(reviseOutput.revisedContent) ?? reviseOutput.revisedContent;
+      const normalizedRevision = await normalizeIfHardDrift(reviseOutput.revisedContent);
+      normalizeApplied = normalizeApplied || normalizedRevision.applied;
+      const revisedContent = params.normalizePostWriteSurface?.(normalizedRevision.content) ?? normalizedRevision.content;
       const revisedWordCount = countChapterLength(revisedContent, params.lengthSpec.countingMode);
 
-      // Re-assess revised content. If REVISED_CONTENT drifted on length,
-      // lengthInRange will be false → isPassed fails → bestSnapshot picks
-      // the earlier in-range version. No in-loop normalize needed.
-      const nextAssessment = await assess(revisedContent, { temperature: 0 });
+      // Every repair is normalized before re-audit so a structural fix is not
+      // discarded solely because the reviser drifted outside hard bounds.
+      let nextAssessment = await assess(revisedContent, { temperature: 0 });
+      if (
+        !nextAssessment.auditResult.passed
+        && nextAssessment.auditResult.issues.length === 0
+        && currentAudit.auditResult.issues.length > 0
+      ) {
+        nextAssessment = {
+          ...nextAssessment,
+          auditResult: {
+            ...nextAssessment.auditResult,
+            issues: currentAudit.auditResult.issues,
+            summary: nextAssessment.auditResult.summary || currentAudit.auditResult.summary,
+          },
+          aiTellCount: currentAudit.aiTellCount,
+          blockingCount: currentAudit.blockingCount,
+          criticalCount: currentAudit.criticalCount,
+        };
+      }
 
       snapshots.push({
         content: revisedContent,
@@ -224,6 +278,9 @@ export async function runChapterReviewCycle(params: {
         auditResult: nextAssessment.auditResult,
         score: nextAssessment.score,
         lengthInRange: nextAssessment.lengthInRange,
+        blockingCount: nextAssessment.blockingCount,
+        criticalCount: nextAssessment.criticalCount,
+        aiTellCount: nextAssessment.aiTellCount,
       });
 
       // Check if passed
@@ -239,8 +296,9 @@ export async function runChapterReviewCycle(params: {
         break;
       }
 
-      // Check net improvement
-      if (nextAssessment.score >= currentAudit.score + NET_IMPROVEMENT_EPSILON) {
+      // Continue when actionable issues improved even if the model's numeric
+      // score did not move.
+      if (hasMeaningfulProgress(currentAudit, nextAssessment)) {
         finalContent = revisedContent;
         finalWordCount = revisedWordCount;
         postReviseCount = revisedWordCount;
@@ -248,8 +306,8 @@ export async function runChapterReviewCycle(params: {
         // Continue to next iteration
       } else {
         params.logWarn({
-          zh: `修复轮次 ${iteration + 1} 未净提升（${currentAudit.score} → ${nextAssessment.score}），退出循环`,
-          en: `repair iteration ${iteration + 1} no net improvement (${currentAudit.score} → ${nextAssessment.score}), exiting loop`,
+          zh: `修复轮次 ${iteration + 1} 未净提升（分数 ${currentAudit.score} → ${nextAssessment.score}，critical ${currentAudit.criticalCount} → ${nextAssessment.criticalCount}，blocking ${currentAudit.blockingCount} → ${nextAssessment.blockingCount}），退出循环`,
+          en: `repair iteration ${iteration + 1} no net improvement (score ${currentAudit.score} → ${nextAssessment.score}, critical ${currentAudit.criticalCount} → ${nextAssessment.criticalCount}, blocking ${currentAudit.blockingCount} → ${nextAssessment.blockingCount}), exiting loop`,
         });
         break;
       }
@@ -260,29 +318,33 @@ export async function runChapterReviewCycle(params: {
   // Pick the best scoring snapshot for final output
   // ---------------------------------------------------------------------------
   const bestSnapshot = snapshots.reduce((best, snap) => {
-    if (snap.lengthInRange !== best.lengthInRange) {
-      return snap.lengthInRange ? snap : best;
+    if (snap.lengthInRange !== best.lengthInRange) return snap.lengthInRange ? snap : best;
+    if (snap.criticalCount !== best.criticalCount) {
+      return snap.criticalCount < best.criticalCount ? snap : best;
     }
-    return snap.score >= best.score + NET_IMPROVEMENT_EPSILON ? snap : best;
+    if (snap.blockingCount !== best.blockingCount) {
+      return snap.blockingCount < best.blockingCount ? snap : best;
+    }
+    return snap.score > best.score ? snap : best;
   });
 
   // If best snapshot differs from current content (repair made things worse
   // but an earlier version was better), roll back to the best version.
-  const shouldRestoreBestSnapshot = bestSnapshot.content !== finalContent && (
-    (bestSnapshot.lengthInRange && !currentAudit.lengthInRange)
-    || bestSnapshot.score >= currentAudit.score + NET_IMPROVEMENT_EPSILON
-  );
-  if (shouldRestoreBestSnapshot) {
+  if (bestSnapshot.content !== finalContent) {
     params.logWarn({
-      zh: `回退到最高分版本（${bestSnapshot.score} 分 vs 当前 ${currentAudit.score} 分）`,
-      en: `rolling back to highest-scoring version (${bestSnapshot.score} vs current ${currentAudit.score})`,
+      zh: `回退到质量门禁排序更优版本（分数 ${bestSnapshot.score}，critical ${bestSnapshot.criticalCount}，blocking ${bestSnapshot.blockingCount}）`,
+      en: `rolling back to the best quality-gate snapshot (score ${bestSnapshot.score}, critical ${bestSnapshot.criticalCount}, blocking ${bestSnapshot.blockingCount})`,
     });
     finalContent = bestSnapshot.content;
     finalWordCount = bestSnapshot.wordCount;
+    postReviseCount = bestSnapshot.content === params.initialOutput.content ? 0 : bestSnapshot.wordCount;
     currentAudit = {
       auditResult: bestSnapshot.auditResult,
       score: bestSnapshot.score,
       lengthInRange: bestSnapshot.lengthInRange,
+      blockingCount: bestSnapshot.blockingCount,
+      criticalCount: bestSnapshot.criticalCount,
+      aiTellCount: bestSnapshot.aiTellCount,
     };
   }
 

@@ -154,7 +154,7 @@ export class ArchitectAgent extends BaseAgent {
     const response = await this.chat([
       { role: "system", content: langPrefix + systemPrompt + revisePrompt },
       { role: "user", content: userMessage },
-    ], { temperature: 0.8 });
+    ], { temperature: 0.8, stream: false, callPhase: "architect" });
 
     return this.parseSectionsWithRepair(response.content, resolvedLanguage);
   }
@@ -648,7 +648,9 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
           "You repair InkOS architect output formatting.",
           "The previous draft is partially useful but is missing required SECTION blocks.",
           "Do not invent a new book. Preserve usable existing content and add the missing parts.",
-          "Return the complete output with exactly these 5 SECTION blocks in order: story_frame, volume_map, roles, book_rules, pending_hooks.",
+          `Return only the missing SECTION blocks, in this order when requested: ${missingList}.`,
+          "Use exact markers such as === SECTION: story_frame ===. Do not repeat sections that already exist.",
+          "The roles section must contain at least one parseable, non-empty role card using exactly: ---ROLE---, tier: major|minor, name: <name>, ---CONTENT---, then the Markdown card body.",
           "book_rules must be ordinary Markdown, not YAML. pending_hooks must be a Markdown table.",
           "Do not explain the repair.",
         ].join("\n")
@@ -656,7 +658,9 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
           "你负责修复 InkOS architect 的输出格式。",
           "上一轮草稿有可用内容，但缺少必需的 SECTION 块。",
           "不要重新发明一本书；保留已有可用内容，只补齐缺失部分并整理成完整输出。",
-          "必须按顺序返回完整 5 段 SECTION：story_frame、volume_map、roles、book_rules、pending_hooks。",
+          `只返回缺失的 SECTION 块，并按这个顺序输出：${missingList}。`,
+          "必须使用精确标记，例如 === SECTION: story_frame ===；不要重复已经存在的 section。",
+          "roles 段至少包含一张可解析且非空的角色卡，必须严格使用：---ROLE---、tier: major|minor、name: <角色名>、---CONTENT---，然后写 Markdown 角色卡正文。",
           "book_rules 必须是普通 Markdown，不要 YAML；pending_hooks 必须是 Markdown 表格。",
           "不要解释修复过程。",
         ].join("\n");
@@ -667,8 +671,30 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
     const response = await this.chat([
       { role: "system", content: system },
       { role: "user", content: user },
-    ], { temperature: 0.2 });
-    return response.content;
+    ], { temperature: 0.2, stream: false, callPhase: "architect-repair" });
+    return this.mergeArchitectRepair(error, response.content);
+  }
+
+  private mergeArchitectRepair(error: MissingArchitectSectionsError, repairContent: string): string {
+    const repairedSections = this.parseArchitectSectionMap(repairContent);
+    const renderedRepairs = error.missing.flatMap((name) => {
+      const repaired = repairedSections.get(name)
+        ?? (name === "story_frame" ? repairedSections.get("story_bible") : undefined)
+        ?? (name === "volume_map" ? repairedSections.get("volume_outline") : undefined);
+      return repaired?.trim()
+        ? [`=== SECTION: ${name} ===\n${repaired.trim()}`]
+        : [];
+    });
+
+    if (renderedRepairs.length > 0) {
+      return `${error.content.trim()}\n\n${renderedRepairs.join("\n\n")}`;
+    }
+
+    if (error.missing.length === 1 && repairContent.trim()) {
+      return `${error.content.trim()}\n\n=== SECTION: ${error.missing[0]} ===\n${repairContent.trim()}`;
+    }
+
+    return `${error.content.trim()}\n\n${repairContent.trim()}`;
   }
 
   private parseSections(content: string, language: "zh" | "en"): ArchitectOutput {
@@ -706,20 +732,20 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
     // When the new story_frame / volume_map names are used we require roles.
     const usingLegacyOutlineNames = !storyFrame && !volumeMap
       && (legacyStoryBible.length > 0 || legacyVolumeOutline.length > 0);
+    const roles = this.parseRoles(rolesRaw);
 
     const missing: string[] = [];
     const effectiveStoryFrame = storyFrame || legacyStoryBible;
     const effectiveVolumeMap = volumeMap || legacyVolumeOutline;
     if (!effectiveStoryFrame) missing.push("story_frame");
     if (!effectiveVolumeMap) missing.push("volume_map");
-    if (!rolesRaw.trim() && !usingLegacyOutlineNames) missing.push("roles");
+    if (roles.length === 0 && !usingLegacyOutlineNames) missing.push("roles");
     if (!bookRules) missing.push("book_rules");
     if (!pendingHooksRaw) missing.push("pending_hooks");
     if (missing.length > 0) {
       throw new MissingArchitectSectionsError(missing, content);
     }
 
-    const roles = this.parseRoles(rolesRaw);
     const pendingHooks = this.normalizePendingHooksSection(
       this.stripTrailingAssistantCoda(pendingHooksRaw!),
       effectiveVolumeMap,
@@ -748,11 +774,28 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
 
   private parseArchitectSectionMap(content: string): Map<string, string> {
     const sectionPattern = /^\s{0,3}(?:#{1,6}\s*)?===\s*SECTION\s*[：:]\s*([^\n=]+?)\s*===\s*(?:#+\s*)?$/gim;
-    const markerMatches = [...content.matchAll(sectionPattern)].map((match) => ({
-      name: this.normalizeSectionName(match[1] ?? ""),
-      index: match.index ?? 0,
-      markerLength: match[0].length,
-    }));
+    const markerMatches = [...content.matchAll(sectionPattern)].map((match) => {
+      const rawName = match[1] ?? "";
+      const normalizedName = this.normalizeSectionName(rawName);
+      const knownNames = new Set([
+        "story_frame",
+        "story_bible",
+        "volume_map",
+        "volume_outline",
+        "roles",
+        "book_rules",
+        "current_state",
+        "pending_hooks",
+        "rhythm_principles",
+      ]);
+      return {
+        name: knownNames.has(normalizedName)
+          ? normalizedName
+          : (this.canonicalSectionNameFromHeading(rawName) ?? normalizedName),
+        index: match.index ?? 0,
+        markerLength: match[0].length,
+      };
+    });
     if (markerMatches.length > 0) {
       return this.sliceArchitectSections(content, markerMatches);
     }
@@ -792,24 +835,28 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
   private parseRoles(raw: string): ReadonlyArray<ArchitectRole> {
     if (!raw.trim()) return [];
 
-    const blocks = raw.split(/^---ROLE---$/m).map((chunk) => chunk.trim()).filter(Boolean);
+    const blocks = raw
+      .split(/^[ \t]*---[ \t]*(?:ROLE|角色)[ \t]*---[ \t]*$/gim)
+      .map((chunk) => chunk.trim())
+      .filter(Boolean);
     const roles: ArchitectRole[] = [];
 
     for (const block of blocks) {
-      const contentSplit = block.split(/^---CONTENT---$/m);
+      const contentSplit = block.split(/^[ \t]*---[ \t]*(?:CONTENT|内容)[ \t]*---[ \t]*$/gim);
       if (contentSplit.length < 2) continue;
 
       const headerRaw = contentSplit[0]!.trim();
       const content = contentSplit.slice(1).join("\n---CONTENT---\n").trim();
 
-      const tierMatch = headerRaw.match(/tier\s*[:：]\s*(major|minor|主要|次要)/i);
-      const nameMatch = headerRaw.match(/name\s*[:：]\s*(.+)/i);
+      const tierMatch = headerRaw.match(/(?:tier|层级|级别|角色级别)\s*[:：]\s*(major|minor|主要|次要)/i);
+      const nameMatch = headerRaw.match(/(?:name|姓名|名字|角色名)\s*[:：]\s*(.+)/i);
       if (!tierMatch || !nameMatch) continue;
 
       const tierValue = tierMatch[1]!.toLowerCase();
       const tier: "major" | "minor" = (tierValue === "major" || tierValue === "主要") ? "major" : "minor";
       const name = nameMatch[1]!.trim();
       if (!name || !content) continue;
+      if (!name.replace(/[/\\:*?"<>|]/g, "_").trim()) continue;
 
       roles.push({ tier, name, content });
     }
@@ -1091,7 +1138,7 @@ ${continuationDirective}
     const response = await this.chat([
       { role: "system", content: systemPrompt },
       { role: "user", content: userMessage },
-    ], { temperature: 0.5 });
+    ], { temperature: 0.5, stream: false, callPhase: "architect-import" });
 
     return this.parseSectionsWithRepair(response.content, resolvedLanguage);
   }

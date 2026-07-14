@@ -2,7 +2,6 @@ import { z } from "zod";
 import { SessionIdSchema, SessionKindSchema, type SessionKind } from "./session.js";
 export type { SessionKind };
 
-
 export const TranscriptRoleSchema = z.enum(["user", "assistant", "toolResult", "system"]);
 export type TranscriptRole = z.infer<typeof TranscriptRoleSchema>;
 

@@ -363,7 +363,13 @@ export function buildPlannerUserMessage(input: PlannerUserMessageInput): string 
     .replaceAll("{{book_rules_relevant}}", input.bookRulesRelevant);
 
   const golden = buildGoldenOpeningGuidance(input.chapterNumber, language);
-  return golden ? `${filled}\n\n${golden}` : filled;
+  const authority = language === "en"
+    ? `## Character continuity authority
+The protagonist, opposing forces, and collaborator rows above are factual authority. Do not invert a character's role, allegiance, job, death status, or relationship merely to create a convenient beat. If the outline or a fresh idea conflicts with those rows or the last chapter summary, keep the established fact and redesign the beat. Every named character in this memo must have a role-consistent action.`
+    : `## 瑙掕壊连续性权威
+上面的主角、对手和协作者信息是事实权威。不得为了方便制造剧情而改变角色身份、阵营、职务、生死状态或关系。如果卷纲或新想法与这些信息、上一章摘要冲突，应保留既成事实并重设计本章动作。本 memo 中每个被点名的角色都必须有符合身份的行为。`;
+  const guidance = golden ? `${golden}\n\n${authority}` : authority;
+  return `${filled}\n\n${guidance}`;
 }
 
 function buildVolumeContractBlock(volumeContract: string, language: "zh" | "en"): string {

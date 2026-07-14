@@ -43,14 +43,15 @@ export interface CompiledChapterClaims {
   }>;
 }
 
-
 function claimVisibleToReader(claim: CanonClaim, chapterNumber: number, revealedClaimIds: ReadonlySet<string>): boolean {
+  if (claim.domain === "style") return true;
   if (revealedClaimIds.has(claim.id)) return true;
   if (claim.visibility.readerKnownFrom === undefined) return true;
   return chapterNumber >= claim.visibility.readerKnownFrom;
 }
 
 function claimVisibleToPov(claim: CanonClaim, pov?: string): boolean {
+  if (claim.domain === "style") return true;
   if (!pov) return true;
   if (claim.visibility.hiddenFrom.includes(pov)) return false;
   if (claim.claimType === "secret_truth") {
@@ -151,7 +152,6 @@ function memoMentionsClaimSubject(claim: CanonClaim, memo?: string): boolean {
   return claimSubjectTerms(claim).some((term) => term.length > 0 && normalized.includes(term.toLowerCase()));
 }
 
-
 export function compileChapterClaims(
   claims: ReadonlyArray<CanonClaim>,
   ctx: ChapterClaimContext,
@@ -171,7 +171,7 @@ export function compileChapterClaims(
       revealedClaimIds,
     );
     const povVisible = claimVisibleToPov(claim, ctx.pov);
-    const inScope = claimInScopeForChapter(claim, ctx);
+    const inScope = claim.domain === "style" || claimInScopeForChapter(claim, ctx);
 
     if (!readerVisible || !povVisible || !inScope) {
       mustHide.push(claim);
@@ -331,4 +331,3 @@ export async function saveChapterClaimArtifacts(
 
   return { claimsPath, briefPath };
 }
-

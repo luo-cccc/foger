@@ -1,5 +1,6 @@
 import type { SSEMessage } from "./use-sse";
 import type { PipelineFailureStage } from "../lib/pipeline-failure-advice";
+import type { BookSummary } from "../shared/contracts";
 
 export type BookOperationKind = "write" | "draft" | "rewrite" | "repair-state" | "resync";
 
@@ -103,13 +104,10 @@ const COMPLETION_STAGES: Readonly<Record<string, PipelineFailureStage>> = {
   "resync:complete": "resync",
 };
 
-export interface SidebarBookSummary {
-  readonly id: string;
-  readonly title: string;
-  readonly genre: string;
-  readonly status: string;
-  readonly chaptersWritten: number;
-}
+export type SidebarBookSummary = Pick<
+  BookSummary,
+  "id" | "title" | "genre" | "status" | "chaptersWritten"
+>;
 
 function getBookId(message: SSEMessage): string | null {
   const data = message.data as { bookId?: unknown } | null;

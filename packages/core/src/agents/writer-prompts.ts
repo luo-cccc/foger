@@ -3,6 +3,7 @@ import type { GenreProfile } from "../models/genre-profile.js";
 import type { BookRules } from "../models/book-rules.js";
 import type { LengthSpec } from "../models/length-governance.js";
 import { buildEnglishCoreRules, buildEnglishAntiAIRules, buildEnglishCharacterMethod, buildEnglishPreWriteChecklist, buildEnglishGenreIntro } from "./en-prompt-sections.js";
+import { stripBuiltInWritingMethodology } from "../utils/writing-methodology.js";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -48,7 +49,7 @@ export function buildWriterSystemPrompt(
         buildProtagonistRules(bookRules),
         buildNarrativePersonRule(bookRules, isEnglish ? "en" : "zh"),
         buildBookRulesBody(bookRulesBody),
-        buildStyleGuide(styleGuide),
+        buildStyleGuide(styleGuide, "en", governed),
         buildStyleFingerprint(styleFingerprint),
         // Pre-write checklist moved to style_guide.md (v10)
         outputSection,
@@ -68,7 +69,7 @@ export function buildWriterSystemPrompt(
         buildProtagonistRules(bookRules),
         buildNarrativePersonRule(bookRules, isEnglish ? "en" : "zh"),
         buildBookRulesBody(bookRulesBody),
-        buildStyleGuide(styleGuide),
+        buildStyleGuide(styleGuide, "zh", governed),
         buildStyleFingerprint(styleFingerprint),
         // Pre-write checklist moved to style_guide.md (v10)
         outputSection,
@@ -613,9 +614,19 @@ function buildBookRulesBody(body: string): string {
 // Style guide
 // ---------------------------------------------------------------------------
 
-function buildStyleGuide(styleGuide: string): string {
+function buildStyleGuide(
+  styleGuide: string,
+  language: "zh" | "en",
+  stripBuiltIn: boolean,
+): string {
   if (!styleGuide || styleGuide === "(文件尚未创建)") return "";
-  return `## 文风指南\n\n${styleGuide}`;
+  const runtimeGuide = stripBuiltIn
+    ? stripBuiltInWritingMethodology(styleGuide, language)
+    : styleGuide.trim();
+  if (!runtimeGuide) return "";
+  return language === "en"
+    ? `## Style Guide\n\n${runtimeGuide}`
+    : `## 文风指南\n\n${runtimeGuide}`;
 }
 
 // ---------------------------------------------------------------------------

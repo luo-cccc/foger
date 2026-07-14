@@ -43,6 +43,8 @@ export abstract class BaseAgent {
     options?: {
       readonly temperature?: number;
       readonly maxTokens?: number;
+      /** Override the project stream mode for atomic structured calls. */
+      readonly stream?: boolean;
       /** P0: phase label for telemetry (e.g. "write", "settle", "audit", "plan"). */
       readonly callPhase?: string;
       readonly promptSources?: ReadonlyArray<LLMPromptSourceInput>;

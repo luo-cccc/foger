@@ -358,9 +358,9 @@ describe("ProjectConfigSchema", () => {
     expect(result.daemon.maxChaptersPerDay).toBe(50);
   });
 
-  it("defaults long-form writing review retries to one and accepts project overrides", () => {
+  it("defaults long-form writing review retries to two and accepts project overrides", () => {
     const defaults = ProjectConfigSchema.parse(validProject);
-    expect(defaults.writing.reviewRetries).toBe(1);
+    expect(defaults.writing.reviewRetries).toBe(2);
 
     const overridden = ProjectConfigSchema.parse({
       ...validProject,

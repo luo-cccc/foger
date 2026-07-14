@@ -1,7 +1,4 @@
-/**
- * Structured API error handling.
- * Ported from PR #96 (Te9ui1a) — typed error codes for consistent JSON responses.
- */
+/** API error carrying an HTTP status and stable response code. */
 
 export class ApiError extends Error {
   readonly status: number;
@@ -14,4 +11,3 @@ export class ApiError extends Error {
     this.code = code;
   }
 }
-

@@ -140,6 +140,92 @@ describe("LengthNormalizerAgent", () => {
     expect(result.warning).toBeUndefined();
   });
 
+  it("deterministically bounds an overlong result after both LLM passes miss hard max", async () => {
+    const agent = createAgent();
+    const stillOverlong = "这是完整句子。".repeat(80);
+    const chatSpy = vi.spyOn(BaseAgent.prototype as never, "chat")
+      .mockResolvedValueOnce({ content: stillOverlong, usage: ZERO_USAGE })
+      .mockResolvedValueOnce({ content: stillOverlong, usage: ZERO_USAGE });
+    const lengthSpec = LengthSpecSchema.parse({
+      target: 220,
+      softMin: 190,
+      softMax: 250,
+      hardMin: 160,
+      hardMax: 280,
+      countingMode: "zh_chars",
+      normalizeMode: "compress",
+    });
+
+    const result = await agent.normalizeChapter({
+      chapterContent: "原始超长章节。".repeat(100),
+      lengthSpec,
+    });
+
+    expect(chatSpy).toHaveBeenCalledTimes(2);
+    expect(result.finalCount).toBeLessThanOrEqual(lengthSpec.hardMax);
+    expect(result.finalCount).toBeGreaterThanOrEqual(lengthSpec.hardMin);
+    expect(result.normalizedContent.endsWith("。"))
+      .toBe(true);
+  });
+
+  it("preserves required markers when deterministic hard-max bounding trims the tail", async () => {
+    const agent = createAgent();
+    const stillOverlong = `${"这是完整句子。".repeat(80)}[[KEEP_ME]]`;
+    vi.spyOn(BaseAgent.prototype as never, "chat")
+      .mockResolvedValueOnce({ content: stillOverlong, usage: ZERO_USAGE })
+      .mockResolvedValueOnce({ content: stillOverlong, usage: ZERO_USAGE });
+    const lengthSpec = LengthSpecSchema.parse({
+      target: 220,
+      softMin: 190,
+      softMax: 250,
+      hardMin: 160,
+      hardMax: 280,
+      countingMode: "zh_chars",
+      normalizeMode: "compress",
+    });
+
+    const result = await agent.normalizeChapter({
+      chapterContent: "原始超长章节。".repeat(100) + "[[KEEP_ME]]",
+      lengthSpec,
+      chapterIntent: "Preserve [[KEEP_ME]].",
+    });
+
+    expect(result.normalizedContent).toContain("[[KEEP_ME]]");
+    expect(result.finalCount).toBeLessThanOrEqual(lengthSpec.hardMax);
+    expect(result.finalCount).toBeGreaterThanOrEqual(lengthSpec.hardMin);
+  });
+
+  it("keeps both opening causality and the final commitment when hard-max bounding", async () => {
+    const agent = createAgent();
+    const stillOverlong = [
+      "开场因果：林澈发现磁带编号被改过。",
+      ...Array.from({ length: 80 }, () => "中段重复调查没有新增证据。"),
+      "章尾承诺落地：林澈把证据交给阿泽并锁定下一处档案。",
+    ].join("\n");
+    vi.spyOn(BaseAgent.prototype as never, "chat")
+      .mockResolvedValueOnce({ content: stillOverlong, usage: ZERO_USAGE })
+      .mockResolvedValueOnce({ content: stillOverlong, usage: ZERO_USAGE });
+    const lengthSpec = LengthSpecSchema.parse({
+      target: 220,
+      softMin: 190,
+      softMax: 250,
+      hardMin: 160,
+      hardMax: 280,
+      countingMode: "zh_chars",
+      normalizeMode: "compress",
+    });
+
+    const result = await agent.normalizeChapter({
+      chapterContent: "原始超长章节。".repeat(100),
+      lengthSpec,
+    });
+
+    expect(result.normalizedContent).toContain("开场因果：林澈发现磁带编号被改过");
+    expect(result.normalizedContent).toContain("章尾承诺落地：林澈把证据交给阿泽并锁定下一处档案");
+    expect(result.finalCount).toBeGreaterThanOrEqual(lengthSpec.hardMin);
+    expect(result.finalCount).toBeLessThanOrEqual(lengthSpec.hardMax);
+  });
+
   it("does not override provider output budget for large compression outputs", async () => {
     const agent = createAgent();
     const chatSpy = vi.spyOn(BaseAgent.prototype as never, "chat").mockResolvedValue({

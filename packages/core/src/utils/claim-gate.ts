@@ -29,7 +29,7 @@ function runClaimGate(input: ClaimGateTextInput): ReadonlyArray<ClaimGateIssue> 
   const text = normalizeText(input.text);
 
   for (const claim of input.compiled.mustHide) {
-    if (textMentionsClaim(text, claim)) {
+    if (textRevealsHiddenClaim(input.text, claim)) {
       const characterKnowledgeLeak = detectCharacterKnowledgeLeak(input.text, claim);
       issues.push(issue({
         severity: "critical",
@@ -131,7 +131,7 @@ function runClaimGate(input: ClaimGateTextInput): ReadonlyArray<ClaimGateIssue> 
   }
 
   for (const claim of input.compiled.costRequired) {
-    if (!textMentionsClaim(text, claim) && !mentionsRuleSubjectOrAction(input.text, claim)) continue;
+    if (!activelyUsesCostBoundClaim(input.text, claim)) continue;
     const paysCost = claim.constraints.requiresCost.some((cost) => text.includes(normalizeText(cost)));
     if (!paysCost) {
       issues.push(issue({
@@ -317,17 +317,57 @@ function textMentionsClaim(text: string, claim: CanonClaim): boolean {
   return salientClaimContentTerms(claim).some((term) => text.includes(term));
 }
 
+const HIDDEN_REVEAL_CUES = /知道|知晓|知情|意识到|明白|看穿|得知|确认|证实|原来|其实|真相|揭示|揭晓|揭露|透露|交代|并非.{0,24}而是|不是.{0,24}而是|learns?|knows?|realizes?|confirms?|reveals?|turns? out|the truth/iu;
+
+function textRevealsHiddenClaim(text: string, claim: CanonClaim): boolean {
+  const normalized = normalizeText(text);
+  if (normalized.includes(normalizeText(claim.id))) return true;
+  const content = normalizeText(claim.content);
+  if (content.length > 0 && normalized.includes(content)) return true;
+  return splitEvidenceSegments(text).some((segment) => segmentRevealsHiddenClaim(segment, claim));
+}
+
+function segmentRevealsHiddenClaim(segment: string, claim: CanonClaim): boolean {
+  if (!HIDDEN_REVEAL_CUES.test(segment)) return false;
+  const normalized = normalizeText(segment);
+  const terms = hiddenClaimEvidenceTerms(claim);
+  if (terms.length === 0) return false;
+  const hits = terms.filter((term) => normalized.includes(term)).length;
+  return hits >= Math.min(3, terms.length);
+}
+
+function hiddenClaimEvidenceTerms(claim: CanonClaim): string[] {
+  const focused = claim.content.match(/(?:而是|其实|原来|真相(?:是|为)?)[：:]?([\s\S]+)/u)?.[1];
+  const focus = focused && (focused.match(/[\p{L}\p{N}]/gu)?.length ?? 0) >= 4
+    ? focused
+    : claim.content;
+  return extractCoreTerms(focus);
+}
+
+function splitEvidenceSegments(text: string): string[] {
+  return text
+    .split(/(?<=[。！？.!?])|\r?\n+/u)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
 function detectCharacterKnowledgeLeak(text: string, claim: CanonClaim): boolean {
   if (claim.visibility.hiddenFrom.length === 0) return false;
-  const normalized = normalizeText(text);
-  const hiddenCharacter = claim.visibility.hiddenFrom.some((name) =>
-    normalized.includes(normalizeText(name))
-  );
-  if (!hiddenCharacter) return false;
-  if (!/(知道|知晓|知情|察觉|意识到|明白|发现|看穿|得知|learns?|knows?|realizes?|discovers?|finds?\s+out)/i.test(text)) {
-    return false;
-  }
-  return claimMentionTerms(claim, { contentOnly: true }).some((term) => normalized.includes(term));
+  return splitEvidenceSegments(text).some((segment) => {
+    const normalized = normalizeText(segment);
+    const hiddenCharacter = claim.visibility.hiddenFrom.some((name) =>
+      normalized.includes(normalizeText(name))
+    );
+    return hiddenCharacter && segmentRevealsHiddenClaim(segment, claim);
+  });
+}
+
+function activelyUsesCostBoundClaim(text: string, claim: CanonClaim): boolean {
+  const capabilityClaim = claim.domain === "power"
+    || claim.domain === "protagonist"
+    || claim.claimType === "character_exception";
+  if (capabilityClaim) return mentionsRuleSubjectOrAction(text, claim);
+  return bypassEvidenceSegments(text).some((segment) => mentionsRuleSubjectOrAction(segment, claim));
 }
 
 function detectsInstitutionRuleBypass(text: string, claim: CanonClaim): boolean {

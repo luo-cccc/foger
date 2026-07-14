@@ -44,6 +44,14 @@ import {
 } from "../utils/volume-contract.js";
 import { ClaimValidatorAgent } from "./claim-validator.js";
 import { VolumeAuditorAgent, type VolumeAuditInput } from "./volume-auditor.js";
+import {
+  fingerprintContextCompilationKey,
+  type ContextCompilationCache,
+} from "../utils/context-compilation-cache.js";
+import {
+  compileChapterExecutionContract,
+  renderChapterExecutionContract,
+} from "../utils/chapter-execution-contract.js";
 
 export interface ComposeChapterInput {
   readonly book: BookConfig;
@@ -51,6 +59,7 @@ export interface ComposeChapterInput {
   readonly chapterNumber: number;
   readonly plan: PlanChapterOutput;
   readonly contextBudget?: ContextBudget;
+  readonly contextCompilationCache?: ContextCompilationCache;
   readonly compressibleContextCompiler?: CompressibleContextCompiler;
   readonly outlineSectionSelector?: OutlineSectionSelector;
   readonly onContextCompression?: ContextCompressionCallback;
@@ -61,7 +70,10 @@ export interface ComposeChapterInput {
 export interface ContextBudget {
   readonly contextWindowTokens: number;
   readonly reservedOutputTokens: number;
+  readonly attentionInputTokens?: number;
 }
+
+export const DEFAULT_ATTENTION_INPUT_TOKENS = 8_000;
 
 export interface CompressibleContextCompileRequest {
   readonly chapterNumber: number;
@@ -360,7 +372,12 @@ async function applyContextBudgetIfNeeded(params: {
     return { contextPackage: params.contextPackage, notes: [] };
   }
 
-  const availableInputTokens = budget.contextWindowTokens - Math.max(0, budget.reservedOutputTokens);
+  const modelInputTokens = budget.contextWindowTokens - Math.max(0, budget.reservedOutputTokens);
+  const attentionInputTokens = Number.isFinite(budget.attentionInputTokens)
+      && (budget.attentionInputTokens ?? 0) > 0
+    ? Math.floor(budget.attentionInputTokens!)
+    : DEFAULT_ATTENTION_INPUT_TOKENS;
+  const availableInputTokens = Math.max(1, Math.min(modelInputTokens, attentionInputTokens));
   const selectedContext = params.contextPackage.selectedContext;
   const totalTokens = estimateSelectedContextTokens(selectedContext);
   if (totalTokens <= availableInputTokens) {
@@ -498,7 +515,24 @@ function estimateSelectedContextTokens(entries: ContextPackage["selectedContext"
   ), 0);
 }
 
-function renderContextEntries(entries: ContextPackage["selectedContext"]): string {
+function isStableContextSource(source: string): boolean {
+  return source === "story/story_bible.md"
+    || source.startsWith("story/story_bible.md#")
+    || source === "story/parent_canon.md"
+    || source.startsWith("story/parent_canon.md#")
+    || source === "story/volume_summaries.md"
+    || source.startsWith("story/volume_summaries.md#")
+    || source === "story/outline/story_frame.md"
+    || source.startsWith("story/outline/story_frame.md#")
+    || source === "story/outline/volume_map.md"
+    || source.startsWith("story/outline/volume_map.md#")
+    || source.startsWith("story/outline/roles/")
+    || source.startsWith("story/roles/");
+}
+
+function renderContextEntries(
+  entries: ReadonlyArray<ContextPackage["selectedContext"][number]>,
+): string {
   return entries.map((entry) =>
     [
       `### ${entry.source}`,
@@ -544,7 +578,9 @@ export class ComposerAgent extends BaseAgent {
       ...input,
       contextBudget,
       compressibleContextCompiler: input.compressibleContextCompiler
-        ?? (contextBudget ? (request) => this.compileCompressibleContext(request) : undefined),
+        ?? (contextBudget
+          ? (request) => this.compileCompressibleContext(request, input.contextCompilationCache)
+          : undefined),
       outlineSectionSelector: input.outlineSectionSelector ?? ((request) => this.selectOutlineSections(request)),
       claimValidator: input.claimValidator ?? new ClaimValidatorAgent({
         ...this.ctx,
@@ -603,16 +639,41 @@ export class ComposerAgent extends BaseAgent {
     ], {
       temperature: 0.1,
       maxTokens: 1024,
+      stream: false,
+      callPhase: "compose-select-context",
     });
     const allowed = new Set(request.candidates.map((candidate) => candidate.source));
     return parseSelectedSources(response.content).filter((source) => allowed.has(source));
   }
 
-  async compileCompressibleContext(request: CompressibleContextCompileRequest): Promise<string> {
+  async compileCompressibleContext(
+    request: CompressibleContextCompileRequest,
+    cache?: ContextCompilationCache,
+  ): Promise<string> {
     const isEn = request.language === "en";
     const protectedBlock = renderContextEntries(request.protectedEntries);
-    const semanticBlock = renderContextEntries(request.semanticEntries);
-    const compressibleBlock = renderContextEntries(request.compressibleEntries);
+    const stableEntries = [...request.semanticEntries, ...request.compressibleEntries]
+      .filter((entry) => isStableContextSource(entry.source));
+    const dynamicSemanticEntries = request.semanticEntries
+      .filter((entry) => !isStableContextSource(entry.source));
+    const dynamicCompressibleEntries = request.compressibleEntries
+      .filter((entry) => !isStableContextSource(entry.source));
+    const stableSummary = stableEntries.length > 0 && cache
+      ? await this.getOrCompileStableContext(request, stableEntries, cache)
+      : undefined;
+    const semanticEntries = [
+      ...(stableSummary
+        ? [{
+            source: "runtime/stable-context-cache",
+            reason: "Stable foundation, role, canon, and volume context compiled once for this book/model budget.",
+            excerpt: stableSummary,
+          }]
+        : stableEntries),
+      ...dynamicSemanticEntries,
+    ];
+    const compressibleEntries = dynamicCompressibleEntries;
+    const semanticBlock = renderContextEntries(semanticEntries);
+    const compressibleBlock = renderContextEntries(compressibleEntries);
     const system = isEn
       ? [
           "You are InkOS's semantic context compiler.",
@@ -660,19 +721,89 @@ export class ComposerAgent extends BaseAgent {
     ], {
       temperature: 0.2,
       maxTokens: Math.min(8192, Math.max(512, request.maxInputTokens)),
+      stream: false,
+      callPhase: "compose-context",
     });
     return response.content.trim();
+  }
+
+  private async getOrCompileStableContext(
+    request: CompressibleContextCompileRequest,
+    entries: ReadonlyArray<ContextPackage["selectedContext"][number]>,
+    cache: ContextCompilationCache,
+  ): Promise<string> {
+    const key = fingerprintContextCompilationKey([
+      "inkos-stable-context-v1",
+      this.ctx.projectRoot,
+      this.ctx.bookId ?? "unknown-book",
+      this.ctx.client.service ?? "",
+      this.ctx.model,
+      request.language,
+      String(request.maxInputTokens),
+      ...entries.map((entry) => [entry.source, entry.reason, entry.excerpt ?? ""].join("\n")),
+    ]);
+    const cached = cache.get(key);
+    if (cached) return cached;
+
+    const isEn = request.language === "en";
+    const system = isEn
+      ? [
+          "You are InkOS's stable context compiler.",
+          "Compile only stable foundation, role, canon, and volume context.",
+          "Preserve every fact, id, prohibition, precedence, and timing constraint.",
+          "Return concise Markdown with source pointers. Do not add facts or chapter-specific events.",
+        ].join("\n")
+      : [
+          "你是 InkOS 的稳定上下文编译器。",
+          "只编译稳定的基础设定、角色、正典和卷级上下文。",
+          "任何事实、ID、禁令、优先级和时间约束都不能丢失。",
+          "输出带来源指针的简洁 Markdown，不得添加事实或章节专属事件。",
+        ].join("\n");
+    const user = isEn
+      ? [
+          `Target budget: <= ${request.maxInputTokens} estimated input tokens`,
+          "",
+          renderContextEntries(entries),
+        ].join("\n")
+      : [
+          `目标预算：不超过 ${request.maxInputTokens} 估算输入 tokens`,
+          "",
+          renderContextEntries(entries),
+        ].join("\n");
+    const response = await this.chat([
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ], {
+      temperature: 0.1,
+      maxTokens: Math.min(4096, Math.max(512, request.maxInputTokens)),
+      stream: false,
+      callPhase: "compose-context-cache",
+      promptSources: [
+        { source: "runtime/stable-context-cache/instructions", content: system, tier: "system", stable: true },
+        ...entries.map((entry) => ({
+          source: entry.source,
+          content: entry.excerpt ?? "",
+          tier: "semantic" as const,
+          stable: true,
+        })),
+      ],
+    });
+    const compiled = response.content.trim();
+    if (!compiled) throw new Error("Stable context compiler returned empty output.");
+    cache.set(key, compiled);
+    return compiled;
   }
 }
 
 export function contextBudgetFromClient(client: LLMClient): ContextBudget | undefined {
   const contextWindowTokens = client._piModel?.contextWindow;
-  if (!Number.isFinite(contextWindowTokens) || !contextWindowTokens || contextWindowTokens <= 0) {
-    return undefined;
-  }
+  const reservedOutputTokens = Math.max(0, client.defaults?.maxTokens ?? 0);
   return {
-    contextWindowTokens,
-    reservedOutputTokens: Math.max(0, client.defaults.maxTokens),
+    contextWindowTokens: Number.isFinite(contextWindowTokens) && contextWindowTokens && contextWindowTokens > 0
+      ? contextWindowTokens
+      : DEFAULT_ATTENTION_INPUT_TOKENS + reservedOutputTokens,
+    reservedOutputTokens,
+    attentionInputTokens: DEFAULT_ATTENTION_INPUT_TOKENS,
   };
 }
 
@@ -682,29 +813,16 @@ async function collectSelectedContext(
   language: "zh" | "en",
   outlineSectionSelector?: OutlineSectionSelector,
 ): Promise<ContextPackage["selectedContext"]> {
-    const retrievalHints = deriveRetrievalHints(plan);
-    const memoBodyExcerpt = plan.memo.body.trim();
-    const chapterMemoEntry = memoBodyExcerpt.length > 0
-      ? [{
-          source: "runtime/chapter_memo",
-          reason: skillReason(
-            "chapter-memo",
-            "Carry the planner's chapter memo into governed writing.",
-          ),
-          excerpt: [
-            `goal=${plan.memo.goal}`,
-            plan.memo.isGoldenOpening ? "golden-opening=true" : undefined,
-            memoBodyExcerpt,
-          ].filter(Boolean).join(" | "),
-        }]
-      : [{
-          source: "runtime/chapter_memo",
-          reason: skillReason(
-            "chapter-memo",
-            "Carry the planner's chapter memo into governed writing.",
-          ),
-          excerpt: `goal=${plan.memo.goal}`,
-        }];
+  const retrievalHints = deriveRetrievalHints(plan);
+  const executionContract = compileChapterExecutionContract(plan.memo);
+  const chapterMemoEntry = [{
+    source: "runtime/chapter_memo",
+    reason: skillReason(
+      "chapter-memo",
+      "Carry the host-compiled chapter execution contract into governed writing.",
+    ),
+    excerpt: renderChapterExecutionContract(executionContract, language),
+  }];
 
     const entries = await Promise.all([
       maybeRuntimeCurrentArcSource(storyDir),

@@ -137,4 +137,18 @@ describe("inkos auto command", () => {
     );
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
+
+  it("stops immediately when a chapter ends in audit-failed status", async () => {
+    getNextChapterNumberMock.mockResolvedValue(1);
+    writeNextChapterMock.mockResolvedValueOnce(chapterResult(1, "audit-failed"));
+
+    const { autoCommand } = await import("../commands/auto.js");
+    await autoCommand.parseAsync(["node", "auto", "demo-book", "3"], { from: "node" });
+
+    expect(writeNextChapterMock).toHaveBeenCalledTimes(1);
+    expect(logErrorMock).toHaveBeenCalledWith(
+      expect.stringContaining("audit-failed"),
+    );
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
 });

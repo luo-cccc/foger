@@ -38,8 +38,7 @@ async function packPackage(
 ) {
   const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
   const cacheDir = join(packDir, ".npm-cache");
-  await mkdir(cacheDir, { recursive: true });
-  execFileSync(npmCmd, [
+  const npmArgs = [
     "pack",
     "--silent",
     "--pack-destination",
@@ -47,11 +46,18 @@ async function packPackage(
     "--cache",
     cacheDir,
     ...(options.ignoreScripts ? ["--ignore-scripts"] : []),
-  ], {
+  ];
+  const invocation = process.platform === "win32"
+    ? {
+        command: process.env.ComSpec || "cmd.exe",
+        args: ["/d", "/s", "/c", npmCmd, ...npmArgs],
+      }
+    : { command: npmCmd, args: npmArgs };
+  await mkdir(cacheDir, { recursive: true });
+  execFileSync(invocation.command, invocation.args, {
     cwd: packageDir,
     env: process.env,
     encoding: "utf-8",
-    shell: process.platform === "win32",
     stdio: "pipe",
   });
 

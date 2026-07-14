@@ -490,7 +490,7 @@ describe("CLI integration", () => {
             wordCount: 7,
             createdAt: "2026-03-22T00:00:00.000Z",
             updatedAt: "2026-03-22T00:00:00.000Z",
-            auditIssues: [],
+            auditIssues: ["[warning] minor pacing drift"],
             lengthWarnings: [],
           },
         ], null, 2),
@@ -499,6 +499,7 @@ describe("CLI integration", () => {
 
       const output = run(["status", "english-status", "--chapters"]);
       expect(output).toContain('Ch.1 "A Quiet Sky" | 7 words | ready-for-review');
+      expect(output).toContain("+ 1 warning(s)");
       expect(output).not.toContain("7字");
     });
 

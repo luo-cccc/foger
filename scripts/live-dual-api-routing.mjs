@@ -9,6 +9,7 @@ import {
   createLLMClient,
   deriveBookIdFromTitle,
   loadProjectConfig,
+  buildLLMTokenBudgetReport,
   summarizeLLMCallTelemetry,
 } from "../packages/core/dist/index.js";
 
@@ -19,6 +20,7 @@ const { values: args } = parseArgs({
     chapters:     { type: "string", default: "5" },
     words:        { type: "string", default: "1000" },
     "route-mode": { type: "string", default: "minimax-writer" },
+    "review-mode": { type: "string", default: "manual" },
     "timeout-ms": { type: "string", default: "300000" },
     "output":     { type: "string", default: ".tmp-dual-api-routing/reports" },
     "project-dir":{ type: "string", default: ".tmp-dual-api-routing" },
@@ -27,17 +29,26 @@ const { values: args } = parseArgs({
     "max-timeout-rate": { type: "string", default: "0" },
     "max-fallbacks": { type: "string", default: "0" },
     "min-hard-range-rate": { type: "string", default: "0.8" },
+    "max-total-tokens": { type: "string", default: "0" },
+    "max-chapter-tokens": { type: "string", default: "0" },
+    "max-prompt-tokens-per-call": { type: "string", default: "0" },
+    "max-agent-tokens": { type: "string", default: "" },
+    "max-phase-tokens": { type: "string", default: "" },
   },
 });
 
 const CHAPTER_COUNT = Math.max(1, Number(args.chapters) || 5);
 const WORDS_PER_CHAPTER = Math.max(1000, Number(args.words) || 1000);
 const ROUTE_MODE = args["route-mode"];
+const REVIEW_MODE = args["review-mode"];
 const TIMEOUT_MS = Math.max(5000, Number(args["timeout-ms"]) || 300000);
 const RECOVERY_MODE = args["recovery-mode"];
 const RECOVERY_MODES = new Set(["none", "repair", "resync", "repair-then-resync"]);
 if (!RECOVERY_MODES.has(RECOVERY_MODE)) {
   throw new Error(`Invalid --recovery-mode: ${RECOVERY_MODE}`);
+}
+if (REVIEW_MODE !== "manual" && REVIEW_MODE !== "auto") {
+  throw new Error(`Invalid --review-mode: ${REVIEW_MODE}`);
 }
 
 function boundedRateArg(name, fallback) {
@@ -49,6 +60,39 @@ const MAX_RETRY_RATE = boundedRateArg("max-retry-rate", 0.2);
 const MAX_TIMEOUT_RATE = boundedRateArg("max-timeout-rate", 0);
 const MIN_HARD_RANGE_RATE = boundedRateArg("min-hard-range-rate", 0.8);
 const MAX_FALLBACKS = Math.max(0, Number(args["max-fallbacks"]) || 0);
+
+function optionalPositiveLimit(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function parseBudgetMap(value, optionName) {
+  if (!value || !String(value).trim()) return {};
+  const result = {};
+  for (const part of String(value).split(",")) {
+    const [key, rawLimit] = part.split("=").map((item) => item.trim());
+    const limit = optionalPositiveLimit(rawLimit);
+    if (!key || limit === undefined) {
+      throw new Error(`Invalid --${optionName} entry: ${part}`);
+    }
+    result[key] = limit;
+  }
+  return result;
+}
+
+const MAX_TOTAL_TOKENS = optionalPositiveLimit(args["max-total-tokens"]);
+const MAX_CHAPTER_TOKENS = optionalPositiveLimit(args["max-chapter-tokens"]);
+const MAX_PROMPT_TOKENS_PER_CALL = optionalPositiveLimit(args["max-prompt-tokens-per-call"]);
+const MAX_AGENT_TOKENS = parseBudgetMap(args["max-agent-tokens"], "max-agent-tokens");
+const MAX_PHASE_TOKENS = parseBudgetMap(args["max-phase-tokens"], "max-phase-tokens");
+const TOKEN_BUDGET_LIMITS = {
+  ...(MAX_TOTAL_TOKENS !== undefined ? { maxTotalTokens: MAX_TOTAL_TOKENS } : {}),
+  ...(MAX_PROMPT_TOKENS_PER_CALL !== undefined
+    ? { maxPromptEstimatedTokensPerCall: MAX_PROMPT_TOKENS_PER_CALL }
+    : {}),
+  ...(Object.keys(MAX_AGENT_TOKENS).length > 0 ? { maxAgentTokens: MAX_AGENT_TOKENS } : {}),
+  ...(Object.keys(MAX_PHASE_TOKENS).length > 0 ? { maxPhaseTokens: MAX_PHASE_TOKENS } : {}),
+};
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const projectRoot = join(repoRoot, args["project-dir"]);
@@ -111,7 +155,7 @@ function buildConfig() {
       ],
     },
     foundation: { reviewRetries: 0 },
-    writing: { reviewRetries: 0, reviewMode: "manual", revisionGate: "always" },
+    writing: { reviewRetries: 0, reviewMode: REVIEW_MODE, revisionGate: "always" },
     notify: [],
     inputGovernanceMode: "v2",
     modelOverrides: Object.fromEntries(routedAgents().map((agent) => [agent, minimaxOverride])),
@@ -259,6 +303,7 @@ function buildQualityGate(report) {
   const hardRangeRate = report.lengthSummary.hardRangeRate;
   const fallbackCount = report.diagnosticSummary.fallbackCount;
   const unrecoveredStateDegraded = report.chapters.filter((chapter) => chapter.status === "state-degraded").length;
+  const chapterBudgetFailures = report.chapters.filter((chapter) => chapter.tokenBudget && !chapter.tokenBudget.passed).length;
   const checks = {
     retryRate: { actual: retryRate, maximum: MAX_RETRY_RATE, passed: retryRate <= MAX_RETRY_RATE },
     timeoutRate: { actual: timeoutRate, maximum: MAX_TIMEOUT_RATE, passed: timeoutRate <= MAX_TIMEOUT_RATE },
@@ -269,6 +314,12 @@ function buildQualityGate(report) {
       passed: hardRangeRate !== null && hardRangeRate >= MIN_HARD_RANGE_RATE,
     },
     unrecoveredStateDegraded: { actual: unrecoveredStateDegraded, maximum: 0, passed: unrecoveredStateDegraded === 0 },
+    tokenBudget: {
+      actual: report.tokenBudget.total.totalTokens,
+      violations: report.tokenBudget.violations,
+      chapterFailures: chapterBudgetFailures,
+      passed: report.tokenBudget.passed && chapterBudgetFailures === 0,
+    },
   };
   return {
     passed: Object.values(checks).every((check) => check.passed),
@@ -277,6 +328,7 @@ function buildQualityGate(report) {
       maxTimeoutRate: MAX_TIMEOUT_RATE,
       maxFallbacks: MAX_FALLBACKS,
       minHardRangeRate: MIN_HARD_RANGE_RATE,
+      tokenBudget: TOKEN_BUDGET_LIMITS,
     },
     checks,
   };
@@ -299,7 +351,7 @@ async function runRecoveryAttempt({ pipeline, operation, bookId, chapterNumber, 
         durationMs: Date.now() - started,
         statusBefore,
         statusAfter: result.status,
-        succeeded: result.status !== "state-degraded",
+        succeeded: result.status === "ready-for-review",
         telemetry: summarizeLLMCallTelemetry(allTelemetry.slice(telemetryStart)),
         diagnostics: allDiagnostics.slice(diagnosticStart),
       },
@@ -347,8 +399,13 @@ async function main() {
       routeMode: ROUTE_MODE,
       chapters: CHAPTER_COUNT,
       wordsPerChapter: WORDS_PER_CHAPTER,
+      reviewMode: REVIEW_MODE,
       timeoutMs: TIMEOUT_MS,
       recoveryMode: RECOVERY_MODE,
+      tokenBudget: {
+        ...TOKEN_BUDGET_LIMITS,
+        ...(MAX_CHAPTER_TOKENS !== undefined ? { maxChapterTokens: MAX_CHAPTER_TOKENS } : {}),
+      },
     },
     routing: {
       default: { service: openrouterServiceId, model: openrouterModel },
@@ -451,6 +508,7 @@ async function main() {
       const beforeCount = allTelemetry.length;
       const beforeDiagnostics = allDiagnostics.length;
       let result = await pipeline.writeNextChapter(bookId, WORDS_PER_CHAPTER);
+      const chapterRecords = allTelemetry.slice(beforeCount);
       const chapterReport = {
         chapterNumber: result.chapterNumber,
         title: result.title,
@@ -462,6 +520,12 @@ async function main() {
         status: result.status,
         durationMs: Date.now() - chStart,
         length: buildLengthReport(result.lengthTelemetry, result.lengthWarnings),
+        tokenBudget: buildLLMTokenBudgetReport(chapterRecords, {
+          ...(MAX_CHAPTER_TOKENS !== undefined ? { maxTotalTokens: MAX_CHAPTER_TOKENS } : {}),
+          ...(MAX_PROMPT_TOKENS_PER_CALL !== undefined
+            ? { maxPromptEstimatedTokensPerCall: MAX_PROMPT_TOKENS_PER_CALL }
+            : {}),
+        }),
         recovery: { mode: RECOVERY_MODE, attempts: [] },
       };
       report.chapters.push(chapterReport);
@@ -495,16 +559,31 @@ async function main() {
       chapterReport.durationMs = Date.now() - chStart;
       chapterReport.length = buildLengthReport(result.lengthTelemetry, result.lengthWarnings);
       chapterReport.telemetry = summarizeLLMCallTelemetry(allTelemetry.slice(beforeCount));
+      chapterReport.tokenBudget = buildLLMTokenBudgetReport(allTelemetry.slice(beforeCount), {
+        ...(MAX_CHAPTER_TOKENS !== undefined ? { maxTotalTokens: MAX_CHAPTER_TOKENS } : {}),
+        ...(MAX_PROMPT_TOKENS_PER_CALL !== undefined
+          ? { maxPromptEstimatedTokensPerCall: MAX_PROMPT_TOKENS_PER_CALL }
+          : {}),
+      });
       chapterReport.diagnostics = allDiagnostics.slice(beforeDiagnostics);
       await flushReport();
       if (result.status === "state-degraded") break;
+      if (result.status === "audit-failed") {
+        report.warnings.push(`audit-failed after chapter ${result.chapterNumber}`);
+        break;
+      }
     }
 
     // ── Health checks ────────────────────────────────────────────────────────
     const bookRoot = join(projectRoot, "books", bookId);
     const chaptersIndex = await readJson(join(bookRoot, "chapters", "index.json"));
+    const chapterEntries = Array.isArray(chaptersIndex)
+      ? chaptersIndex
+      : Array.isArray(chaptersIndex?.chapters)
+        ? chaptersIndex.chapters
+        : [];
     report.health = {
-      chaptersIndex: { chapterCount: Array.isArray(chaptersIndex.chapters) ? chaptersIndex.chapters.length : 0 },
+      chaptersIndex: { chapterCount: chapterEntries.length },
       currentStateMd: await fileHealth(join(bookRoot, "story", "current_state.md")),
       pendingHooksMd: await fileHealth(join(bookRoot, "story", "pending_hooks.md")),
       chapterSummariesMd: await fileHealth(join(bookRoot, "story", "chapter_summaries.md")),
@@ -514,6 +593,8 @@ async function main() {
     };
 
     report.telemetrySummary = summarizeLLMCallTelemetry(allTelemetry);
+    report.tokenBudget = buildLLMTokenBudgetReport(allTelemetry, TOKEN_BUDGET_LIMITS);
+    report.contextCompilationCache = pipeline.getContextCompilationCacheStats();
     report.diagnosticSummary = summarizeDiagnostics(allDiagnostics);
     report.lengthSummary = summarizeChapterLengths(report.chapters);
     report.qualityGate = buildQualityGate(report);
@@ -535,7 +616,33 @@ async function main() {
         durationMs: c.durationMs,
       })),
       telemetry: report.telemetrySummary,
+      tokenBudget: report.tokenBudget,
+      qualityGate: report.qualityGate,
+      contextCompilationCache: report.contextCompilationCache,
       health: report.health,
+      report: reportPath,
+    }, null, 2));
+  } catch (error) {
+    report.failure = {
+      name: error instanceof Error ? error.name : "UnknownError",
+      message: error instanceof Error ? error.message : String(error),
+    };
+    report.telemetrySummary = summarizeLLMCallTelemetry(allTelemetry);
+    report.tokenBudget = buildLLMTokenBudgetReport(allTelemetry, TOKEN_BUDGET_LIMITS);
+    report.diagnosticSummary = summarizeDiagnostics(allDiagnostics);
+    report.finishedAt = new Date().toISOString();
+    await flushReport().catch(() => undefined);
+    process.exitCode = 1;
+    console.error(JSON.stringify({
+      failure: report.failure,
+      chapters: report.chapters.map((c) => ({
+        chapterNumber: c.chapterNumber,
+        wordCount: c.wordCount,
+        status: c.status,
+        durationMs: c.durationMs,
+      })),
+      telemetry: report.telemetrySummary,
+      diagnostics: report.diagnosticSummary,
       report: reportPath,
     }, null, 2));
   } finally {

@@ -68,39 +68,54 @@ export const CanonClaimSchema = z.object({
   domain: CanonDomainSchema,
   claimType: CanonClaimTypeSchema,
   content: z.string().min(1),
-  scope: z
-    .object({
+  scope: z.preprocess(
+    (value) => value === null ? undefined : value,
+    z.object({
       appliesTo: z.array(z.string()).default([]),
-      excludes: z.array(z.string()).optional(),
-      geography: z.array(z.string()).optional(),
-      timeRange: z.string().optional(),
-    })
-    .default({ appliesTo: [] }),
+      excludes: z.preprocess(
+        (value) => value === null ? undefined : value,
+        z.array(z.string()).optional(),
+      ),
+      geography: z.preprocess(
+        (value) => value === null
+          ? undefined
+          : typeof value === "string" ? [value] : value,
+        z.array(z.string()).optional(),
+      ),
+      timeRange: z.preprocess(
+        (value) => value === null ? undefined : value,
+        z.string().optional(),
+      ),
+    }).default({ appliesTo: [] }),
+  ),
   authority: z.object({
     source: z.string().min(1),
     priority: ClaimPrioritySchema.default("soft"),
   }),
-  visibility: z
-    .object({
+  visibility: z.preprocess(
+    (value) => value === null ? undefined : value,
+    z.object({
       readerKnownFrom: z.number().int().min(0).optional(),
       characterKnownBy: z.array(z.string()).default([]),
       hiddenFrom: z.array(z.string()).default([]),
-    })
-    .default({}),
-  relations: z
-    .object({
-      conflictsWith: z.array(z.string()).optional(),
-      resolvesBy: z.string().optional(),
-      dependsOn: z.array(z.string()).optional(),
-    })
-    .optional(),
-  constraints: z
-    .object({
+    }).default({}),
+  ),
+  relations: z.preprocess(
+    (value) => value === null ? undefined : value,
+    z.object({
+      conflictsWith: z.preprocess((value) => value === null ? undefined : value, z.array(z.string()).optional()),
+      resolvesBy: z.preprocess((value) => value === null ? undefined : value, z.string().optional()),
+      dependsOn: z.preprocess((value) => value === null ? undefined : value, z.array(z.string()).optional()),
+    }).optional(),
+  ),
+  constraints: z.preprocess(
+    (value) => value === null ? undefined : value,
+    z.object({
       nonGeneralizable: z.boolean().optional(),
-      requiresCost: z.array(z.string()).default([]),
-      forbiddenUses: z.array(z.string()).default([]),
-    })
-    .default({}),
+      requiresCost: z.preprocess((value) => value === null ? undefined : value, z.array(z.string()).default([])),
+      forbiddenUses: z.preprocess((value) => value === null ? undefined : value, z.array(z.string()).default([])),
+    }).default({}),
+  ),
 });
 export type CanonClaim = z.infer<typeof CanonClaimSchema>;
 
@@ -165,5 +180,3 @@ export function emptyClaimsFile(): ClaimsFile {
 export function emptyWorldSystem(): WorldSystem {
   return WorldSystemSchema.parse({});
 }
-
-

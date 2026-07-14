@@ -279,7 +279,7 @@ ${chapterContent}`;
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
       ],
-      { temperature: 0.3 },
+      { temperature: 0.3, stream: false, callPhase: "revise" },
     );
 
     const output = this.parseOutput(
@@ -596,7 +596,10 @@ ${outputFormat}`;
     contextPackage: ContextPackage,
     ruleStack: RuleStack,
   ): string {
-    const selectedContext = renderNarrativeSelectedContext(contextPackage.selectedContext, "zh")
+    const selectedContext = renderNarrativeSelectedContext(
+      contextPackage.selectedContext.filter((entry) => entry.source !== "runtime/chapter_memo"),
+      "zh",
+    )
       .replace(/^### /gm, "- ");
     const overrides = ruleStack.activeOverrides.length > 0
       ? ruleStack.activeOverrides

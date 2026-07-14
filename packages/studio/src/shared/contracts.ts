@@ -1,7 +1,6 @@
-/**
- * Shared TypeScript contracts for Studio API/UI communication.
- * Ported from PR #96 (Te9ui1a) — prevents client/server type drift.
- */
+/** Shared TypeScript contracts for Studio API/UI communication. */
+
+import type { BookConfig, ChapterMeta } from "@actalk/inkos-core";
 
 // --- Health ---
 
@@ -19,49 +18,32 @@ export interface HealthStatus {
 
 // --- Books ---
 
-export interface BookSummary {
-  readonly id: string;
-  readonly title: string;
-  readonly status: string;
-  readonly platform: string;
-  readonly genre: string;
-  readonly targetChapters: number;
-  readonly chapters: number;
-  readonly chapterCount: number;
-  readonly lastChapterNumber: number;
-  readonly totalWords: number;
-  readonly approvedChapters: number;
-  readonly pendingReview: number;
-  readonly pendingReviewChapters: number;
-  readonly failedReview: number;
-  readonly failedChapters: number;
-  readonly recentRunStatus?: string | null;
-  readonly updatedAt: string;
+export type BookSummary = Pick<
+  BookConfig,
+  "id" | "title" | "genre" | "status" | "language"
+> & {
+  readonly chaptersWritten: number;
+};
+
+export type BookDetail = BookConfig;
+
+export interface BookListResponse {
+  readonly books: ReadonlyArray<BookSummary>;
 }
 
-export interface BookDetail extends BookSummary {
-  readonly createdAt: string;
-  readonly chapterWordCount: number;
-  readonly language: "zh" | "en" | null;
+export interface BookDetailResponse {
+  readonly book: BookDetail;
+  readonly chapters: ReadonlyArray<ChapterMeta>;
+  readonly nextChapter: number;
 }
 
 // --- Chapters ---
 
-export interface ChapterSummary {
-  readonly number: number;
-  readonly title: string;
-  readonly status: string;
-  readonly wordCount: number;
-  readonly auditIssueCount: number;
-  readonly updatedAt: string;
-  readonly fileName: string | null;
-}
+export type ChapterSummary = ChapterMeta;
 
-export interface ChapterDetail extends ChapterSummary {
-  readonly auditIssues: ReadonlyArray<string>;
-  readonly reviewNote?: string;
+export type ChapterDetail = ChapterMeta & {
   readonly content: string;
-}
+};
 
 export interface SaveChapterPayload {
   readonly content: string;
