@@ -63,7 +63,7 @@ import {
   retrySettlementAfterValidationFailure,
 } from "./chapter-state-recovery.js";
 import { persistChapterArtifacts } from "./chapter-persistence.js";
-import { runChapterReviewCycle } from "./chapter-review-cycle.js";
+import { runChapterReviewCycle, type ChapterReviewAttempt } from "./chapter-review-cycle.js";
 import {
   deriveAuditPassed,
   resolveChapterReviewStatus,
@@ -338,6 +338,8 @@ export interface PipelineConfig {
   readonly onPipelineDiagnostic?: OnPipelineDiagnostic;
   /** P0: per-call LLM timeout in milliseconds (default: undefined = no timeout). */
   readonly defaultTimeoutMs?: number;
+  /** Reject individual assembled prompts before transport when they exceed this estimate. */
+  readonly maxPromptEstimatedTokensPerCall?: number;
   /** Cooperative cancellation for the active pipeline operation. */
   readonly signal?: AbortSignal;
 }
@@ -359,6 +361,7 @@ export interface ChapterPipelineResult {
   readonly lengthWarnings?: ReadonlyArray<string>;
   readonly lengthTelemetry?: LengthTelemetry;
   readonly tokenUsage?: TokenUsageSummary;
+  readonly reviewAttempts?: ReadonlyArray<ChapterReviewAttempt>;
   readonly recovery?: Exclude<ChapterPersistenceRecovery, { readonly kind: "none" }>;
 }
 
@@ -728,6 +731,7 @@ export class PipelineRunner {
       onCallTelemetry: this.createTelemetrySink(bookId),
       onPipelineDiagnostic: this.config.onPipelineDiagnostic,
       defaultTimeoutMs: this.config.defaultTimeoutMs,
+      maxPromptEstimatedTokens: this.config.maxPromptEstimatedTokensPerCall,
       signal: this.config.signal,
     };
   }
@@ -754,7 +758,9 @@ export class PipelineRunner {
 
     return (telemetry) => {
       const operationId = bookId ? this.activeOperationIds.get(bookId) : undefined;
-      const correlatedTelemetry = operationId ? { ...telemetry, operationId } : telemetry;
+      const correlatedTelemetry = bookId
+        ? { ...telemetry, bookId, ...(operationId ? { operationId } : {}) }
+        : telemetry;
       this.config.onCallTelemetry?.(correlatedTelemetry);
 
       if (!bookId) {
@@ -2053,6 +2059,7 @@ export class PipelineRunner {
     let postReviseCount: number;
     let normalizeApplied: boolean;
     let preAuditNormalizedWordCount: number | undefined;
+    let reviewAttempts: ReadonlyArray<ChapterReviewAttempt> | undefined;
 
     if ((this.config.chapterReviewMode ?? "auto") === "manual") {
       // C4a: write-only checkpoint. Stop right after the draft — skip the
@@ -2126,6 +2133,7 @@ export class PipelineRunner {
       postReviseCount = reviewResult.postReviseCount;
       normalizeApplied = reviewResult.normalizeApplied;
       preAuditNormalizedWordCount = reviewResult.preAuditNormalizedWordCount;
+      reviewAttempts = reviewResult.reviewAttempts;
     }
 
     this.throwIfAborted();
@@ -2450,6 +2458,7 @@ export class PipelineRunner {
       lengthWarnings,
       lengthTelemetry,
       tokenUsage: totalUsage,
+      ...(reviewAttempts ? { reviewAttempts } : {}),
     };
   }
 

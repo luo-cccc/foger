@@ -128,6 +128,77 @@ describe("runChapterReviewCycle v9", () => {
     expect(reviseChapter.mock.calls[0]?.[4]).toBe("auto");
   });
 
+  it("sends only actionable issues to the reviser and records each reviewed candidate", async () => {
+    const critical: AuditIssue = {
+      severity: "critical",
+      category: "summary-ending",
+      description: "Replace the abstract ending.",
+      suggestion: "End on a concrete action.",
+    };
+    const info: AuditIssue = {
+      severity: "info",
+      category: "continuity-ok",
+      description: "Timeline is consistent.",
+      suggestion: "None.",
+    };
+    const auditChapter = vi.fn()
+      .mockResolvedValueOnce(createAuditResult({
+        passed: false,
+        overallScore: 98,
+        issues: [critical, info],
+      }))
+      .mockResolvedValueOnce(createAuditResult({
+        passed: true,
+        overallScore: 92,
+        issues: [info],
+      }));
+    const reviseChapter = vi.fn().mockResolvedValue({
+      revisedContent: "r".repeat(200),
+      wordCount: 200,
+      fixedIssues: ["ending"],
+      updatedState: "",
+      updatedLedger: "",
+      updatedHooks: "",
+      tokenUsage: ZERO_USAGE,
+    });
+
+    const result = await runChapterReviewCycle({
+      ...baseParams,
+      initialOutput: {
+        content: "i".repeat(200),
+        wordCount: 200,
+        postWriteErrors: [],
+        postWriteWarnings: [],
+      },
+      createReviser: () => ({ reviseChapter }),
+      evaluateChapter: createEvaluation(auditChapter),
+      normalizeDraftLengthIfNeeded: async (content) => ({
+        content,
+        wordCount: content.length,
+        applied: false,
+        tokenUsage: ZERO_USAGE,
+      }),
+      maxReviewIterations: 1,
+    });
+
+    expect(reviseChapter.mock.calls[0]?.[3]).toEqual([critical]);
+    expect(result.reviewAttempts).toHaveLength(2);
+    expect(result.reviewAttempts[0]).toMatchObject({
+      stage: "initial",
+      selected: false,
+      score: 98,
+      criticalCount: 1,
+      actionableIssues: [critical],
+    });
+    expect(result.reviewAttempts[1]).toMatchObject({
+      stage: "revision",
+      selected: true,
+      score: 92,
+      criticalCount: 0,
+      actionableIssues: [],
+    });
+  });
+
   it("does not auto-revise when audit output parsing failed", async () => {
     const originalContent = "b".repeat(200);
     const auditChapter = vi.fn().mockResolvedValue(createAuditResult({

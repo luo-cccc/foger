@@ -397,7 +397,7 @@ describe("ChapterAnalyzerAgent", () => {
     }
   });
 
-  it("uses governed control inputs instead of old broad truth-file blocks when provided", async () => {
+  it("uses governed working sets without repeating broad planning context in settlement prompts", async () => {
     const bookDir = await mkdtemp(join(tmpdir(), "inkos-chapter-analyzer-governed-"));
     const storyDir = join(bookDir, "story");
     await mkdir(storyDir, { recursive: true });
@@ -561,9 +561,11 @@ describe("ChapterAnalyzerAgent", () => {
       const messages = chat.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
       const userPrompt = messages[1]?.content ?? "";
 
-      expect(userPrompt).toContain("## Chapter Control Inputs (compiled by Planner/Composer)");
-      expect(userPrompt).toContain("story/pending_hooks.md#mentor-oath");
+      expect(userPrompt).toContain("## Settlement Boundary");
       expect(userPrompt).toContain("Selected Hook Evidence");
+      expect(userPrompt).not.toContain("Bring the focus back to the mentor oath conflict");
+      expect(userPrompt.match(/story\/pending_hooks\.md#mentor-oath/g)).toHaveLength(1);
+      expect(userPrompt).not.toContain("Primary hook for this chapter");
       expect(userPrompt).not.toContain("## Story Bible");
       expect(userPrompt).not.toContain("Full bible should stay out of governed analyzer prompts");
       expect(userPrompt).not.toContain("guild-route");

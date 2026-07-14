@@ -77,6 +77,12 @@ export const QualityGatesSchema = z.object({
   maxAuditRetries: z.number().int().min(0).max(10).default(2),
   pauseAfterConsecutiveFailures: z.number().int().min(1).default(3),
   retryTemperatureStep: z.number().min(0).max(0.5).default(0.1),
+  maxChapterTokens: z.number().int().min(1).default(100_000),
+  maxPromptTokensPerCall: z.number().int().min(1).default(16_000),
+  maxRetryRate: z.number().min(0).max(1).default(0.2),
+  maxTimeoutRate: z.number().min(0).max(1).default(0),
+  maxFallbacksPerChapter: z.number().int().min(0).default(0),
+  minHardRangeRate: z.number().min(0).max(1).default(0.8),
 });
 
 export type QualityGates = z.infer<typeof QualityGatesSchema>;
@@ -140,6 +146,12 @@ export const ProjectConfigSchema = z.object({
       maxAuditRetries: 2,
       pauseAfterConsecutiveFailures: 3,
       retryTemperatureStep: 0.1,
+      maxChapterTokens: 100_000,
+      maxPromptTokensPerCall: 16_000,
+      maxRetryRate: 0.2,
+      maxTimeoutRate: 0,
+      maxFallbacksPerChapter: 0,
+      minHardRangeRate: 0.8,
     }),
   }).default({
     schedule: {
@@ -154,6 +166,12 @@ export const ProjectConfigSchema = z.object({
       maxAuditRetries: 2,
       pauseAfterConsecutiveFailures: 3,
       retryTemperatureStep: 0.1,
+      maxChapterTokens: 100_000,
+      maxPromptTokensPerCall: 16_000,
+      maxRetryRate: 0.2,
+      maxTimeoutRate: 0,
+      maxFallbacksPerChapter: 0,
+      minHardRangeRate: 0.8,
     },
   }),
 });

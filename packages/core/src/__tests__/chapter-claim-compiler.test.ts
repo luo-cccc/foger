@@ -159,6 +159,28 @@ describe("compileChapterClaims", () => {
     expect(compiled.mustHide.map((c) => c.id)).toContain("s-1");
   });
 
+  it("does not turn a deferred character relationship into a reveal from a generic role mention", () => {
+    const deferredRelationship = claim({
+      id: "claim-010",
+      domain: "character",
+      claimType: "character_exception",
+      content: "老周作为档案室技术员，认识沈鸢并答应过她不告诉林澈；他通过维修磁带机间接协助林澈。",
+      scope: { appliesTo: ["老周"] },
+      visibility: { readerKnownFrom: 1, characterKnownBy: ["老周"], hiddenFrom: ["林澈"] },
+      constraints: { nonGeneralizable: true, requiresCost: ["老周被停职"], forbiddenUses: [] },
+    });
+    const compiled = compileChapterClaims([deferredRelationship], {
+      chapterNumber: 1,
+      pov: "林澈",
+      memo: "暂不掀：老周认识母亲，本章只让老周作为同事出现，不暴露任何记忆。",
+    });
+
+    expect(compiled.revealNow).toEqual([]);
+    expect(compiled.usable).toEqual([]);
+    expect(compiled.costRequired).toEqual([]);
+    expect(compiled.mustHide.map((entry) => entry.id)).toEqual(["claim-010"]);
+  });
+
   it("records conflict resolution edges", () => {
     const a = claim({ id: "w-a", relations: { conflictsWith: ["w-b"], resolvesBy: "w-b 优先" } });
     const b = claim({ id: "w-b" });

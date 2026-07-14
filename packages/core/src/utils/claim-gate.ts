@@ -366,8 +366,32 @@ function activelyUsesCostBoundClaim(text: string, claim: CanonClaim): boolean {
   const capabilityClaim = claim.domain === "power"
     || claim.domain === "protagonist"
     || claim.claimType === "character_exception";
-  if (capabilityClaim) return mentionsRuleSubjectOrAction(text, claim);
-  return bypassEvidenceSegments(text, claim).some((segment) => mentionsRuleSubjectOrAction(segment, claim));
+  const evidence = capabilityClaim ? splitEvidenceSegments(text) : bypassEvidenceSegments(text, claim);
+  return evidence.some((segment) => segmentActivelyUsesCostBoundClaim(segment, claim));
+}
+
+function segmentActivelyUsesCostBoundClaim(text: string, claim: CanonClaim): boolean {
+  const normalized = normalizeText(text);
+  if (normalized.includes(normalizeText(claim.id))) return true;
+
+  const content = normalizeText(claim.content);
+  if (content.length > 0 && normalized.includes(content)) return true;
+
+  const subjectTerms = claim.scope.appliesTo
+    .filter((value) => !/^(?:all|everyone|anyone|所有人|任何人)$/iu.test(normalizeText(value)))
+    .flatMap((value) => extractSearchTerms(value));
+  if (subjectTerms.length > 0 && !subjectTerms.some((term) => normalized.includes(term))) {
+    return false;
+  }
+
+  const salientHit = salientClaimContentTerms(claim).some((term) => normalized.includes(term));
+  if (salientHit) return true;
+
+  const subjectCoreTerms = new Set(subjectTerms.flatMap((term) => extractCoreTerms(term)));
+  const actionTerms = extractCoreTerms(claim.content)
+    .filter((term) => !subjectCoreTerms.has(term));
+  const actionHits = actionTerms.filter((term) => normalized.includes(term));
+  return actionHits.length >= Math.min(2, actionTerms.length);
 }
 
 function detectsInstitutionRuleBypass(text: string, claim: CanonClaim): boolean {

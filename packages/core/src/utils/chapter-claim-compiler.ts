@@ -152,6 +152,10 @@ function memoMentionsClaimSubject(claim: CanonClaim, memo?: string): boolean {
   return claimSubjectTerms(claim).some((term) => term.length > 0 && normalized.includes(term.toLowerCase()));
 }
 
+function memoMentionsClaimId(claim: CanonClaim, memo?: string): boolean {
+  return memo?.includes(claim.id) ?? false;
+}
+
 export function compileChapterClaims(
   claims: ReadonlyArray<CanonClaim>,
   ctx: ChapterClaimContext,
@@ -196,7 +200,7 @@ export function compileChapterClaims(
   for (const claim of [...mustHide]) {
     if (
       memoCommitsToReveal(claim, ctx.memo) ||
-      memoMentionsClaim(claim, ctx.memo) ||
+      memoMentionsClaimId(claim, ctx.memo) ||
       (ctx.activeHookIds ?? []).includes(claim.id)
     ) {
 

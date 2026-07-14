@@ -3,9 +3,16 @@ import type { AssistantMessage, Model, Api } from "@mariozechner/pi-ai";
 import {
   __resetFixedTemperatureWarnings,
   chatCompletion,
+  isTransientLLMHttpError,
   type LLMCallTelemetry,
   type LLMClient,
 } from "../llm/provider.js";
+
+describe("transient provider error classification", () => {
+  it("treats provider-specific 529 overload responses as retryable", () => {
+    expect(isTransientLLMHttpError(new Error("529 当前服务集群负载较高，请稍后重试"))).toBe(true);
+  });
+});
 
 // ── Mock @mariozechner/pi-ai ──────────────────────────────────────────────────
 // We intercept streamSimple so tests don't hit the network.

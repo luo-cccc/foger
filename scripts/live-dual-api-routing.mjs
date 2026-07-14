@@ -21,6 +21,7 @@ const { values: args } = parseArgs({
     words:        { type: "string", default: "1000" },
     "route-mode": { type: "string", default: "minimax-writer" },
     "review-mode": { type: "string", default: "manual" },
+    "review-retries": { type: "string", default: "2" },
     "timeout-ms": { type: "string", default: "300000" },
     "output":     { type: "string", default: ".tmp-dual-api-routing/reports" },
     "project-dir":{ type: "string", default: ".tmp-dual-api-routing" },
@@ -41,6 +42,9 @@ const CHAPTER_COUNT = Math.max(1, Number(args.chapters) || 5);
 const WORDS_PER_CHAPTER = Math.max(1000, Number(args.words) || 1000);
 const ROUTE_MODE = args["route-mode"];
 const REVIEW_MODE = args["review-mode"];
+const REVIEW_RETRIES = REVIEW_MODE === "auto"
+  ? Math.max(0, Math.floor(Number(args["review-retries"]) || 0))
+  : 0;
 const TIMEOUT_MS = Math.max(5000, Number(args["timeout-ms"]) || 300000);
 const RECOVERY_MODE = args["recovery-mode"];
 const RECOVERY_MODES = new Set(["none", "repair", "resync", "repair-then-resync"]);
@@ -155,7 +159,7 @@ function buildConfig() {
       ],
     },
     foundation: { reviewRetries: 0 },
-    writing: { reviewRetries: 0, reviewMode: REVIEW_MODE, revisionGate: "always" },
+    writing: { reviewRetries: REVIEW_RETRIES, reviewMode: REVIEW_MODE, revisionGate: "always" },
     notify: [],
     inputGovernanceMode: "v2",
     modelOverrides: Object.fromEntries(routedAgents().map((agent) => [agent, minimaxOverride])),
@@ -201,6 +205,9 @@ function makePipelineConfig(config, root, logFile) {
     onCallTelemetry: (t) => allTelemetry.push(t),
     onPipelineDiagnostic: (diagnostic) => allDiagnostics.push(diagnostic),
     defaultTimeoutMs: TIMEOUT_MS,
+    ...(MAX_PROMPT_TOKENS_PER_CALL !== undefined
+      ? { maxPromptEstimatedTokensPerCall: MAX_PROMPT_TOKENS_PER_CALL }
+      : {}),
   };
 }
 
@@ -334,6 +341,39 @@ function buildQualityGate(report) {
   };
 }
 
+function buildPreChapterGate() {
+  const telemetry = summarizeLLMCallTelemetry(allTelemetry);
+  const diagnostics = summarizeDiagnostics(allDiagnostics);
+  const tokenBudget = buildLLMTokenBudgetReport(allTelemetry, TOKEN_BUDGET_LIMITS);
+  const retryRate = telemetry.calls === 0 ? 0 : telemetry.retries / telemetry.calls;
+  const timeoutRate = telemetry.calls === 0 ? 0 : telemetry.statuses.timeout / telemetry.calls;
+  const checks = {
+    timeoutCount: {
+      actual: telemetry.statuses.timeout,
+      maximum: MAX_TIMEOUT_RATE === 0 ? 0 : null,
+      passed: MAX_TIMEOUT_RATE !== 0 || telemetry.statuses.timeout === 0,
+    },
+    fallbackCount: {
+      actual: diagnostics.fallbackCount,
+      maximum: MAX_FALLBACKS,
+      passed: diagnostics.fallbackCount <= MAX_FALLBACKS,
+    },
+    tokenBudget: {
+      actual: tokenBudget.total.totalTokens,
+      violations: tokenBudget.violations,
+      passed: tokenBudget.passed,
+    },
+  };
+  return {
+    passed: Object.values(checks).every((check) => check.passed),
+    checks,
+    observations: {
+      retryRate: { actual: retryRate, maximum: MAX_RETRY_RATE, currentlyWithinLimit: retryRate <= MAX_RETRY_RATE },
+      timeoutRate: { actual: timeoutRate, maximum: MAX_TIMEOUT_RATE, currentlyWithinLimit: timeoutRate <= MAX_TIMEOUT_RATE },
+    },
+  };
+}
+
 async function runRecoveryAttempt({ pipeline, operation, bookId, chapterNumber, statusBefore }) {
   const startedAt = new Date().toISOString();
   const started = Date.now();
@@ -400,6 +440,7 @@ async function main() {
       chapters: CHAPTER_COUNT,
       wordsPerChapter: WORDS_PER_CHAPTER,
       reviewMode: REVIEW_MODE,
+      reviewRetries: REVIEW_RETRIES,
       timeoutMs: TIMEOUT_MS,
       recoveryMode: RECOVERY_MODE,
       tokenBudget: {
@@ -440,7 +481,16 @@ async function main() {
         { role: "system", content: "你是严格的连通性测试助手。" },
         { role: "user", content: "用一句中文回答：OpenRouter 已连通。不要超过 20 个字。" },
       ],
-      { maxTokens: 80, temperature: 0.2, retry: false },
+      {
+        maxTokens: 80,
+        temperature: 0.2,
+        retry: true,
+        timeoutMs: TIMEOUT_MS,
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+        onCallTelemetry: (telemetry) => allTelemetry.push(telemetry),
+        agentName: "smoke-openrouter",
+        callPhase: "smoke",
+      },
     );
     report.smoke.openrouter = {
       content: openrouterSmoke.content.trim(),
@@ -465,7 +515,16 @@ async function main() {
         { role: "system", content: "你是严格的连通性测试助手。" },
         { role: "user", content: "用一句中文回答：MiniMax 已连通。不要超过 20 个字。" },
       ],
-      { maxTokens: 80, temperature: 0.2, retry: false },
+      {
+        maxTokens: 80,
+        temperature: 0.2,
+        retry: true,
+        timeoutMs: TIMEOUT_MS,
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+        onCallTelemetry: (telemetry) => allTelemetry.push(telemetry),
+        agentName: "smoke-minimax",
+        callPhase: "smoke",
+      },
     );
     report.smoke.minimax = {
       content: minimaxSmoke.content.trim(),
@@ -500,10 +559,16 @@ async function main() {
       language: "zh", createdAt: now, updatedAt: now,
     });
     await pipeline.initBook(book);
+    report.preChapterGate = buildPreChapterGate();
     await flushReport();
 
     // ── Chapter loop ─────────────────────────────────────────────────────────
-    for (let i = 0; i < CHAPTER_COUNT; i++) {
+    if (!report.preChapterGate.passed) {
+      report.warnings.push("pre-chapter gate failed; skipped chapter generation");
+      await flushReport();
+    }
+    const chaptersToRun = report.preChapterGate.passed ? CHAPTER_COUNT : 0;
+    for (let i = 0; i < chaptersToRun; i++) {
       const chStart = Date.now();
       const beforeCount = allTelemetry.length;
       const beforeDiagnostics = allDiagnostics.length;
@@ -514,6 +579,10 @@ async function main() {
         title: result.title,
         wordCount: result.wordCount,
         auditPassed: result.auditResult.passed,
+        auditSummary: result.auditResult.summary,
+        auditScore: result.auditResult.overallScore,
+        auditIssues: result.auditResult.issues,
+        reviewAttempts: result.reviewAttempts,
         issueCount: result.auditResult.issues.length,
         revised: result.revised,
         initialStatus: result.status,
@@ -553,6 +622,10 @@ async function main() {
       }
       chapterReport.wordCount = result.wordCount;
       chapterReport.auditPassed = result.auditResult.passed;
+      chapterReport.auditSummary = result.auditResult.summary;
+      chapterReport.auditScore = result.auditResult.overallScore;
+      chapterReport.auditIssues = result.auditResult.issues;
+      chapterReport.reviewAttempts = result.reviewAttempts;
       chapterReport.issueCount = result.auditResult.issues.length;
       chapterReport.revised = result.revised;
       chapterReport.status = result.status;

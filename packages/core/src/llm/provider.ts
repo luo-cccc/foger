@@ -31,6 +31,7 @@ export type OnStreamProgress = (progress: StreamProgress) => void;
 // === P0: LLM Call Telemetry Types ===
 
 export interface LLMCallTelemetry {
+  readonly bookId?: string;
   readonly operationId?: string;
   readonly agent: string;
   readonly model: string;
@@ -744,7 +745,7 @@ function isAbortError(error: unknown): boolean {
 
 /**
  * Transient *HTTP-level* upstream failures worth retrying: 429 (rate limit),
- * 502/503/504 (gateway / temporarily unavailable / overloaded). These are the
+ * 502/503/504/529 (gateway / temporarily unavailable / overloaded). These are the
  * aggregator blips that previously aborted whole architect/writer/short runs
  * because only transport-level errors were retried.
  *
@@ -757,7 +758,7 @@ export function isTransientLLMHttpError(error: unknown): boolean {
   if (text.includes("model_not_available") || text.includes("model not available")) {
     return false;
   }
-  const statusHit = /\b(429|502|503|504)\b/.test(text);
+  const statusHit = /\b(429|502|503|504|529)\b/.test(text);
   const phraseHit = [
     "temporarily unavailable",
     "service unavailable",
@@ -768,6 +769,9 @@ export function isTransientLLMHttpError(error: unknown): boolean {
     "overloaded",
     "please retry",
     "try again later",
+    "负载较高",
+    "稍后重试",
+    "服务繁忙",
   ].some((needle) => text.includes(needle));
   return statusHit || phraseHit;
 }

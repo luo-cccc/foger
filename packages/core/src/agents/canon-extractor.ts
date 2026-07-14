@@ -68,26 +68,83 @@ export class CanonExtractor extends BaseAgent {
       protagonistName: protagonist?.name ?? bookRules?.rules.protagonist?.name,
     });
 
+    const extractionInput = {
+      storyFrame,
+      volumeMap,
+      roleCards,
+      prohibitions: bookRules?.rules.prohibitions ?? [],
+      protagonistName: protagonist?.name ?? bookRules?.rules.protagonist?.name,
+      language,
+    };
+    let result: ExtractedCanon;
     try {
-      const result = await this.extractWithLlm({
-        storyFrame,
-        volumeMap,
-        roleCards,
-        prohibitions: bookRules?.rules.prohibitions ?? [],
-        protagonistName: protagonist?.name ?? bookRules?.rules.protagonist?.name,
-        language,
+      result = await this.extractWithLlm(extractionInput);
+    } catch (firstError) {
+      try {
+        const retry = await this.extractWithLlm({
+          ...extractionInput,
+          retryAfterIncomplete: true,
+        });
+        if (!retry.usedFallback) {
+          return {
+            ...retry,
+            warnings: [
+              ...retry.warnings,
+              "Initial canon JSON was invalid; bounded retry returned a complete envelope.",
+            ],
+          };
+        }
+        const merged = mergeCanonExtractions(deterministicBaseline, retry);
+        return {
+          ...merged,
+          warnings: [
+            ...merged.warnings,
+            "Initial canon extraction failed before salvage: "
+              + (firstError instanceof Error ? firstError.message : String(firstError)),
+          ],
+        };
+      } catch (retryError) {
+        return {
+          ...deterministicBaseline,
+          usedFallback: true,
+          warnings: [
+            ...deterministicBaseline.warnings,
+            "LLM canon extraction and bounded retry failed; used heuristic fallback: "
+              + (firstError instanceof Error ? firstError.message : String(firstError))
+              + "; retry: "
+              + (retryError instanceof Error ? retryError.message : String(retryError)),
+          ],
+        };
+      }
+    }
+
+    if (!result.usedFallback) return result;
+    try {
+      const retry = await this.extractWithLlm({
+        ...extractionInput,
+        retryAfterIncomplete: true,
       });
-      return result.usedFallback
-        ? mergeCanonExtractions(deterministicBaseline, result)
-        : result;
-    } catch (error) {
+      if (!retry.usedFallback) {
+        return {
+          ...retry,
+          warnings: [
+            ...retry.warnings,
+            "Initial canon JSON was incomplete; bounded retry returned a complete envelope.",
+          ],
+        };
+      }
+      return mergeCanonExtractions(
+        deterministicBaseline,
+        mergeCanonExtractions(result, retry),
+      );
+    } catch (retryError) {
+      const merged = mergeCanonExtractions(deterministicBaseline, result);
       return {
-        ...deterministicBaseline,
-        usedFallback: true,
+        ...merged,
         warnings: [
-          ...deterministicBaseline.warnings,
-          "LLM canon extraction failed, used heuristic fallback: " +
-            (error instanceof Error ? error.message : String(error)),
+          ...merged.warnings,
+          "Canon bounded retry failed: "
+            + (retryError instanceof Error ? retryError.message : String(retryError)),
         ],
       };
     }
@@ -100,24 +157,31 @@ export class CanonExtractor extends BaseAgent {
     prohibitions: ReadonlyArray<string>;
     protagonistName?: string;
     language: "zh" | "en";
+    retryAfterIncomplete?: boolean;
   }): Promise<ExtractedCanon> {
     const isEn = input.language === "en";
     const system = isEn
       ? [
           "You are InkOS canon extractor. Read the prose foundation and emit ONLY strict JSON.",
-          'Return {"claims":[CanonClaim...],"worldSystem":{...},"protagonistSystem":{...}|null,"systemRelations":{...}|null}.',
+          'Return one JSON object with exactly four top-level keys: "claims" (array), "worldSystem" (object), "protagonistSystem" (object or null), and "systemRelations" (object or null). Do not copy schema placeholders into the output.',
           "CanonClaim fields: id(string), domain(one of world|protagonist|character|organization|power|relationship|history|style), claimType(one of objective_rule|institution_rule|character_exception|belief|rumor|secret_truth|temporary_state|prohibition), content(string), scope{appliesTo:string[],excludes?,geography?,timeRange?}, authority{source:string,priority:hard|strong|soft}, visibility{readerKnownFrom?:number,characterKnownBy:string[],hiddenFrom:string[]}, relations?{conflictsWith?:string[],resolvesBy?:string,dependsOn?:string[]}, constraints?{nonGeneralizable?:boolean,requiresCost:string[],forbiddenUses:string[]}.",
           "Defaults matter: character_exception MUST set constraints.nonGeneralizable=true unless content explains a generalization. secret_truth MUST set a visibility boundary. Extract objective world rules as objective_rule with priority hard; book prohibitions as prohibition with priority hard.",
           "Style/POV/terminology constraints use domain=style, are always visible (no readerKnownFrom or hiddenFrom), and never require a story-world cost. Set requiresCost only for an actively exercised ability or rule with a direct on-page cost, never for merely discovering or mentioning a fact, organization, or system.",
-          "Keep the JSON bounded: output at most 12 high-value claims, keep each content field under 180 characters, omit decorative details and temporary flavor, and always close the JSON object. Prioritize objective rules, prohibitions, protagonist exceptions, institutional rules, and secret truths.",
+          "Keep the JSON bounded: output at most 8 high-value claims, keep each content field under 140 characters, omit decorative details and temporary flavor, and always close the JSON object. Prioritize objective rules, prohibitions, protagonist exceptions, institutional rules, and secret truths.",
+          ...(input.retryAfterIncomplete
+            ? ["RETRY AFTER INCOMPLETE JSON: reduce the claim count if needed and close every array and object. Return one complete JSON envelope, not commentary."]
+            : []),
         ].join("\n")
       : [
           "你是 InkOS 的设定抽取器。读取散文基础设定，只输出严格 JSON。",
-          '返回 {"claims":[CanonClaim...],"worldSystem":{...},"protagonistSystem":{...}|null,"systemRelations":{...}|null}。',
+          '返回一个 JSON 对象，顶层严格使用四个字段："claims"（数组）、"worldSystem"（对象）、"protagonistSystem"（对象或 null）、"systemRelations"（对象或 null）。不要把字段说明或模式占位符复制进输出。',
           "CanonClaim 字段：id(字符串), domain(取 world|protagonist|character|organization|power|relationship|history|style 之一), claimType(取 objective_rule|institution_rule|character_exception|belief|rumor|secret_truth|temporary_state|prohibition 之一), content(字符串), scope{appliesTo:string[],excludes?,geography?,timeRange?}, authority{source:string,priority:hard|strong|soft}, visibility{readerKnownFrom?:数字,characterKnownBy:string[],hiddenFrom:string[]}, relations?{conflictsWith?:string[],resolvesBy?:string,dependsOn?:string[]}, constraints?{nonGeneralizable?:布尔,requiresCost:string[],forbiddenUses:string[]}。",
           "默认值很重要：character_exception 必须设置 constraints.nonGeneralizable=true（除非 content 解释可泛化条件）；secret_truth 必须设置可见性边界；世界客观规则抽成 objective_rule 且 priority=hard；本书禁令抽成 prohibition 且 priority=hard。",
           "叙事视角、文风、术语等写作约束必须使用 domain=style，始终可见（不设 readerKnownFrom / hiddenFrom），也不绑定故事世界代价。requiresCost 只用于角色实际施展能力或绕过规则时必然支付的直接代价，不能用于单纯发现或提及某个事实、组织或系统。",
-          "控制 JSON 规模：最多输出 12 条高价值 claim，每条 content 不超过 180 字；省略装饰性细节和临时风味，必须闭合 JSON。优先抽取客观规则、禁令、主角例外、制度规则和秘密真相。",
+          "控制 JSON 规模：最多输出 8 条高价值 claim，每条 content 不超过 140 字；省略装饰性细节和临时风味，必须闭合 JSON。优先抽取客观规则、禁令、主角例外、制度规则和秘密真相。",
+          ...(input.retryAfterIncomplete
+            ? ["这是不完整 JSON 后的重试：必要时继续减少 claim 数量，闭合所有数组和对象，只返回一个完整 JSON，不要解释。"]
+            : []),
         ].join("\n");
 
     const roleBlock = input.roleCards
@@ -285,16 +349,27 @@ function salvageCompleteClaims(raw: string): CanonClaim[] {
 }
 
 const STYLE_CLAIM_PATTERN = /叙事视角|第一人称|第三人称|有限视角|上帝视角|叙事人称|文风|措辞|术语|point of view|\bpov\b|narrative perspective|terminology|prose style/iu;
+const SPECULATIVE_COST_PATTERN = /可能|也许|或许|大概|未必|may\b|might\b|could\b|possibly|perhaps/iu;
 
 function normalizeExtractedClaim(claim: CanonClaim): CanonClaim {
-  if (claim.domain !== "style" && !STYLE_CLAIM_PATTERN.test(claim.content)) return claim;
-  return CanonClaimSchema.parse({
-    ...claim,
-    domain: "style",
-    scope: { ...claim.scope, appliesTo: ["all"] },
-    visibility: { characterKnownBy: [], hiddenFrom: [] },
-    constraints: { ...claim.constraints, requiresCost: [] },
-  });
+  const normalized = STYLE_CLAIM_PATTERN.test(claim.content)
+    ? {
+        ...claim,
+        domain: "style" as const,
+        scope: { ...claim.scope, appliesTo: ["all"] },
+        visibility: { characterKnownBy: [], hiddenFrom: [] },
+        constraints: { ...claim.constraints, requiresCost: [] },
+      }
+    : {
+        ...claim,
+        constraints: {
+          ...claim.constraints,
+          requiresCost: claim.constraints.requiresCost.filter(
+            (cost) => !SPECULATIVE_COST_PATTERN.test(cost),
+          ),
+        },
+      };
+  return CanonClaimSchema.parse(normalized);
 }
 
 function normalizeLlmCanonEnvelope(input: unknown): unknown {

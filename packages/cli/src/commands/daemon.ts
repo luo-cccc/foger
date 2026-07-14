@@ -47,6 +47,7 @@ export const upCommand = new Command("up")
         retryDelayMs: config.daemon.retryDelayMs,
         cooldownAfterChapterMs: config.daemon.cooldownAfterChapterMs,
         maxChaptersPerDay: config.daemon.maxChaptersPerDay,
+        qualityGates: config.daemon.qualityGates,
         onChapterComplete: (bookId, chapter, status) => {
           const icon = status === "ready-for-review"
             ? "+"

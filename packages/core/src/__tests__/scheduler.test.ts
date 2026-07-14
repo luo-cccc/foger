@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Scheduler, type SchedulerConfig } from "../pipeline/scheduler.js";
 import type { BookConfig } from "../models/book.js";
+import { StateManager } from "../state/manager.js";
+import { UnattendedStateStore } from "../pipeline/unattended-state.js";
+import type { LLMCallTelemetry } from "../llm/provider.js";
+import type { PipelineDiagnostic } from "../pipeline/diagnostics.js";
 
 function createConfig(): SchedulerConfig {
   return {
@@ -64,9 +71,11 @@ describe("Scheduler", () => {
   });
 
   it("treats state-degraded chapter results as handled failures", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-unattended-degraded-result-"));
     const onChapterComplete = vi.fn();
     const scheduler = new Scheduler({
       ...createConfig(),
+      projectRoot: root,
       onChapterComplete,
     });
     const bookConfig: BookConfig = {
@@ -106,14 +115,274 @@ describe("Scheduler", () => {
       "handleAuditFailure",
     ).mockResolvedValue(undefined);
 
-    const success = await (
-      scheduler as unknown as {
-        writeOneChapter: (bookId: string, bookConfig: BookConfig) => Promise<boolean>;
-      }
-    ).writeOneChapter("book-1", bookConfig);
+    try {
+      const success = await (
+        scheduler as unknown as {
+          writeOneChapter: (bookId: string, bookConfig: BookConfig) => Promise<boolean>;
+        }
+      ).writeOneChapter("book-1", bookConfig);
 
-    expect(success).toBe(false);
-    expect(handleAuditFailure).toHaveBeenCalledWith("book-1", 3, ["state-validation"]);
-    expect(onChapterComplete).toHaveBeenCalledWith("book-1", 3, "state-degraded");
+      expect(success).toBe(false);
+      expect(handleAuditFailure).toHaveBeenCalledWith(
+        "book-1",
+        3,
+        ["state-validation"],
+        { kind: "state-degraded", action: "repair-state" },
+      );
+      expect(onChapterComplete).toHaveBeenCalledWith("book-1", 3, "state-degraded");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("persists transient provider overloads and restores retry state", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-unattended-overload-"));
+    const config = { ...createConfig(), projectRoot: root, retryDelayMs: 30_000 };
+    const scheduler = new Scheduler(config);
+
+    try {
+      await (
+        scheduler as unknown as {
+          handleAuditFailure: (
+            bookId: string,
+            chapterNumber: number,
+            categories: string[],
+            details: { kind: "provider-transient"; action: "retry-provider"; error: string },
+          ) => Promise<void>;
+        }
+      ).handleAuditFailure("book-1", 0, [], {
+        kind: "provider-transient",
+        action: "retry-provider",
+        error: "529 当前服务集群负载较高，请稍后重试",
+      });
+
+      const persisted = await new UnattendedStateStore(root).load();
+      expect(persisted.books["book-1"]).toMatchObject({
+        status: "retry-wait",
+        action: "retry-provider",
+        consecutiveFailures: 1,
+        lastFailureKind: "provider-transient",
+      });
+      expect(Date.parse(persisted.books["book-1"]?.nextAttemptAt ?? "")).toBeGreaterThan(Date.now());
+
+      const restarted = new Scheduler(config);
+      await (
+        restarted as unknown as { restoreUnattendedState: () => Promise<void> }
+      ).restoreUnattendedState();
+      expect(restarted.isBookPaused("book-1")).toBe(false);
+      expect((restarted as unknown as { retryWaitMs: (bookId: string) => number }).retryWaitMs("book-1")).toBeGreaterThan(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resumes an audit-failed chapter through revision instead of writing a new chapter", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-unattended-revise-"));
+    const state = new StateManager(root);
+    const book = createBook("book-1");
+    await state.saveBookConfig(book.id, book);
+    await state.saveChapterIndex(book.id, [createChapterMeta("audit-failed")]);
+    const onChapterComplete = vi.fn();
+    const scheduler = new Scheduler({ ...createConfig(), projectRoot: root, onChapterComplete });
+    const pipeline = (scheduler as unknown as {
+      pipeline: {
+        writeNextChapter: (...args: unknown[]) => Promise<unknown>;
+        reviseDraft: (...args: unknown[]) => Promise<unknown>;
+      };
+    }).pipeline;
+    const writeNext = vi.spyOn(pipeline, "writeNextChapter");
+    const revise = vi.spyOn(pipeline, "reviseDraft").mockResolvedValue({
+      chapterNumber: 1,
+      wordCount: 1000,
+      fixedIssues: ["fixed"],
+      applied: true,
+      status: "ready-for-review",
+    });
+
+    try {
+      const success = await (
+        scheduler as unknown as { writeOneChapter: (bookId: string, config: BookConfig) => Promise<boolean> }
+      ).writeOneChapter(book.id, book);
+
+      expect(success).toBe(true);
+      expect(revise).toHaveBeenCalledWith(book.id, 1, "auto");
+      expect(writeNext).not.toHaveBeenCalled();
+      expect(onChapterComplete).toHaveBeenCalledWith(book.id, 1, "ready-for-review");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("repairs and then resyncs a state-degraded chapter before continuing", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-unattended-resync-"));
+    const state = new StateManager(root);
+    const book = createBook("book-1");
+    await state.saveBookConfig(book.id, book);
+    await state.saveChapterIndex(book.id, [createChapterMeta("state-degraded")]);
+    const scheduler = new Scheduler({ ...createConfig(), projectRoot: root });
+    const pipeline = (scheduler as unknown as {
+      pipeline: {
+        writeNextChapter: (...args: unknown[]) => Promise<unknown>;
+        repairChapterState: (...args: unknown[]) => Promise<unknown>;
+        resyncChapterArtifacts: (...args: unknown[]) => Promise<unknown>;
+      };
+    }).pipeline;
+    const writeNext = vi.spyOn(pipeline, "writeNextChapter");
+    const repair = vi.spyOn(pipeline, "repairChapterState").mockResolvedValue(
+      createPipelineResult("state-degraded"),
+    );
+    const resync = vi.spyOn(pipeline, "resyncChapterArtifacts").mockResolvedValue(
+      createPipelineResult("ready-for-review"),
+    );
+
+    try {
+      const success = await (
+        scheduler as unknown as { writeOneChapter: (bookId: string, config: BookConfig) => Promise<boolean> }
+      ).writeOneChapter(book.id, book);
+
+      expect(success).toBe(true);
+      expect(repair).toHaveBeenCalledWith(book.id, 1);
+      expect(resync).toHaveBeenCalledWith(book.id, 1);
+      expect(writeNext).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("pauses durably when chapter runtime metrics exceed unattended gates", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-unattended-budget-"));
+    const book = createBook("book-1");
+    const scheduler = new Scheduler({
+      ...createConfig(),
+      projectRoot: root,
+      qualityGates: {
+        maxAuditRetries: 2,
+        pauseAfterConsecutiveFailures: 3,
+        retryTemperatureStep: 0.1,
+        maxChapterTokens: 100,
+        maxPromptTokensPerCall: 20,
+        maxRetryRate: 0.2,
+        maxTimeoutRate: 0,
+        maxFallbacksPerChapter: 0,
+        minHardRangeRate: 0.8,
+      },
+    });
+    (scheduler as unknown as { telemetryByBook: Map<string, LLMCallTelemetry[]> }).telemetryByBook.set(
+      book.id,
+      [createTelemetry()],
+    );
+    (scheduler as unknown as { diagnosticsByBook: Map<string, PipelineDiagnostic[]> }).diagnosticsByBook.set(
+      book.id,
+      [{
+        kind: "canon-fallback",
+        severity: "warning",
+        agent: "canon-extractor",
+        phase: "extract",
+        message: "fallback",
+        timestamp: "2026-04-01T00:00:00.000Z",
+        bookId: book.id,
+        chapterNumber: 1,
+      }],
+    );
+
+    try {
+      const passed = await (
+        scheduler as unknown as {
+          completeChapter: (
+            bookId: string,
+            config: BookConfig,
+            chapterNumber: number,
+            withinHardRange: boolean,
+          ) => Promise<boolean>;
+        }
+      ).completeChapter(book.id, book, 1, false);
+
+      expect(passed).toBe(false);
+      expect(scheduler.isBookPaused(book.id)).toBe(true);
+      const persisted = await new UnattendedStateStore(root).load();
+      const state = persisted.books[book.id];
+      expect(state?.lastFailureKind).toBe("budget");
+      expect(state?.lastError).toContain("chapter tokens 150 > 100");
+      expect(state?.lastError).toContain("max prompt 25 > 20");
+      expect(state?.lastError).toContain("retry rate 2.000 > 0.2");
+      expect(state?.lastError).toContain("timeout rate 1.000 > 0");
+      expect(state?.lastError).toContain("fallbacks 1 > 0");
+      expect(state?.lastError).toContain("hard-range rate 0.000 < 0.8");
+      expect(state?.totals).toMatchObject({ chapters: 1, totalTokens: 150, fallbacks: 1 });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
+
+function createBook(id: string): BookConfig {
+  return {
+    id,
+    title: "Book 1",
+    platform: "other",
+    genre: "other",
+    status: "active",
+    targetChapters: 10,
+    chapterWordCount: 1000,
+    createdAt: "2026-04-01T00:00:00.000Z",
+    updatedAt: "2026-04-01T00:00:00.000Z",
+  };
+}
+
+function createChapterMeta(status: "audit-failed" | "state-degraded") {
+  return {
+    number: 1,
+    title: "Chapter 1",
+    status,
+    wordCount: 1000,
+    createdAt: "2026-04-01T00:00:00.000Z",
+    updatedAt: "2026-04-01T00:00:00.000Z",
+    auditIssues: [],
+    lengthWarnings: [],
+  };
+}
+
+function createPipelineResult(status: "ready-for-review" | "state-degraded") {
+  return {
+    chapterNumber: 1,
+    title: "Chapter 1",
+    wordCount: 1000,
+    revised: false,
+    status,
+    auditResult: {
+      passed: status === "ready-for-review",
+      issues: [],
+      summary: status,
+    },
+  };
+}
+
+function createTelemetry(): LLMCallTelemetry {
+  return {
+    bookId: "book-1",
+    operationId: "00000000-0000-4000-8000-000000000001",
+    agent: "writer",
+    model: "test-model",
+    service: "test-service",
+    apiFormat: "chat",
+    stream: false,
+    phase: "write",
+    durationMs: 100,
+    attemptCount: 3,
+    retryCount: 2,
+    promptAssembly: {
+      totalChars: 100,
+      estimatedTokens: 25,
+      messages: [],
+      sources: [],
+      duplicateSourceGroups: [],
+    },
+    status: "timeout",
+    usage: {
+      promptTokens: 100,
+      completionTokens: 50,
+      totalTokens: 150,
+    },
+    timestamp: "2026-04-01T00:00:00.000Z",
+  };
+}

@@ -29,6 +29,21 @@ export interface ChapterReviewCycleResult {
   readonly totalUsage: ChapterReviewCycleUsage;
   readonly postReviseCount: number;
   readonly normalizeApplied: boolean;
+  readonly reviewAttempts: ReadonlyArray<ChapterReviewAttempt>;
+}
+
+export interface ChapterReviewAttempt {
+  readonly stage: "initial" | "revision";
+  readonly iteration: number;
+  readonly selected: boolean;
+  readonly score: number;
+  readonly passed: boolean;
+  readonly wordCount: number;
+  readonly lengthInRange: boolean;
+  readonly blockingCount: number;
+  readonly criticalCount: number;
+  readonly aiTellCount: number;
+  readonly actionableIssues: ReadonlyArray<AuditIssue>;
 }
 
 export interface ChapterReviewEvaluation {
@@ -52,6 +67,7 @@ interface ReviewSnapshot {
   readonly blockingCount: number;
   readonly criticalCount: number;
   readonly aiTellCount: number;
+  readonly revisionBlockingIssues: ReadonlyArray<AuditIssue>;
 }
 
 interface ReviewAssessment {
@@ -61,6 +77,7 @@ interface ReviewAssessment {
   readonly blockingCount: number;
   readonly criticalCount: number;
   readonly aiTellCount: number;
+  readonly revisionBlockingIssues: ReadonlyArray<AuditIssue>;
 }
 
 export async function runChapterReviewCycle(params: {
@@ -165,6 +182,7 @@ export async function runChapterReviewCycle(params: {
       blockingCount: evaluation.blockingCount,
       criticalCount: evaluation.criticalCount,
       aiTellCount: evaluation.aiTellCount,
+      revisionBlockingIssues: evaluation.revisionBlockingIssues,
     };
   };
 
@@ -196,7 +214,25 @@ export async function runChapterReviewCycle(params: {
     blockingCount: initial.blockingCount,
     criticalCount: initial.criticalCount,
     aiTellCount: initial.aiTellCount,
+    revisionBlockingIssues: initial.revisionBlockingIssues,
   }];
+
+  const buildReviewAttempts = (selected: ReviewSnapshot): ReadonlyArray<ChapterReviewAttempt> =>
+    snapshots.map((snapshot, index) => ({
+      stage: index === 0 ? "initial" : "revision",
+      iteration: index,
+      selected: snapshot === selected,
+      score: snapshot.score,
+      passed: !hasCriticalIssue(snapshot.auditResult.issues)
+        && snapshot.score >= PASS_SCORE_THRESHOLD
+        && snapshot.lengthInRange,
+      wordCount: snapshot.wordCount,
+      lengthInRange: snapshot.lengthInRange,
+      blockingCount: snapshot.blockingCount,
+      criticalCount: snapshot.criticalCount,
+      aiTellCount: snapshot.aiTellCount,
+      actionableIssues: snapshot.revisionBlockingIssues.filter((issue) => issue.severity !== "info"),
+    }));
 
   let currentAudit = initial;
   let postReviseCount = 0;
@@ -215,6 +251,7 @@ export async function runChapterReviewCycle(params: {
       totalUsage,
       postReviseCount,
       normalizeApplied,
+      reviewAttempts: buildReviewAttempts(snapshots[0]!),
     };
   }
 
@@ -230,7 +267,7 @@ export async function runChapterReviewCycle(params: {
         params.bookDir,
         finalContent,
         params.chapterNumber,
-        currentAudit.auditResult.issues,
+        currentAudit.revisionBlockingIssues.filter((issue) => issue.severity !== "info"),
         "auto",
         params.book.genre,
         { ...params.reducedControlInput, lengthSpec: params.lengthSpec },
@@ -269,6 +306,7 @@ export async function runChapterReviewCycle(params: {
           aiTellCount: currentAudit.aiTellCount,
           blockingCount: currentAudit.blockingCount,
           criticalCount: currentAudit.criticalCount,
+          revisionBlockingIssues: currentAudit.revisionBlockingIssues,
         };
       }
 
@@ -281,6 +319,7 @@ export async function runChapterReviewCycle(params: {
         blockingCount: nextAssessment.blockingCount,
         criticalCount: nextAssessment.criticalCount,
         aiTellCount: nextAssessment.aiTellCount,
+        revisionBlockingIssues: nextAssessment.revisionBlockingIssues,
       });
 
       // Check if passed
@@ -345,6 +384,7 @@ export async function runChapterReviewCycle(params: {
       blockingCount: bestSnapshot.blockingCount,
       criticalCount: bestSnapshot.criticalCount,
       aiTellCount: bestSnapshot.aiTellCount,
+      revisionBlockingIssues: bestSnapshot.revisionBlockingIssues,
     };
   }
 
@@ -357,5 +397,6 @@ export async function runChapterReviewCycle(params: {
     totalUsage,
     postReviseCount,
     normalizeApplied,
+    reviewAttempts: buildReviewAttempts(bestSnapshot),
   };
 }

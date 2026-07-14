@@ -23,6 +23,8 @@ export interface AgentContext {
   readonly onPipelineDiagnostic?: OnPipelineDiagnostic;
   /** P0: per-call LLM timeout in milliseconds. */
   readonly defaultTimeoutMs?: number;
+  /** Reject an assembled prompt before transport when it exceeds this budget. */
+  readonly maxPromptEstimatedTokens?: number;
   /** Cooperative cancellation for the active pipeline operation. */
   readonly signal?: AbortSignal;
 }
@@ -57,6 +59,7 @@ export abstract class BaseAgent {
       onStreamProgress: this.ctx.onStreamProgress,
       onCallTelemetry: this.ctx.onCallTelemetry,
       timeoutMs: this.ctx.defaultTimeoutMs,
+      maxPromptEstimatedTokens: this.ctx.maxPromptEstimatedTokens,
       signal: this.ctx.signal,
       promptSources: options?.promptSources,
     });

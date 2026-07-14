@@ -153,6 +153,7 @@ export * from './pipeline/detection-runner.js';
 export * from './pipeline/persisted-governed-plan.js';
 export * from './pipeline/runner.js';
 export * from './pipeline/scheduler.js';
+export * from './pipeline/unattended-state.js';
 export * from './state/manager.js';
 export * from './state/memory-db.js';
 export * from './state/runtime-state-store.js';

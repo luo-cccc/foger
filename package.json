@@ -36,6 +36,7 @@
     "verify:publish-manifests": "node scripts/verify-no-workspace-protocol.mjs packages/core packages/cli packages/studio",
     "benchmark:studio-e2e": "node scripts/studio-e2e-benchmark.mjs",
     "stress:process": "pnpm --filter @actalk/inkos-core build && node scripts/process-contention-stress.mjs",
+    "stress:unattended": "pnpm --filter @actalk/inkos-core build && node scripts/unattended-soak.mjs",
     "test:linked": "pnpm --filter @actalk/inkos-studio test:linked",
     "test:linked:live": "pnpm --filter @actalk/inkos-studio test:linked:live",
     "verify": "pnpm check:hygiene && pnpm typecheck && pnpm audit:semantic-patterns && pnpm build && pnpm check:studio-bundle && pnpm test && pnpm verify:publish-manifests",

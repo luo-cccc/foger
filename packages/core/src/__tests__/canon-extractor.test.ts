@@ -217,6 +217,40 @@ describe("CanonExtractor", () => {
     }
   });
 
+  it("drops speculative consequences from mandatory claim costs", async () => {
+    const os = require("node:os");
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkos-canon-"));
+    try {
+      writeFoundation(tmp);
+      const agent = makeAgent(() => JSON.stringify({
+        claims: [{
+          id: "character-1",
+          domain: "character",
+          claimType: "character_exception",
+          content: "老周暗中协助林澈调查磁带。",
+          scope: { appliesTo: ["老周"] },
+          authority: { source: "roles/老周", priority: "strong" },
+          visibility: { characterKnownBy: ["老周"], hiddenFrom: ["林澈"] },
+          constraints: {
+            requiresCost: ["老周可能被停职或住院", "每次协助都会失去一段记忆"],
+            forbiddenUses: [],
+          },
+        }],
+        worldSystem: {},
+        protagonistSystem: null,
+        systemRelations: null,
+      }));
+
+      const result = await agent.extract(tmp, "zh");
+
+      expect(result.claims[0]?.constraints.requiresCost).toEqual(["每次协助都会失去一段记忆"]);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("falls back when the LLM returns schema-invalid JSON", async () => {
     const os = require("node:os");
     const fs = require("node:fs");
@@ -265,6 +299,88 @@ describe("CanonExtractor", () => {
       expect(result.claims.some((claim) => claim.claimType === "prohibition")).toBe(true);
       expect(result.worldSystem.objectiveRules).toContain("灵气枯竭后无法自行恢复");
       expect(result.warnings.join(" ")).toContain("recovered 1 complete claim");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("retries an incomplete canon envelope once with a bounded completion request", async () => {
+    const os = require("node:os");
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkos-canon-"));
+    let call = 0;
+    try {
+      writeFoundation(tmp);
+      const completeClaim = {
+        id: "world-1",
+        domain: "world",
+        claimType: "objective_rule",
+        content: "灵气枯竭后无法自行恢复",
+        scope: { appliesTo: ["all"] },
+        authority: { source: "story_frame", priority: "hard" },
+        visibility: { characterKnownBy: [], hiddenFrom: [] },
+        constraints: { requiresCost: [], forbiddenUses: [] },
+      };
+      const agent = makeAgent((messages) => {
+        call += 1;
+        if (call === 1) return `{"claims":[${JSON.stringify(completeClaim)},`;
+        const system = (messages as Array<{ content: string }>)[0]?.content ?? "";
+        expect(system).toContain("不完整 JSON 后的重试");
+        return JSON.stringify({
+          claims: [completeClaim],
+          worldSystem: { objectiveRules: [completeClaim.content] },
+          protagonistSystem: null,
+          systemRelations: null,
+        });
+      });
+
+      const result = await agent.extract(tmp, "zh");
+
+      expect(call).toBe(2);
+      expect(result.usedFallback).toBe(false);
+      expect(result.claims.map((entry) => entry.id)).toEqual(["world-1"]);
+      expect(result.warnings.join(" ")).toContain("bounded retry returned a complete envelope");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("retries when malformed canon JSON fails before any claim can be salvaged", async () => {
+    const os = require("node:os");
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkos-canon-"));
+    let call = 0;
+    try {
+      writeFoundation(tmp);
+      const completeClaim = {
+        id: "world-1",
+        domain: "world",
+        claimType: "objective_rule",
+        content: "灵气枯竭后无法自行恢复",
+        scope: { appliesTo: ["all"] },
+        authority: { source: "story_frame", priority: "hard" },
+        visibility: { characterKnownBy: [], hiddenFrom: [] },
+        constraints: { requiresCost: [], forbiddenUses: [] },
+      };
+      const agent = makeAgent(() => {
+        call += 1;
+        if (call === 1) return '{"claims":[CanonClaim...';
+        return JSON.stringify({
+          claims: [completeClaim],
+          worldSystem: { objectiveRules: [completeClaim.content] },
+          protagonistSystem: null,
+          systemRelations: null,
+        });
+      });
+
+      const result = await agent.extract(tmp, "zh");
+
+      expect(call).toBe(2);
+      expect(result.usedFallback).toBe(false);
+      expect(result.claims.map((entry) => entry.id)).toEqual(["world-1"]);
+      expect(result.warnings.join(" ")).toContain("invalid; bounded retry returned a complete envelope");
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

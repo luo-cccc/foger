@@ -321,6 +321,46 @@ describe("claim gates", () => {
     expect(issues).toEqual([]);
   });
 
+  it("does not charge a deferred relationship cost for an ordinary prop mention", () => {
+    const relationship = claim({
+      id: "claim-010",
+      domain: "character",
+      claimType: "character_exception",
+      content: "老周作为档案室技术员，认识沈鸢并答应过她不告诉林澈；他通过维修磁带机间接协助林澈。",
+      scope: { appliesTo: ["老周"] },
+      constraints: { requiresCost: ["老周被停职"], forbiddenUses: [] },
+    });
+
+    const issues = runPostWriteClaimGate({
+      text: "台面另一头是同事老周的维修笔记。林澈没有翻动，只把视线收回到磁带上。",
+      compiled: compiled({ usable: [relationship], costRequired: [relationship] }),
+      phase: "post",
+    });
+
+    expect(issues.map((issue) => issue.category)).not.toContain("claim-cost-missing");
+  });
+
+  it("still charges a relationship cost when the character actually provides the declared help", () => {
+    const relationship = claim({
+      id: "claim-010-active",
+      domain: "character",
+      claimType: "character_exception",
+      content: "老周通过维修磁带机间接协助林澈。",
+      scope: { appliesTo: ["老周"] },
+      constraints: { requiresCost: ["老周被停职"], forbiddenUses: [] },
+    });
+
+    const issues = runPostWriteClaimGate({
+      text: "老周替林澈修好磁带机，又帮他把卡住的磁带取了出来。",
+      compiled: compiled({ usable: [relationship], costRequired: [relationship] }),
+      phase: "post",
+    });
+
+    expect(issues).toEqual([
+      expect.objectContaining({ severity: "critical", category: "claim-cost-missing" }),
+    ]);
+  });
+
   it("flags hard prohibitions when text invokes the prohibited content", () => {
     const prohibition = claim({
       id: "ban-1",

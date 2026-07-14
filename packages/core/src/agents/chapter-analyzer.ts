@@ -104,8 +104,8 @@ export class ChapterAnalyzerAgent extends BaseAgent {
           protagonistName: bookRules?.protagonist?.name,
         })
       : characterMatrix;
-    const reducedControlBlock = governedMode && input.chapterIntent && input.contextPackage && input.ruleStack
-      ? this.buildReducedControlBlock(input.chapterIntent, input.contextPackage, input.ruleStack, resolvedLanguage)
+    const settlementBoundaryBlock = governedMode
+      ? this.buildSettlementBoundaryBlock(resolvedLanguage)
       : "";
 
     const systemPrompt = this.buildSystemPrompt(
@@ -133,7 +133,7 @@ export class ChapterAnalyzerAgent extends BaseAgent {
           ? `\n## Story Bible\n${storyBible}\n`
           : `\n## 世界观设定\n${storyBible}\n`
         : "",
-      outlineOrControlBlock: reducedControlBlock || (
+      outlineOrControlBlock: settlementBoundaryBlock || (
         volumeOutline !== this.missingFilePlaceholder(resolvedLanguage)
           ? resolvedLanguage === "en"
             ? `\n## Volume Outline\n${volumeOutline}\n`
@@ -499,48 +499,16 @@ ${params.hooksBlock}${params.volumeSummariesBlock}${params.subplotBlock}${params
 请严格按照 === TAG === 格式输出分析结果。`;
   }
 
-  private buildReducedControlBlock(
-    chapterIntent: string,
-    contextPackage: ContextPackage,
-    ruleStack: RuleStack,
-    language: "zh" | "en",
-  ): string {
-    const selectedContext = contextPackage.selectedContext
-      .map((entry) => `- ${entry.source}: ${entry.reason}${entry.excerpt ? ` | ${entry.excerpt}` : ""}`)
-      .join("\n");
-    const overrides = ruleStack.activeOverrides.length > 0
-      ? ruleStack.activeOverrides
-        .map((override) => `- ${override.from} -> ${override.to}: ${override.reason} (${override.target})`)
-        .join("\n")
-      : "- none";
-
+  private buildSettlementBoundaryBlock(language: "zh" | "en"): string {
     return language === "en"
-      ? `\n## Chapter Control Inputs (compiled by Planner/Composer)
-${chapterIntent}
-
-### Selected Context
-${selectedContext || "- none"}
-
-### Rule Stack
-- Hard guardrails: ${ruleStack.sections.hard.join(", ") || "(none)"}
-- Soft constraints: ${ruleStack.sections.soft.join(", ") || "(none)"}
-- Diagnostic rules: ${ruleStack.sections.diagnostic.join(", ") || "(none)"}
-
-### Active Overrides
-${overrides}\n`
-      : `\n## 本章控制输入（由 Planner/Composer 编译）
-${chapterIntent}
-
-### 已选上下文
-${selectedContext || "- none"}
-
-### 规则栈
-- 硬护栏：${ruleStack.sections.hard.join("、") || "(无)"}
-- 软约束：${ruleStack.sections.soft.join("、") || "(无)"}
-- 诊断规则：${ruleStack.sections.diagnostic.join("、") || "(无)"}
-
-### 当前覆盖
-${overrides}\n`;
+      ? `\n## Settlement Boundary
+- The finished chapter is the only source of new facts.
+- Planner intent and selected context are filtering inputs, not evidence that an event occurred.
+- Preserve supplied truth records unless the finished prose visibly changes them.\n`
+      : `\n## 结算边界
+- 只有成稿正文可以作为新增事实来源。
+- Planner 意图和已选上下文只用于筛选，不代表计划事件已经发生。
+- 除非成稿有可见证据改变现状，否则保留已有真相记录。\n`;
   }
 
   private buildMemoryGoal(chapterTitle: string | undefined, chapterContent: string): string {
