@@ -16,14 +16,24 @@ Node ≥ 20, pnpm ≥ 9.
 
 ```
 packages/
-  core/    # Agents, pipeline, state management, LLM providers
-  cli/     # Commander.js commands, TUI, and daemon
-  studio/  # React workbench and Hono API
+  core/
+    src/agents/       # LLM-facing domain agents and prompt contracts
+    src/pipeline/     # Foundation/chapter workflows and unattended scheduling
+    src/state/        # Authoritative state, projections, locks, and transactions
+    src/llm/          # Provider transport, model metadata, routing, and telemetry
+    src/interaction/  # Agent sessions and shared interaction tools
+  cli/                # Commander.js commands, TUI, and daemon
+  studio/
+    src/api/          # Local Hono API and SSE operation lifecycle
+    src/pages/        # React route-level workbench pages
+    e2e/              # Isolated browser/API/Core/persistence acceptance tests
+scripts/              # Quality gates, stress tests, cleanup, and live-provider tools
+docs/                 # Current architecture, stable designs, and dated test records
 ```
 
 Monorepo managed with pnpm workspaces. CLI and Studio consume the shared core package; publishable manifests use registry-installable internal versions while pnpm links workspace packages during development.
 
-See `docs/current-architecture-and-priorities.md` before changing pipeline, persistence, Studio mutation routes, or package boundaries.
+See `docs/current-architecture-and-priorities.md` before changing pipeline, persistence, Studio mutation routes, or package boundaries. Keep domain rules in Core: CLI and Studio may adapt transport and presentation, but must not reimplement locking, rollback, validation, or state transitions. Dated provider results belong in `docs/live-llm-testing-and-next-goals.md`; stable Canon/volume protocol changes belong in `docs/canon-governance-volume-closure-design.md`.
 
 ## Development
 
