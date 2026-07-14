@@ -1438,6 +1438,8 @@ export async function chatCompletion(
   options?: {
     readonly temperature?: number;
     readonly maxTokens?: number;
+    /** Provider-specific request fields for this call only. */
+    readonly extra?: Readonly<Record<string, unknown>>;
     /** Per-call transport override for atomic structured responses. */
     readonly stream?: boolean;
     readonly webSearch?: boolean;
@@ -1522,7 +1524,10 @@ export async function chatCompletion(
       options?.temperature ?? effectiveClient.defaults.temperature,
     ),
     maxTokens: options?.maxTokens ?? effectiveClient.defaults.maxTokens,
-    extra: effectiveClient.defaults.extra,
+    extra: {
+      ...effectiveClient.defaults.extra,
+      ...options?.extra,
+    },
   };
   const onStreamProgress = options?.onStreamProgress;
   const onTextDelta = options?.onTextDelta;

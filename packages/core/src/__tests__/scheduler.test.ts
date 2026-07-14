@@ -70,6 +70,24 @@ describe("Scheduler", () => {
     scheduler.stop();
   });
 
+  it("runs one restored write cycle without installing a recurring timer", async () => {
+    const scheduler = new Scheduler(createConfig());
+    const restore = vi.spyOn(
+      scheduler as unknown as { restoreUnattendedState: () => Promise<void> },
+      "restoreUnattendedState",
+    ).mockResolvedValue(undefined);
+    const cycle = vi.spyOn(
+      scheduler as unknown as { triggerWriteCycle: () => Promise<void> },
+      "triggerWriteCycle",
+    ).mockResolvedValue(undefined);
+
+    await scheduler.runOnce();
+
+    expect(restore).toHaveBeenCalledTimes(1);
+    expect(cycle).toHaveBeenCalledTimes(1);
+    expect(scheduler.isRunning).toBe(false);
+  });
+
   it("treats state-degraded chapter results as handled failures", async () => {
     const root = await mkdtemp(join(tmpdir(), "inkos-unattended-degraded-result-"));
     const onChapterComplete = vi.fn();
@@ -130,6 +148,40 @@ describe("Scheduler", () => {
         { kind: "state-degraded", action: "repair-state" },
       );
       expect(onChapterComplete).toHaveBeenCalledWith("book-1", 3, "state-degraded");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports the full primary chapter result to unattended observers", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-unattended-result-callback-"));
+    const onChapterResult = vi.fn();
+    const scheduler = new Scheduler({
+      ...createConfig(),
+      projectRoot: root,
+      onChapterResult,
+    });
+    const book = createBook("book-1");
+    const result = createPipelineResult("ready-for-review");
+    vi.spyOn(
+      (scheduler as unknown as {
+        pipeline: { writeNextChapter: () => Promise<unknown> };
+      }).pipeline,
+      "writeNextChapter",
+    ).mockResolvedValue(result);
+    vi.spyOn(
+      scheduler as unknown as {
+        completeChapter: () => Promise<boolean>;
+      },
+      "completeChapter",
+    ).mockResolvedValue(true);
+
+    try {
+      await (scheduler as unknown as {
+        writeOneChapter: (bookId: string, config: BookConfig) => Promise<boolean>;
+      }).writeOneChapter(book.id, book);
+
+      expect(onChapterResult).toHaveBeenCalledWith(book.id, result);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -312,6 +364,15 @@ describe("Scheduler", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("classifyUnattendedError", () => {
+  it("classifies the localized connection wrapper as provider-transient", async () => {
+    const { classifyUnattendedError } = await import("../pipeline/unattended-state.js");
+    expect(classifyUnattendedError(
+      new Error("无法连接到 API 服务。网络不通或被防火墙拦截"),
+    )).toBe("provider-transient");
   });
 });
 

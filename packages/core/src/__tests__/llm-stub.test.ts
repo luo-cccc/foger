@@ -3,6 +3,7 @@ import { isLlmStubEnabled, stubChatCompletion } from "../agent/llm-stub.js";
 import { chatCompletion, type LLMCallTelemetry, type LLMClient } from "../llm/provider.js";
 import { parseCreativeOutput } from "../agents/writer-parser.js";
 import { parseMemo } from "../utils/chapter-memo-parser.js";
+import { validateFoundationVolumeScale } from "../utils/foundation-scale.js";
 
 describe("llm-stub", () => {
   const previousStubEnv = process.env.INKOS_AGENT_LLM_STUB;
@@ -51,7 +52,7 @@ describe("llm-stub", () => {
             "=== SECTION: pending_hooks ===",
           ].join("\n"),
         },
-        { role: "user", content: "Generate the complete foundation." },
+        { role: "user", content: "Target chapters: 12\nGenerate the complete foundation." },
       ],
       "stub-model",
     );
@@ -64,6 +65,12 @@ describe("llm-stub", () => {
     expect(response.content).toContain("---ROLE---");
     expect(response.content).toContain("tier: major");
     expect(response.content).toContain("| hook_id |");
+    expect(response.content).toContain("## Volume 1 (Chapters 1-12)");
+    expect(response.content).not.toContain("## Volume 2");
+    const volumeMap = response.content
+      .split("=== SECTION: volume_map ===")[1]
+      ?.split("=== SECTION: roles ===")[0] ?? "";
+    expect(validateFoundationVolumeScale(volumeMap, 12)).toEqual([]);
   });
 
   it("returns a passing reviewer contract for foundation review prompts", () => {

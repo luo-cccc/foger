@@ -853,8 +853,10 @@ describe("PipelineRunner", () => {
   });
 
   it("honors configured foundation review retry count before accepting a rejected foundation", async () => {
+    const diagnostics: Array<{ kind: string; details?: Readonly<Record<string, unknown>> }> = [];
     const { root, runner, bookId } = await createRunnerFixture({
       foundationReviewRetries: 4,
+      onPipelineDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
     } as Partial<ConstructorParameters<typeof PipelineRunner>[0]>);
     const reviewer = new FoundationReviewerAgent({
       client: {
@@ -909,6 +911,72 @@ describe("PipelineRunner", () => {
       expect(reviewMock).toHaveBeenCalledTimes(5);
       expect(generate.mock.calls[1]?.[0]).toContain("仍未达到可开写标准");
       expect(generate.mock.calls[4]?.[0]).toContain("仍未达到可开写标准");
+      expect(diagnostics).toContainEqual(expect.objectContaining({
+        kind: "foundation-fallback",
+        details: expect.objectContaining({
+          totalScore: 72,
+          maxRetries: 4,
+        }),
+      }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to accept a deterministically invalid foundation scale after retries", async () => {
+    const { root, runner, bookId } = await createRunnerFixture();
+    const reviewer = new FoundationReviewerAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: { temperature: 0.7, thinkingBudget: 0 },
+      } as ConstructorParameters<typeof PipelineRunner>[0]["client"],
+      model: "test-model",
+      projectRoot: root,
+      bookId,
+    });
+    const foundation = {
+      storyBible: "# Story Bible",
+      volumeOutline: "全书共5卷",
+      bookRules: "# Book Rules",
+      currentState: "# Current State",
+      pendingHooks: "# Pending Hooks",
+    };
+    const generate = vi.fn(async (_reviewFeedback?: string) => foundation);
+    const reviewMock = vi.mocked(FoundationReviewerAgent.prototype.review);
+    reviewMock.mockReset();
+    reviewMock.mockResolvedValue({
+      passed: false,
+      totalScore: 72,
+      dimensions: [],
+      overallFeedback: "目标5章只能规划1卷。",
+      blockingIssues: ["目标5章只能规划1卷。"],
+    });
+
+    try {
+      await expect((runner as unknown as {
+        generateAndReviewFoundation: (params: {
+          readonly generate: (reviewFeedback?: string) => Promise<typeof foundation>;
+          readonly reviewer: FoundationReviewerAgent;
+          readonly mode: "original";
+          readonly language: "zh";
+          readonly stageLanguage: "zh";
+          readonly targetChapters: number;
+          readonly maxRetries: number;
+        }) => Promise<typeof foundation>;
+      }).generateAndReviewFoundation({
+        generate,
+        reviewer,
+        mode: "original",
+        language: "zh",
+        stageLanguage: "zh",
+        targetChapters: 5,
+        maxRetries: 1,
+      })).rejects.toThrow(/Foundation scale validation failed/);
+
+      expect(generate).toHaveBeenCalledTimes(2);
+      expect(reviewMock).toHaveBeenCalledTimes(2);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

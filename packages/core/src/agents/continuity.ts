@@ -14,6 +14,7 @@ import {
 import { renderMemoAsNarrativeBlock } from "../utils/narrative-control.js";
 import { join } from "node:path";
 import { estimateTextTokens } from "../llm/provider.js";
+import { resolvePromptCompactionTarget, truncatePromptBlock } from "../utils/prompt-budget.js";
 
 export interface AuditResult {
   readonly passed: boolean;
@@ -573,7 +574,7 @@ ${hooksBlock}${volumeSummariesBlock}${subplotBlock}${emotionalBlock}${matrixBloc
 ${chapterContent}`;
 
     let userPrompt = renderUserPrompt();
-    const promptTarget = resolveAuditorPromptTarget();
+    const promptTarget = resolvePromptCompactionTarget(this.ctx.maxPromptEstimatedTokens);
     if (promptTarget !== undefined) {
       const promptTokens = (): number => estimateTextTokens(systemPrompt) + estimateTextTokens(userPrompt);
       const rebuild = (): void => {
@@ -606,7 +607,11 @@ ${chapterContent}`;
         const currentTokens = estimateTextTokens(value);
         const nextBudget = Math.max(minimumTokens, currentTokens - overage - 64);
         if (nextBudget >= currentTokens) return;
-        assign(truncateToEstimatedTokens(value, nextBudget, isEnglish));
+        assign(truncatePromptBlock(
+          value,
+          nextBudget,
+          isEnglish ? "\n[Lower-priority audit context truncated.]" : "\n[低优先级审稿上下文已截断]",
+        ));
         rebuild();
       };
 
@@ -821,32 +826,4 @@ function hasDedicatedAuditorEvidenceBlock(source: string): boolean {
   return source.startsWith("story/chapter_summaries.md#")
     && source !== "story/chapter_summaries.md#recent_titles"
     && source !== "story/chapter_summaries.md#recent_mood_type_trail";
-}
-
-function resolveAuditorPromptTarget(): number | undefined {
-  const raw = process.env.INKOS_MAX_PROMPT_ESTIMATED_TOKENS_PER_CALL?.trim();
-  if (!raw || !/^\d+$/.test(raw)) return undefined;
-  const limit = Number(raw);
-  if (!Number.isSafeInteger(limit) || limit <= 0) return undefined;
-  return Math.max(1, limit - Math.max(256, Math.floor(limit * 0.03)));
-}
-
-function truncateToEstimatedTokens(
-  value: string,
-  maximumTokens: number,
-  isEnglish: boolean,
-): string {
-  if (estimateTextTokens(value) <= maximumTokens) return value;
-  const marker = isEnglish ? "\n[Lower-priority audit context truncated.]" : "\n[低优先级审稿上下文已截断]";
-  const contentBudget = maximumTokens - estimateTextTokens(marker);
-  if (contentBudget <= 0) return "";
-
-  let low = 0;
-  let high = value.length;
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2);
-    if (estimateTextTokens(value.slice(0, middle)) <= contentBudget) low = middle;
-    else high = middle - 1;
-  }
-  return `${value.slice(0, low).trimEnd()}${marker}`;
 }

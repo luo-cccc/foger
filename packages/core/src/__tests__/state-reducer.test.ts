@@ -3,6 +3,44 @@ import { applyRuntimeStateDelta } from "../state/state-reducer.js";
 import { RuntimeStateDeltaSchema } from "../models/runtime-state.js";
 
 describe("applyRuntimeStateDelta", () => {
+  it("ignores empty optional state-patch values instead of creating invalid facts", () => {
+    const delta = RuntimeStateDeltaSchema.parse({
+      chapter: 1,
+      currentStatePatch: {
+        currentLocation: "  OCC检修间  ",
+        currentGoal: "",
+        currentConflict: "   ",
+      },
+      hookOps: { upsert: [], mention: [], resolve: [], defer: [] },
+      notes: [],
+    });
+
+    const result = applyRuntimeStateDelta({
+      snapshot: {
+        manifest: {
+          schemaVersion: 2,
+          language: "zh",
+          lastAppliedChapter: 0,
+          projectionVersion: 1,
+          migrationWarnings: [],
+        },
+        currentState: { chapter: 0, facts: [] },
+        hooks: { hooks: [] },
+        chapterSummaries: { rows: [] },
+      },
+      delta,
+    });
+
+    expect(delta.currentStatePatch?.currentGoal).toBeUndefined();
+    expect(delta.currentStatePatch?.currentConflict).toBeUndefined();
+    expect(result.currentState.facts).toEqual([
+      expect.objectContaining({
+        predicate: "当前位置",
+        object: "OCC检修间",
+      }),
+    ]);
+  });
+
   it("applies a chapter-local delta into structured state", () => {
     const result = applyRuntimeStateDelta({
       snapshot: {

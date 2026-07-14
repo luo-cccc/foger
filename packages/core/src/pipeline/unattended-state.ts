@@ -111,6 +111,7 @@ export function classifyUnattendedError(error: unknown): UnattendedFailureKind {
     /\b(408|425|429|502|503|504|529)\b/.test(normalized)
     || /overload|temporarily unavailable|service unavailable|rate limit|too many requests/.test(normalized)
     || /try again later|please retry|负载较高|稍后重试|服务繁忙/.test(normalized)
+    || /无法连接|连接失败|网络不通|网络错误|连接(?:被)?(?:中断|重置)/.test(normalized)
     || /econnreset|econnrefused|enotfound|socket hang up|fetch failed|connection error/.test(normalized)
   ) {
     return "provider-transient";

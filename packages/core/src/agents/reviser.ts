@@ -23,6 +23,8 @@ import {
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
+import { estimateTextTokens } from "../llm/provider.js";
+import { resolvePromptCompactionTarget, truncatePromptBlock } from "../utils/prompt-budget.js";
 import {
   readStoryFrame,
   readVolumeMap,
@@ -131,7 +133,7 @@ export class ReviserAgent extends BaseAgent {
       lengthSpec?: LengthSpec;
     },
   ): Promise<ReviseOutput> {
-    const [currentState, ledger, hooks, styleGuideRaw, volumeOutline, storyBible, characterMatrix, chapterSummaries, parentCanon] = await Promise.all([
+    const [diskCurrentState, ledger, hooks, styleGuideRaw, volumeOutline, storyBible, characterMatrix, chapterSummaries, parentCanon] = await Promise.all([
       // Phase 5 consolidation: derive initial state from roles + seed hooks
       // when current_state.md is still the architect seed placeholder.
       readCurrentStateWithFallback(bookDir, "(文件不存在)"),
@@ -144,6 +146,7 @@ export class ReviserAgent extends BaseAgent {
       this.readFileSafe(join(bookDir, "story/chapter_summaries.md")),
       this.readFileSafe(join(bookDir, "story/parent_canon.md")),
     ]);
+    let currentState = diskCurrentState;
 
     // Load genre profile and book rules
     const genreId = genre ?? "other";
@@ -167,7 +170,7 @@ export class ReviserAgent extends BaseAgent {
     const isEnglish = (bookLanguage ?? gp.language) === "en";
     const resolvedLanguage = isEnglish ? "en" : "zh";
 
-    const issueList = mode === "auto"
+    let issueList = mode === "auto"
       ? buildTieredIssueList(issues, isEnglish)
       : issues
           .map((i) => `- [${i.severity}] ${i.category}: ${i.description}\n  ${isEnglish ? "Suggestion" : "建议"}: ${i.suggestion}`)
@@ -220,48 +223,56 @@ export class ReviserAgent extends BaseAgent {
       : this.buildLegacySystemPrompt({ langPrefix, gp, protagonistBlock, numericalRule, lengthGuardrail, mode, resolvedLanguage });
     const systemPrompt = await this.withPromptPackGuidance(systemPromptBase, "longform.reviser");
 
-    const ledgerBlock = gp.numericalSystem
+    let ledgerBlock = gp.numericalSystem
       ? `\n## 资源账本\n${ledger}`
       : "";
     const governedMemoryBlocks = options?.contextPackage
       ? buildGovernedMemoryEvidenceBlocks(options.contextPackage, resolvedLanguage)
       : undefined;
-    const hookDebtBlock = governedMemoryBlocks?.hookDebtBlock ?? "";
-    const hooksBlock = governedMemoryBlocks?.hooksBlock
-      ?? `\n## 伏笔池\n${hooksWorkingSet}\n`;
-    const outlineBlock = volumeOutline !== "(文件不存在)"
+    let hookDebtBlock = sanitizeNarrativeEvidenceBlock(
+      governedMemoryBlocks?.hookDebtBlock ?? "",
+      resolvedLanguage,
+    ) ?? "";
+    let hooksBlock = sanitizeNarrativeEvidenceBlock(
+      governedMemoryBlocks?.hooksBlock ?? `\n## 伏笔池\n${hooksWorkingSet}\n`,
+      resolvedLanguage,
+    ) ?? "";
+    let outlineBlock = volumeOutline !== "(文件不存在)"
       ? `\n## 卷纲\n${volumeOutline}\n`
       : "";
-    const bibleBlock = !governedMode && storyBible !== "(文件不存在)"
+    let bibleBlock = !governedMode && storyBible !== "(文件不存在)"
       ? `\n## 世界观设定\n${storyBible}\n`
       : "";
-    const matrixBlock = characterMatrixWorkingSet !== "(文件不存在)"
+    let matrixBlock = characterMatrixWorkingSet !== "(文件不存在)"
       ? `\n## 角色交互矩阵\n${characterMatrixWorkingSet}\n`
       : "";
-    const summariesBlock = governedMemoryBlocks?.summariesBlock
+    let summariesBlock = sanitizeNarrativeEvidenceBlock(governedMemoryBlocks?.summariesBlock
       ?? (chapterSummariesWorkingSet !== "(文件不存在)"
         ? `\n## 章节摘要\n${chapterSummariesWorkingSet}\n`
-        : "");
-    const volumeSummariesBlock = governedMemoryBlocks?.volumeSummariesBlock ?? "";
+        : ""), resolvedLanguage) ?? "";
+    let volumeSummariesBlock = sanitizeNarrativeEvidenceBlock(
+      governedMemoryBlocks?.volumeSummariesBlock ?? "",
+      resolvedLanguage,
+    ) ?? "";
 
     const hasParentCanon = parentCanon !== "(文件不存在)";
 
-    const canonBlock = hasParentCanon
+    let canonBlock = hasParentCanon
       ? `\n## 正传正典参照（修稿专用）\n本书为番外作品。修改时参照正典约束，不可改变正典事实。\n${parentCanon}\n`
       : "";
 
-    const reducedControlBlock = options?.contextPackage && options.ruleStack
+    let reducedControlBlock = options?.contextPackage && options.ruleStack
       ? this.buildReducedControlBlock(options.chapterMemo, options.chapterIntentData, options.chapterIntent, options.contextPackage, options.ruleStack)
       : "";
     // Length guardrail only in legacy modes — auto mode delegates length to normalize.
     const lengthGuidanceBlock = mode !== "auto" && options?.lengthSpec
       ? `\n## 字数护栏\n目标字数：${options.lengthSpec.target}\n允许区间：${options.lengthSpec.softMin}-${options.lengthSpec.softMax}\n极限区间：${options.lengthSpec.hardMin}-${options.lengthSpec.hardMax}\n如果修正后超出允许区间，请优先压缩冗余解释、重复动作和弱信息句，不得新增支线或删掉核心事实。\n`
       : "";
-    const styleGuideBlock = reducedControlBlock.length === 0
+    let styleGuideBlock = reducedControlBlock.length === 0
       ? `\n## 文风指南\n${styleGuide}`
       : "";
 
-    const userPrompt = `请修正第${chapterNumber}章。
+    const renderUserPrompt = (): string => `请修正第${chapterNumber}章。
 
 ## 审稿问题
 ${issueList}
@@ -269,10 +280,57 @@ ${issueList}
 ## 当前状态卡
 ${currentState}
 ${ledgerBlock}
-${sanitizeNarrativeEvidenceBlock(hookDebtBlock, resolvedLanguage) ?? ""}${sanitizeNarrativeEvidenceBlock(hooksBlock, resolvedLanguage) ?? ""}${sanitizeNarrativeEvidenceBlock(volumeSummariesBlock, resolvedLanguage) ?? ""}${reducedControlBlock || outlineBlock}${bibleBlock}${matrixBlock}${sanitizeNarrativeEvidenceBlock(summariesBlock, resolvedLanguage) ?? ""}${canonBlock}${styleGuideBlock}${lengthGuidanceBlock}
+${hookDebtBlock}${hooksBlock}${volumeSummariesBlock}${reducedControlBlock || outlineBlock}${bibleBlock}${matrixBlock}${summariesBlock}${canonBlock}${styleGuideBlock}${lengthGuidanceBlock}
 
 ## 待修正章节
 ${chapterContent}`;
+
+    let userPrompt = renderUserPrompt();
+    const promptTarget = resolvePromptCompactionTarget(this.ctx.maxPromptEstimatedTokens);
+    if (promptTarget !== undefined) {
+      const promptTokens = (): number => estimateTextTokens(systemPrompt) + estimateTextTokens(userPrompt);
+      const rebuild = (): void => {
+        userPrompt = renderUserPrompt();
+      };
+      const optionalBlocks: Array<() => void> = [
+        () => { volumeSummariesBlock = ""; },
+        () => { summariesBlock = ""; },
+        () => { bibleBlock = ""; },
+        () => { outlineBlock = ""; },
+        () => { styleGuideBlock = ""; },
+      ];
+      for (const dropOptionalBlock of optionalBlocks) {
+        if (promptTokens() <= promptTarget) break;
+        dropOptionalBlock();
+        rebuild();
+      }
+
+      const marker = isEnglish
+        ? "\n[Lower-priority revision context truncated.]"
+        : "\n[低优先级修稿上下文已截断]";
+      const compactBlock = (
+        value: string,
+        minimumTokens: number,
+        assign: (next: string) => void,
+      ): void => {
+        const overage = promptTokens() - promptTarget;
+        if (overage <= 0 || value.length === 0) return;
+        const currentTokens = estimateTextTokens(value);
+        const nextBudget = Math.max(minimumTokens, currentTokens - overage - 64);
+        if (nextBudget >= currentTokens) return;
+        assign(truncatePromptBlock(value, nextBudget, marker));
+        rebuild();
+      };
+
+      compactBlock(reducedControlBlock, 768, (next) => { reducedControlBlock = next; });
+      compactBlock(matrixBlock, 512, (next) => { matrixBlock = next; });
+      compactBlock(canonBlock, 512, (next) => { canonBlock = next; });
+      compactBlock(hooksBlock, 384, (next) => { hooksBlock = next; });
+      compactBlock(hookDebtBlock, 192, (next) => { hookDebtBlock = next; });
+      compactBlock(ledgerBlock, 256, (next) => { ledgerBlock = next; });
+      compactBlock(currentState, 256, (next) => { currentState = next; });
+      compactBlock(issueList, 512, (next) => { issueList = next; });
+    }
 
     const response = await this.chat(
       [
@@ -596,10 +654,17 @@ ${outputFormat}`;
     contextPackage: ContextPackage,
     ruleStack: RuleStack,
   ): string {
-    const selectedContext = renderNarrativeSelectedContext(
-      contextPackage.selectedContext.filter((entry) => entry.source !== "runtime/chapter_memo"),
-      "zh",
-    )
+    const boundedSelectedContext = contextPackage.selectedContext
+      .filter((entry) => entry.source !== "runtime/chapter_memo"
+        && entry.source !== "runtime/compiled-context")
+      .map((entry) => {
+        const excerpt = entry.excerpt?.trim();
+        const boundedExcerpt = excerpt
+          ? truncatePromptBlock(excerpt, 192, "\n[上下文摘录已截断]")
+          : "";
+        return { ...entry, ...(boundedExcerpt ? { excerpt: boundedExcerpt } : { excerpt: undefined }) };
+      });
+    const selectedContext = renderNarrativeSelectedContext(boundedSelectedContext, "zh")
       .replace(/^### /gm, "- ");
     const overrides = ruleStack.activeOverrides.length > 0
       ? ruleStack.activeOverrides

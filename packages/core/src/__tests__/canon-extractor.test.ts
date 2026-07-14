@@ -10,15 +10,21 @@ function makeAgent(
   llmOverride?: (messages: unknown) => string,
   stream = false,
   optionsSeen?: unknown[],
+  route: { readonly model?: string; readonly service?: string } = {},
 ): CanonExtractor {
   const client = {
     provider: "openai",
+    service: route.service,
     apiFormat: "chat",
     stream,
     defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
   } as unknown as LLMClient;
 
-  const agent = new CanonExtractor({ client, model: "test-model", projectRoot: process.cwd() });
+  const agent = new CanonExtractor({
+    client,
+    model: route.model ?? "test-model",
+    projectRoot: process.cwd(),
+  });
 
   if (llmOverride) {
     vi.spyOn(agent as unknown as { chat: (...a: unknown[]) => Promise<unknown> }, "chat").mockImplementation(
@@ -120,7 +126,11 @@ describe("CanonExtractor", () => {
       const result = await agent.extract(tmp, "zh");
       expect(result.usedFallback).toBe(false);
       expect(result.claims).toHaveLength(1);
-      expect(optionsSeen[0]).toMatchObject({ stream: false, callPhase: "extract" });
+      expect(optionsSeen[0]).toMatchObject({
+        stream: false,
+        callPhase: "extract",
+        maxTokens: 8192,
+      });
 
       const bundle: CanonBundle = {
         claims: { claims: [...result.claims] },
@@ -173,8 +183,11 @@ describe("CanonExtractor", () => {
       expect(result.claims[0]?.scope.geography).toEqual(["旧城"]);
       expect(result.claims[0]?.relations).toBeUndefined();
       expect(result.claims[0]?.constraints.requiresCost).toEqual([]);
-      expect(result.protagonistSystem).toBeNull();
-      expect(result.systemRelations).toBeNull();
+      expect(result.protagonistSystem).toMatchObject({
+        name: "林辞",
+        exceptionality: "他能听到器物低语。",
+      });
+      expect(result.systemRelations).toMatchObject({ mode: "hybrid" });
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -381,6 +394,117 @@ describe("CanonExtractor", () => {
       expect(result.usedFallback).toBe(false);
       expect(result.claims.map((entry) => entry.id)).toEqual(["world-1"]);
       expect(result.warnings.join(" ")).toContain("invalid; bounded retry returned a complete envelope");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("selects the canon envelope when the model prefixes it with another JSON object", async () => {
+    const os = require("node:os");
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkos-canon-"));
+    let call = 0;
+    try {
+      writeFoundation(tmp);
+      const completeClaim = {
+        id: "world-1",
+        domain: "world",
+        claimType: "objective_rule",
+        content: "灵气枯竭后无法自行恢复",
+        scope: { appliesTo: ["all"] },
+        authority: { source: "story_frame", priority: "hard" },
+        visibility: { characterKnownBy: [], hiddenFrom: [] },
+        constraints: { requiresCost: [], forbiddenUses: [] },
+      };
+      const agent = makeAgent(() => {
+        call += 1;
+        return [
+          "{}",
+          "以下为严格 JSON：",
+          JSON.stringify({
+            claims: [completeClaim],
+            worldSystem: { objectiveRules: [completeClaim.content] },
+            protagonistSystem: null,
+            systemRelations: null,
+          }),
+        ].join("\n");
+      });
+
+      const result = await agent.extract(tmp, "zh");
+
+      expect(call).toBe(1);
+      expect(result.usedFallback).toBe(false);
+      expect(result.claims.map((entry) => entry.id)).toEqual(["world-1"]);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("selects a complete canon envelope inside a redundant outer brace", async () => {
+    const os = require("node:os");
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkos-canon-"));
+    try {
+      writeFoundation(tmp);
+      const completeClaim = {
+        id: "world-1",
+        domain: "world",
+        claimType: "objective_rule",
+        content: "灵气枯竭后无法自行恢复",
+        scope: { appliesTo: ["all"] },
+        authority: { source: "story_frame", priority: "hard" },
+        visibility: { characterKnownBy: [], hiddenFrom: [] },
+        constraints: { requiresCost: [], forbiddenUses: [] },
+      };
+      const envelope = JSON.stringify({
+        claims: [completeClaim],
+        worldSystem: { objectiveRules: [completeClaim.content] },
+        protagonistSystem: null,
+        systemRelations: null,
+      });
+      const agent = makeAgent(() => `{${envelope}}`);
+
+      const result = await agent.extract(tmp, "zh");
+
+      expect(result.usedFallback).toBe(false);
+      expect(result.claims.map((entry) => entry.id)).toEqual(["world-1"]);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("requests non-reasoning JSON output for DeepSeek V4 Flash on OpenRouter", async () => {
+    const os = require("node:os");
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkos-canon-"));
+    const optionsSeen: unknown[] = [];
+    let systemPrompt = "";
+    try {
+      writeFoundation(tmp);
+      const agent = makeAgent(
+        (messages) => {
+          systemPrompt = (messages as Array<{ content: string }>)[0]?.content ?? "";
+          return JSON.stringify({ claims: [] });
+        },
+        false,
+        optionsSeen,
+        { model: "deepseek/deepseek-v4-flash", service: "openrouter" },
+      );
+
+      await agent.extract(tmp, "zh");
+
+      expect(optionsSeen[0]).toMatchObject({
+        extra: {
+          response_format: { type: "json_object" },
+          reasoning: { effort: "none" },
+          include_reasoning: false,
+        },
+      });
+      expect(systemPrompt).toContain("顶层只允许一个字段");
+      expect(systemPrompt).toContain("禁止输出 worldSystem");
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

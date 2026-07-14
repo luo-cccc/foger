@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { ReviserAgent } from "../agents/reviser.js";
 import { buildLengthSpec } from "../utils/length-metrics.js";
 import type { AuditIssue } from "../agents/continuity.js";
+import { estimateTextTokens } from "../llm/provider.js";
 
 const ZERO_USAGE = {
   promptTokens: 0,
@@ -670,6 +671,16 @@ describe("ReviserAgent", () => {
                 reason: "Carry forward unresolved hook.",
                 excerpt: "relationship | open | 101 | Mentor oath debt with Lin Yue",
               },
+              {
+                source: "runtime/chapter_claim_brief",
+                reason: "Keep binding claim constraints.",
+                excerpt: "The jade seal remains indestructible in this chapter.",
+              },
+              {
+                source: "runtime/compiled-context",
+                reason: "Composite context already represented by the focused controls.",
+                excerpt: "DUPLICATE_COMPILED_CONTEXT_SHOULD_NOT_REACH_REVISER",
+              },
             ],
           },
           ruleStack: {
@@ -695,12 +706,91 @@ describe("ReviserAgent", () => {
       expect(userPrompt).not.toContain("story/pending_hooks.md#mentor-oath");
       expect(userPrompt).not.toContain("story/story_bible.md");
       expect(userPrompt).not.toContain("story/volume_outline.md");
+      expect(userPrompt).not.toContain("DUPLICATE_COMPILED_CONTEXT_SHOULD_NOT_REACH_REVISER");
+      expect(userPrompt).toContain("The jade seal remains indestructible in this chapter.");
       expect(userPrompt).toContain("The jade seal cannot be destroyed.");
       expect(userPrompt).toContain("Track the mentor oath fallout.");
       expect(userPrompt).not.toContain("| 1 | Guild Trail |");
       expect(userPrompt).not.toContain("guild-route | 1 | mystery");
       expect(userPrompt).not.toContain("Guildmaster Ren secretly forged the harbor roster in chapter 140.");
       expect(userPrompt).not.toContain("| Guildmaster Ren | guild | swagger | loud | opportunistic | rival | stall Mara | seize seal |");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("compacts lower-priority revision context below the provider prompt budget", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-reviser-budget-test-"));
+    const bookDir = join(root, "book");
+    const storyDir = join(bookDir, "story");
+    await mkdir(join(storyDir, "outline"), { recursive: true });
+    const largeExcerpt = "这是一段低优先级的历史上下文，只用于验证修稿提示词预算压缩。".repeat(120);
+
+    await Promise.all([
+      writeFile(join(storyDir, "current_state.md"), "# 当前状态\n\n- 主角仍持有关键账本。\n", "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "# 伏笔池\n\n- H001 仍待推进。\n", "utf-8"),
+      writeFile(join(storyDir, "style_guide.md"), "# 文风\n\n保持克制。\n", "utf-8"),
+      writeFile(join(storyDir, "character_matrix.md"), "# 角色矩阵\n\n- 主角与导师互不信任。\n", "utf-8"),
+      writeFile(join(storyDir, "chapter_summaries.md"), "# 章节摘要\n", "utf-8"),
+      writeFile(join(storyDir, "outline", "story_frame.md"), "# 故事框架\n", "utf-8"),
+      writeFile(join(storyDir, "outline", "volume_map.md"), "# 卷纲\n", "utf-8"),
+    ]);
+
+    const agent = new ReviserAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: root,
+      maxPromptEstimatedTokens: 16_000,
+    });
+    const chatSpy = vi.spyOn(ReviserAgent.prototype as never, "chat" as never).mockResolvedValue({
+      content: [
+        "=== FIXED_ISSUES ===",
+        "- repaired",
+        "",
+        "=== REVISED_CONTENT ===",
+        "修订后的正文。",
+        "",
+        "=== UPDATED_STATE ===",
+        "状态卡",
+        "",
+        "=== UPDATED_HOOKS ===",
+        "伏笔池",
+      ].join("\n"),
+      usage: ZERO_USAGE,
+    });
+
+    try {
+      const chapterBody = "这是必须完整保留的待修正文。".repeat(180);
+      await agent.reviseChapter(bookDir, chapterBody, 1, [CRITICAL_ISSUE], "auto", "xuanhuan", {
+        chapterIntent: "# Chapter Intent\n\n## Goal\n修复连续性问题。\n",
+        contextPackage: {
+          chapter: 1,
+          selectedContext: Array.from({ length: 80 }, (_, index) => ({
+            source: `story/outline/section-${index}`,
+            reason: "Low-priority historical evidence.",
+            excerpt: `${largeExcerpt}${index}`,
+          })),
+        },
+        ruleStack: {
+          layers: [{ id: "L4", name: "current_task", precedence: 70, scope: "local" }],
+          sections: { hard: ["current_state"], soft: ["current_focus"], diagnostic: ["continuity_audit"] },
+          overrideEdges: [],
+          activeOverrides: [],
+        },
+        lengthSpec: buildLengthSpec(1_000, "zh"),
+      });
+
+      const messages = chatSpy.mock.calls[0]?.[0] as ReadonlyArray<{ content: string }>;
+      const estimatedTokens = messages.reduce((sum, message) => sum + estimateTextTokens(message.content), 0);
+      expect(estimatedTokens).toBeLessThanOrEqual(15_520);
+      expect(messages[1]?.content).toContain(chapterBody);
+      expect(messages[1]?.content).toContain("Fix the broken continuity");
+      expect(messages[1]?.content).not.toContain("story/outline/section-79");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

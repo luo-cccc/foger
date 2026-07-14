@@ -76,6 +76,8 @@ describe("ArchitectAgent", () => {
 
     const messages = chat.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
     expect(messages[0]?.content).toContain("MUST be written in English");
+    expect(messages[0]?.content).toContain("The requested 20 chapters are the TOTAL chapter count");
+    expect(messages[0]?.content).toContain("Chapter 20 is the book ending");
     expect(messages[1]?.content).toContain("Generate the complete foundation");
     expect(messages[1]?.content).not.toContain("请从中反向推导");
   });

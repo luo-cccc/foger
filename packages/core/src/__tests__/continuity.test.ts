@@ -394,13 +394,12 @@ describe("ContinuityAuditor", () => {
       },
       model: "test-model",
       projectRoot: root,
+      maxPromptEstimatedTokens: 16_000,
     });
     const chatSpy = vi.spyOn(ContinuityAuditor.prototype as never, "chat" as never).mockResolvedValue({
       content: JSON.stringify({ passed: true, issues: [], summary: "ok" }),
       usage: ZERO_USAGE,
     });
-    vi.stubEnv("INKOS_MAX_PROMPT_ESTIMATED_TOKENS_PER_CALL", "16000");
-
     try {
       const chapterBody = "这是必须完整保留的待审章节正文。".repeat(120);
       await auditor.auditChapter(bookDir, chapterBody, 1, "urban");

@@ -45,6 +45,8 @@ export abstract class BaseAgent {
     options?: {
       readonly temperature?: number;
       readonly maxTokens?: number;
+      /** Provider-specific request fields for this call only. */
+      readonly extra?: Readonly<Record<string, unknown>>;
       /** Override the project stream mode for atomic structured calls. */
       readonly stream?: boolean;
       /** P0: phase label for telemetry (e.g. "write", "settle", "audit", "plan"). */

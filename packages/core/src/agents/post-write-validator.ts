@@ -21,11 +21,18 @@ export function normalizePostWriteSurface(
   content: string,
   languageOverride?: "zh" | "en",
 ): string {
-  let normalized = stripPostWriteMetaLines(content);
+  let normalized = stripLeadingChapterHeading(stripPostWriteMetaLines(content));
   if (languageOverride !== "en") {
     normalized = normalized.replace(/——+/g, "，");
   }
   return normalized.trimEnd();
+}
+
+function stripLeadingChapterHeading(content: string): string {
+  return content.replace(
+    /^\s*#{1,6}\s*(?:(?:第\s*[零〇一二三四五六七八九十百千万两\d]+\s*章)(?:[^\r\n]*)?|Chapter\s+\d+(?::|\s+)[^\r\n]*|\d{1,4})\s*\r?\n+/iu,
+    "",
+  );
 }
 
 function stripPostWriteMetaLines(content: string): string {

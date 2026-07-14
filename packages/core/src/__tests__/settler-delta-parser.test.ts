@@ -2,6 +2,30 @@ import { describe, expect, it } from "vitest";
 import { parseSettlerDeltaOutput } from "../agents/settler-delta-parser.js";
 
 describe("parseSettlerDeltaOutput", () => {
+  it("normalizes blank optional current-state values to omitted patches", () => {
+    const result = parseSettlerDeltaOutput([
+      "=== RUNTIME_STATE_DELTA ===",
+      "```json",
+      JSON.stringify({
+        chapter: 1,
+        currentStatePatch: {
+          currentLocation: "  OCC检修间  ",
+          currentGoal: "",
+          currentConflict: "   ",
+        },
+        hookOps: { upsert: [], mention: [], resolve: [], defer: [] },
+        notes: [],
+      }),
+      "```",
+    ].join("\n"));
+
+    expect(result.runtimeStateDelta.currentStatePatch).toEqual({
+      currentLocation: "OCC检修间",
+      currentGoal: undefined,
+      currentConflict: undefined,
+    });
+  });
+
   it("parses a valid runtime-state delta block", () => {
     const result = parseSettlerDeltaOutput([
       "=== POST_SETTLEMENT ===",

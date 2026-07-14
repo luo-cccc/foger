@@ -93,13 +93,22 @@ export const CurrentStateStateSchema = z.object({
 
 export type CurrentStateState = z.infer<typeof CurrentStateStateSchema>;
 
+const OptionalCurrentStatePatchValueSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  },
+  z.string().min(1).optional(),
+);
+
 export const CurrentStatePatchSchema = z.object({
-  currentLocation: z.string().optional(),
-  protagonistState: z.string().optional(),
-  currentGoal: z.string().optional(),
-  currentConstraint: z.string().optional(),
-  currentAlliances: z.string().optional(),
-  currentConflict: z.string().optional(),
+  currentLocation: OptionalCurrentStatePatchValueSchema,
+  protagonistState: OptionalCurrentStatePatchValueSchema,
+  currentGoal: OptionalCurrentStatePatchValueSchema,
+  currentConstraint: OptionalCurrentStatePatchValueSchema,
+  currentAlliances: OptionalCurrentStatePatchValueSchema,
+  currentConflict: OptionalCurrentStatePatchValueSchema,
 });
 
 export type CurrentStatePatch = z.infer<typeof CurrentStatePatchSchema>;

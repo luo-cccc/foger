@@ -1,4 +1,5 @@
 export type PipelineDiagnosticKind =
+  | "foundation-fallback"
   | "planner-parse-retry"
   | "planner-fallback"
   | "canon-fallback"

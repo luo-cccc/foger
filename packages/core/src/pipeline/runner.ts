@@ -567,6 +567,7 @@ export class PipelineRunner {
     readonly sourceCanon?: string;
     readonly language: "zh" | "en";
     readonly stageLanguage: LengthLanguage;
+    readonly bookId?: string;
     readonly targetChapters?: number;
     readonly maxRetries?: number;
   }): Promise<ArchitectOutput> {
@@ -617,6 +618,29 @@ export class PipelineRunner {
     this.config.logger?.info(
       `Foundation final review: ${finalReview.totalScore}/100 ${finalReview.passed ? "PASSED" : "ACCEPTED (max retries)"}`,
     );
+    if (!finalReview.passed) {
+      this.emitDiagnostic({
+        kind: "foundation-fallback",
+        severity: "error",
+        agent: "foundation-reviewer",
+        phase: "foundation-review",
+        bookId: params.bookId,
+        attempt: maxRetries + 1,
+        maxAttempts: maxRetries + 1,
+        message: `Foundation review exhausted with score ${finalReview.totalScore}/100.`,
+        details: {
+          totalScore: finalReview.totalScore,
+          maxRetries,
+          mode: params.mode,
+          blockingIssues: finalReview.blockingIssues?.join(" | ") ?? "",
+        },
+      });
+      if (finalReview.blockingIssues && finalReview.blockingIssues.length > 0) {
+        throw new Error(
+          `Foundation scale validation failed after ${maxRetries + 1} review attempt(s): ${finalReview.blockingIssues.join("; ")}`,
+        );
+      }
+    }
 
     return foundation;
   }
@@ -908,6 +932,7 @@ export class PipelineRunner {
       mode: "original",
       language: resolvedLanguage,
       stageLanguage,
+      bookId: book.id,
       targetChapters: book.targetChapters,
     });
     try {
@@ -1184,6 +1209,7 @@ export class PipelineRunner {
       mode: "original",
       language: resolvedLanguage,
       stageLanguage,
+      bookId: book.id,
       targetChapters: book.targetChapters,
     });
 
@@ -2996,6 +3022,7 @@ ${matrix}`,
               mode: "series",
               language: resolvedLanguage === "en" ? "en" : "zh",
               stageLanguage: resolvedLanguage,
+              bookId: input.bookId,
               targetChapters: book.targetChapters,
             })
           : await architect.generateFoundationFromImport(book, foundationSource);

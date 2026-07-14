@@ -6,6 +6,7 @@ import type {
   Api,
 } from "@mariozechner/pi-ai";
 import type { LLMMessage, LLMResponse } from "../llm/provider.js";
+import { buildFoundationScalePlan } from "../utils/foundation-scale.js";
 
 export function isLlmStubEnabled(): boolean {
   return Boolean(process.env.INKOS_AGENT_LLM_STUB);
@@ -336,6 +337,58 @@ const FOUNDATION_SECTIONS = [
   ].join("\n"),
 ].join("\n");
 
+function renderStubFoundation(prompt: string): string {
+  const targetChapters = extractTargetChapters(prompt);
+  const plan = buildFoundationScalePlan(targetChapters);
+  const volumeMap = [
+    "# Volume Map",
+    "",
+    ...plan.ranges.flatMap((range) => {
+      const finalVolume = range.volume === plan.volumeCount;
+      return [
+        `## Volume ${range.volume} (Chapters ${range.startChapter}-${range.endChapter})`,
+        `Objective: ${finalVolume
+          ? "Complete the forged-ledger investigation, expose the harbor syndicate with public evidence, and resolve the Book Objective."
+          : "Advance the forged-ledger investigation from private suspicion to verified evidence while increasing institutional pressure."}`,
+        "KR1: Secure a new piece of physical ledger evidence whose origin can be independently verified.",
+        "KR2: Turn one reluctant contact into an active witness who changes the investigation's available choices.",
+        `KR3: ${finalVolume
+          ? "Present the complete evidence chain publicly and restore the hidden debt victims' names."
+          : "Prove that the fraud reaches beyond one clerk and identify the next institutional layer."}`,
+        `Irreversible Event: ${finalVolume
+          ? "Lin Yue attaches his own name to the public testimony and permanently loses the safety of anonymity."
+          : "Lin Yue preserves evidence the syndicate cannot quietly erase, making withdrawal impossible."}`,
+        "Protagonist Stage Goal: Move from defensive survival toward accountable public action.",
+        "Foreground Goal: Trace the burned ledger through manifests, seals, witnesses, and consequences.",
+        "Background Thread: Reveal how the harbor system rewrites obligation and legal identity.",
+        "",
+      ];
+    }),
+    "## Hook and payoff map",
+    "The harbor ledger fragment pays off the mentor trail, the forged debt notices pay off the system-level conspiracy, and the witness network pays off the possibility of public reversal. Each planned volume closes one practical loop while increasing the moral cost of the next decision.",
+    "",
+    "## Rhythm principles",
+    "Lead with action before explanation, let each reveal change the next decision immediately, and alternate pressure, verification, and consequence instead of repeating suspicion without new leverage.",
+  ].join("\n");
+
+  const lastVolume = plan.volumeCount;
+  return FOUNDATION_SECTIONS
+    .replace(
+      /(=== SECTION: volume_map ===\n)[\s\S]*?(\n=== SECTION: roles ===)/,
+      `$1${volumeMap}\n$2`,
+    )
+    .replaceAll("Volume 2 reveal", `Volume ${Math.min(2, lastVolume)} reveal`)
+    .replaceAll("volume-2", `volume-${Math.min(2, lastVolume)}`)
+    .replaceAll("Volume 3 public proof", `Volume ${Math.min(3, lastVolume)} public proof`)
+    .replaceAll("Volume 3 climax", `Volume ${Math.min(3, lastVolume)} climax`)
+    .replaceAll("volume-3", `volume-${Math.min(3, lastVolume)}`);
+}
+
+function extractTargetChapters(prompt: string): number {
+  const match = prompt.match(/(?:Target chapters|目标章数)\s*[：:]\s*(\d+)/iu);
+  return match?.[1] ? Number.parseInt(match[1], 10) : 12;
+}
+
 const FOUNDATION_REVIEW = [
   "=== DIMENSION: 1 ===",
   "Score: 88",
@@ -399,7 +452,7 @@ export function stubChatCompletion(
   if (looksLikeFoundationReviewerPrompt(joined)) {
     content = FOUNDATION_REVIEW;
   } else if (looksLikeArchitectFoundationPrompt(joined)) {
-    content = FOUNDATION_SECTIONS;
+    content = renderStubFoundation(joined);
   } else if (looksLikeStateValidatorPrompt(joined)) {
     content = "PASS";
   } else if (looksLikePlannerMemoPrompt(joined)) {

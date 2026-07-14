@@ -757,9 +757,13 @@ export class WriterAgent extends BaseAgent {
         .map((file) => rm(join(chaptersDir, file), { force: true })),
     );
 
+    const trimmedTitle = output.title.trim();
+    const titleIsChapterNumber = language === "en"
+      ? new RegExp(`^Chapter\\s+${output.chapterNumber}$`, "iu").test(trimmedTitle)
+      : new RegExp(`^第\\s*${output.chapterNumber}\\s*章$`, "u").test(trimmedTitle);
     const heading = language === "en"
-      ? `# Chapter ${output.chapterNumber}: ${output.title}`
-      : `# 第${output.chapterNumber}章 ${output.title}`;
+      ? `# Chapter ${output.chapterNumber}${titleIsChapterNumber ? "" : `: ${trimmedTitle}`}`
+      : `# 第${output.chapterNumber}章${titleIsChapterNumber ? "" : ` ${trimmedTitle}`}`;
     const chapterContent = [
       heading,
       "",

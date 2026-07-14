@@ -35,6 +35,7 @@ export function parseCreativeOutput(
   if (!title) {
     title = fallbackExtractTitle(content, chapterNumber, countingMode);
   }
+  title = normalizeChapterTitle(title, chapterNumber, countingMode);
 
   return {
     title,
@@ -50,8 +51,8 @@ export function parseCreativeOutput(
  * stripping metadata and returning the longest prose block.
  */
 function fallbackExtractContent(raw: string, countingMode: LengthCountingMode): string {
-  // Try markdown heading: # 第N章 ... followed by content
-  const headingMatch = raw.match(/^#\s*第\d+章[^\n]*\n+([\s\S]+)/m);
+  // Try markdown heading: # 第N章 / # 第五章 ... followed by content
+  const headingMatch = raw.match(/^#\s*第\s*[零〇一二三四五六七八九十百千万两\d]+\s*章[^\n]*\n+([\s\S]+)/m);
   if (headingMatch) {
     return headingMatch[1]!.trim();
   }
@@ -98,8 +99,8 @@ function fallbackExtractTitle(
   chapterNumber: number,
   countingMode: LengthCountingMode,
 ): string {
-  // Try: # 第N章 Title
-  const headingMatch = raw.match(/^#\s*第\d+章\s*(.+)/m);
+  // Try: # 第N章 Title / # 第五章 Title
+  const headingMatch = raw.match(/^#\s*第\s*[零〇一二三四五六七八九十百千万两\d]+\s*章\s*(.+)/m);
   if (headingMatch) {
     return headingMatch[1]!.trim();
   }
@@ -138,10 +139,15 @@ export function parseWriterOutput(
   };
 
   const chapterContent = extract("CHAPTER_CONTENT");
+  const title = normalizeChapterTitle(
+    extract("CHAPTER_TITLE") || defaultChapterTitle(chapterNumber, countingMode),
+    chapterNumber,
+    countingMode,
+  );
 
   return {
     chapterNumber,
-    title: extract("CHAPTER_TITLE") || defaultChapterTitle(chapterNumber, countingMode),
+    title,
     content: chapterContent,
     wordCount: countChapterLength(chapterContent, countingMode),
     preWriteCheck: extract("PRE_WRITE_CHECK"),
@@ -156,6 +162,22 @@ export function parseWriterOutput(
     updatedEmotionalArcs: extract("UPDATED_EMOTIONAL_ARCS"),
     updatedCharacterMatrix: extract("UPDATED_CHARACTER_MATRIX"),
   };
+}
+
+export function normalizeChapterTitle(
+  title: string,
+  chapterNumber: number,
+  countingMode: LengthCountingMode = "zh_chars",
+): string {
+  const trimmed = title.trim().replace(/^#{1,6}\s*/u, "");
+  const prefix = countingMode === "en_words"
+    ? new RegExp(`^Chapter\\s+${chapterNumber}(?:(?::|[\\s\\-–—])+|$)`, "iu")
+    : /^第\s*[零〇一二三四五六七八九十百千万两\d]+\s*章(?:(?:[：:\s\-–—])+|$)/u;
+  const hadPrefix = prefix.test(trimmed);
+  const withoutPrefix = trimmed.replace(prefix, "").trim();
+  if (withoutPrefix) return withoutPrefix;
+  if (hadPrefix) return defaultChapterTitle(chapterNumber, countingMode);
+  return trimmed || defaultChapterTitle(chapterNumber, countingMode);
 }
 
 function defaultChapterTitle(

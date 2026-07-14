@@ -4,7 +4,9 @@ import { parseArgs } from "node:util";
 import {
   BookConfigSchema,
   PipelineRunner,
+  Scheduler,
   StateManager,
+  UnattendedStateStore,
   chatCompletion,
   createLLMClient,
   deriveBookIdFromTitle,
@@ -19,9 +21,11 @@ const { values: args } = parseArgs({
   options: {
     chapters:     { type: "string", default: "5" },
     words:        { type: "string", default: "1000" },
-    "route-mode": { type: "string", default: "minimax-writer" },
+    "route-mode": { type: "string", default: "openrouter-only" },
     "review-mode": { type: "string", default: "manual" },
     "review-retries": { type: "string", default: "2" },
+    "foundation-review-retries": { type: "string", default: "1" },
+    "foundation-only": { type: "boolean", default: false },
     "timeout-ms": { type: "string", default: "300000" },
     "output":     { type: "string", default: ".tmp-dual-api-routing/reports" },
     "project-dir":{ type: "string", default: ".tmp-dual-api-routing" },
@@ -41,10 +45,19 @@ const { values: args } = parseArgs({
 const CHAPTER_COUNT = Math.max(1, Number(args.chapters) || 5);
 const WORDS_PER_CHAPTER = Math.max(1000, Number(args.words) || 1000);
 const ROUTE_MODE = args["route-mode"];
+const ROUTE_MODES = new Set(["openrouter-only", "minimax-writer", "minimax-governance"]);
+if (!ROUTE_MODES.has(ROUTE_MODE)) {
+  throw new Error(`Invalid --route-mode: ${ROUTE_MODE}`);
+}
 const REVIEW_MODE = args["review-mode"];
 const REVIEW_RETRIES = REVIEW_MODE === "auto"
   ? Math.max(0, Math.floor(Number(args["review-retries"]) || 0))
   : 0;
+const FOUNDATION_REVIEW_RETRIES = Math.max(
+  0,
+  Math.floor(Number(args["foundation-review-retries"]) || 0),
+);
+const FOUNDATION_ONLY = args["foundation-only"];
 const TIMEOUT_MS = Math.max(5000, Number(args["timeout-ms"]) || 300000);
 const RECOVERY_MODE = args["recovery-mode"];
 const RECOVERY_MODES = new Set(["none", "repair", "resync", "repair-then-resync"]);
@@ -103,6 +116,24 @@ const projectRoot = join(repoRoot, args["project-dir"]);
 const reportDir = join(projectRoot, "reports");
 const secretsPath = join(projectRoot, ".inkos", "secrets.json");
 
+let signalCleanupStarted = false;
+async function removeEphemeralSecret() {
+  await rm(secretsPath, { force: true }).catch(() => undefined);
+}
+
+function handleTerminationSignal(signal) {
+  if (signalCleanupStarted) return;
+  signalCleanupStarted = true;
+  void removeEphemeralSecret().finally(() => {
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  });
+}
+
+const onSigint = () => handleTerminationSignal("SIGINT");
+const onSigterm = () => handleTerminationSignal("SIGTERM");
+process.once("SIGINT", onSigint);
+process.once("SIGTERM", onSigterm);
+
 // ── Config ──────────────────────────────────────────────────────────────────
 
 const openrouterServiceId = "custom:OpenRouterLive";
@@ -113,7 +144,9 @@ const minimaxBaseUrl = "https://api.minimaxi.com/v1";
 const openrouterKey = process.env.OPENROUTER_API_KEY;
 const minimaxKey = process.env.MINIMAX_API_KEY;
 if (!openrouterKey) throw new Error("OPENROUTER_API_KEY is required");
-if (!minimaxKey) throw new Error("MINIMAX_API_KEY is required");
+if (ROUTE_MODE !== "openrouter-only" && !minimaxKey) {
+  throw new Error("MINIMAX_API_KEY is required for MiniMax route modes");
+}
 
 const minimaxOverride = {
   model: minimaxModel,
@@ -134,6 +167,7 @@ const minimaxGovernanceAgents = [
 const minimaxWriterAgents = ["writer", "reviser", "length-normalizer"];
 
 function routedAgents() {
+  if (ROUTE_MODE === "openrouter-only") return [];
   return ROUTE_MODE === "minimax-writer" ? minimaxWriterAgents : minimaxGovernanceAgents;
 }
 
@@ -158,7 +192,7 @@ function buildConfig() {
         { service: "minimax", baseUrl: minimaxBaseUrl, apiFormat: "chat", stream: false, temperature: 0.9 },
       ],
     },
-    foundation: { reviewRetries: 0 },
+    foundation: { reviewRetries: FOUNDATION_REVIEW_RETRIES },
     writing: { reviewRetries: REVIEW_RETRIES, reviewMode: REVIEW_MODE, revisionGate: "always" },
     notify: [],
     inputGovernanceMode: "v2",
@@ -309,18 +343,33 @@ function buildQualityGate(report) {
   const timeoutRate = telemetry.calls === 0 ? 0 : telemetry.statuses.timeout / telemetry.calls;
   const hardRangeRate = report.lengthSummary.hardRangeRate;
   const fallbackCount = report.diagnosticSummary.fallbackCount;
+  const completedChapterCount = report.chapters.length;
+  const auditFailed = report.chapters.filter((chapter) => chapter.status === "audit-failed").length;
   const unrecoveredStateDegraded = report.chapters.filter((chapter) => chapter.status === "state-degraded").length;
   const chapterBudgetFailures = report.chapters.filter((chapter) => chapter.tokenBudget && !chapter.tokenBudget.passed).length;
   const checks = {
-    retryRate: { actual: retryRate, maximum: MAX_RETRY_RATE, passed: retryRate <= MAX_RETRY_RATE },
+    retryRate: {
+      actual: retryRate,
+      maximum: MAX_RETRY_RATE,
+      enforced: !FOUNDATION_ONLY,
+      passed: FOUNDATION_ONLY || retryRate <= MAX_RETRY_RATE,
+    },
     timeoutRate: { actual: timeoutRate, maximum: MAX_TIMEOUT_RATE, passed: timeoutRate <= MAX_TIMEOUT_RATE },
     fallbackCount: { actual: fallbackCount, maximum: MAX_FALLBACKS, passed: fallbackCount <= MAX_FALLBACKS },
-    hardRangeRate: {
-      actual: hardRangeRate,
-      minimum: MIN_HARD_RANGE_RATE,
-      passed: hardRangeRate !== null && hardRangeRate >= MIN_HARD_RANGE_RATE,
-    },
-    unrecoveredStateDegraded: { actual: unrecoveredStateDegraded, maximum: 0, passed: unrecoveredStateDegraded === 0 },
+    ...(FOUNDATION_ONLY ? {} : {
+      completedChapterCount: {
+        actual: completedChapterCount,
+        expected: CHAPTER_COUNT,
+        passed: completedChapterCount === CHAPTER_COUNT,
+      },
+      auditFailed: { actual: auditFailed, maximum: 0, passed: auditFailed === 0 },
+      hardRangeRate: {
+        actual: hardRangeRate,
+        minimum: MIN_HARD_RANGE_RATE,
+        passed: hardRangeRate !== null && hardRangeRate >= MIN_HARD_RANGE_RATE,
+      },
+      unrecoveredStateDegraded: { actual: unrecoveredStateDegraded, maximum: 0, passed: unrecoveredStateDegraded === 0 },
+    }),
     tokenBudget: {
       actual: report.tokenBudget.total.totalTokens,
       violations: report.tokenBudget.violations,
@@ -441,6 +490,8 @@ async function main() {
       wordsPerChapter: WORDS_PER_CHAPTER,
       reviewMode: REVIEW_MODE,
       reviewRetries: REVIEW_RETRIES,
+      foundationReviewRetries: FOUNDATION_REVIEW_RETRIES,
+      foundationOnly: FOUNDATION_ONLY,
       timeoutMs: TIMEOUT_MS,
       recoveryMode: RECOVERY_MODE,
       tokenBudget: {
@@ -503,38 +554,40 @@ async function main() {
     await flushReport();
 
     // ── Smoke: MiniMax ───────────────────────────────────────────────────────
-    const minimaxClient = createLLMClient({
-      provider: "openai", service: "minimax", configSource: "env",
-      baseUrl: minimaxBaseUrl, apiKey: minimaxKey, model: minimaxModel,
-      temperature: 0.7, apiFormat: "chat", stream: false,
-    });
-    const mmStart = Date.now();
-    const minimaxSmoke = await chatCompletion(
-      minimaxClient, minimaxModel,
-      [
-        { role: "system", content: "你是严格的连通性测试助手。" },
-        { role: "user", content: "用一句中文回答：MiniMax 已连通。不要超过 20 个字。" },
-      ],
-      {
-        maxTokens: 80,
-        temperature: 0.2,
-        retry: true,
-        timeoutMs: TIMEOUT_MS,
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-        onCallTelemetry: (telemetry) => allTelemetry.push(telemetry),
-        agentName: "smoke-minimax",
-        callPhase: "smoke",
-      },
-    );
-    report.smoke.minimax = {
-      content: minimaxSmoke.content.trim(),
-      usage: minimaxSmoke.usage,
-      service: minimaxClient.service,
-      apiFormat: minimaxClient.apiFormat,
-      stream: minimaxClient.stream,
-      latencyMs: Date.now() - mmStart,
-    };
-    await flushReport();
+    if (ROUTE_MODE !== "openrouter-only") {
+      const minimaxClient = createLLMClient({
+        provider: "openai", service: "minimax", configSource: "env",
+        baseUrl: minimaxBaseUrl, apiKey: minimaxKey, model: minimaxModel,
+        temperature: 0.7, apiFormat: "chat", stream: false,
+      });
+      const mmStart = Date.now();
+      const minimaxSmoke = await chatCompletion(
+        minimaxClient, minimaxModel,
+        [
+          { role: "system", content: "你是严格的连通性测试助手。" },
+          { role: "user", content: "用一句中文回答：MiniMax 已连通。不要超过 20 个字。" },
+        ],
+        {
+          maxTokens: 80,
+          temperature: 0.2,
+          retry: true,
+          timeoutMs: TIMEOUT_MS,
+          signal: AbortSignal.timeout(TIMEOUT_MS),
+          onCallTelemetry: (telemetry) => allTelemetry.push(telemetry),
+          agentName: "smoke-minimax",
+          callPhase: "smoke",
+        },
+      );
+      report.smoke.minimax = {
+        content: minimaxSmoke.content.trim(),
+        usage: minimaxSmoke.usage,
+        service: minimaxClient.service,
+        apiFormat: minimaxClient.apiFormat,
+        stream: minimaxClient.stream,
+        latencyMs: Date.now() - mmStart,
+      };
+      await flushReport();
+    }
 
     // ── Routing probe ────────────────────────────────────────────────────────
     const pipeline = new PipelineRunner(makePipelineConfig(loaded, projectRoot, logHandle));
@@ -567,84 +620,57 @@ async function main() {
       report.warnings.push("pre-chapter gate failed; skipped chapter generation");
       await flushReport();
     }
-    const chaptersToRun = report.preChapterGate.passed ? CHAPTER_COUNT : 0;
-    for (let i = 0; i < chaptersToRun; i++) {
-      const chStart = Date.now();
-      const beforeCount = allTelemetry.length;
-      const beforeDiagnostics = allDiagnostics.length;
-      let result = await pipeline.writeNextChapter(bookId, WORDS_PER_CHAPTER);
-      const chapterRecords = allTelemetry.slice(beforeCount);
-      const chapterReport = {
-        chapterNumber: result.chapterNumber,
-        title: result.title,
-        wordCount: result.wordCount,
-        auditPassed: result.auditResult.passed,
-        auditSummary: result.auditResult.summary,
-        auditScore: result.auditResult.overallScore,
-        auditIssues: result.auditResult.issues,
-        reviewAttempts: result.reviewAttempts,
-        issueCount: result.auditResult.issues.length,
-        revised: result.revised,
-        initialStatus: result.status,
-        status: result.status,
-        durationMs: Date.now() - chStart,
-        length: buildLengthReport(result.lengthTelemetry, result.lengthWarnings),
-        tokenBudget: buildLLMTokenBudgetReport(chapterRecords, {
-          ...(MAX_CHAPTER_TOKENS !== undefined ? { maxTotalTokens: MAX_CHAPTER_TOKENS } : {}),
-          ...(MAX_PROMPT_TOKENS_PER_CALL !== undefined
-            ? { maxPromptEstimatedTokensPerCall: MAX_PROMPT_TOKENS_PER_CALL }
-            : {}),
-        }),
-        recovery: { mode: RECOVERY_MODE, attempts: [] },
-      };
-      report.chapters.push(chapterReport);
-      await flushReport();
-
-      if (result.status === "state-degraded") {
-        report.warnings.push(`state-degraded after chapter ${result.chapterNumber}`);
-        const operations = RECOVERY_MODE === "repair-then-resync"
-          ? ["repair", "resync"]
-          : RECOVERY_MODE === "none" ? [] : [RECOVERY_MODE];
-        for (const operation of operations) {
-          const attempt = await runRecoveryAttempt({
-            pipeline,
-            operation,
-            bookId,
-            chapterNumber: result.chapterNumber,
-            statusBefore: result.status,
-          });
-          chapterReport.recovery.attempts.push(attempt.report);
-          if (attempt.result) result = attempt.result;
-          chapterReport.status = result.status;
-          await flushReport();
-          if (result.status !== "state-degraded") break;
-        }
-      }
-      chapterReport.wordCount = result.wordCount;
-      chapterReport.auditPassed = result.auditResult.passed;
-      chapterReport.auditSummary = result.auditResult.summary;
-      chapterReport.auditScore = result.auditResult.overallScore;
-      chapterReport.auditIssues = result.auditResult.issues;
-      chapterReport.reviewAttempts = result.reviewAttempts;
-      chapterReport.issueCount = result.auditResult.issues.length;
-      chapterReport.revised = result.revised;
-      chapterReport.status = result.status;
-      chapterReport.durationMs = Date.now() - chStart;
-      chapterReport.length = buildLengthReport(result.lengthTelemetry, result.lengthWarnings);
-      chapterReport.telemetry = summarizeLLMCallTelemetry(allTelemetry.slice(beforeCount));
-      chapterReport.tokenBudget = buildLLMTokenBudgetReport(allTelemetry.slice(beforeCount), {
-        ...(MAX_CHAPTER_TOKENS !== undefined ? { maxTotalTokens: MAX_CHAPTER_TOKENS } : {}),
-        ...(MAX_PROMPT_TOKENS_PER_CALL !== undefined
-          ? { maxPromptEstimatedTokensPerCall: MAX_PROMPT_TOKENS_PER_CALL }
-          : {}),
+    const chapterRuns = new Map();
+    const latestChapterResults = new Map();
+    let telemetryCursor = allTelemetry.length;
+    let diagnosticCursor = allDiagnostics.length;
+    if (report.preChapterGate.passed && !FOUNDATION_ONLY) {
+      const scheduler = new Scheduler({
+        ...makePipelineConfig(loaded, projectRoot, logHandle),
+        writeCron: "0 0 * * *",
+        maxConcurrentBooks: 1,
+        chaptersPerCycle: CHAPTER_COUNT,
+        retryDelayMs: 5_000,
+        cooldownAfterChapterMs: 0,
+        maxChaptersPerDay: CHAPTER_COUNT,
+        qualityGates: {
+          maxAuditRetries: REVIEW_RETRIES,
+          pauseAfterConsecutiveFailures: Math.max(3, REVIEW_RETRIES + 1),
+          retryTemperatureStep: 0,
+          maxChapterTokens: MAX_CHAPTER_TOKENS ?? Number.MAX_SAFE_INTEGER,
+          maxPromptTokensPerCall: MAX_PROMPT_TOKENS_PER_CALL ?? Number.MAX_SAFE_INTEGER,
+          maxRetryRate: MAX_RETRY_RATE,
+          maxTimeoutRate: MAX_TIMEOUT_RATE,
+          maxFallbacksPerChapter: MAX_FALLBACKS,
+          minHardRangeRate: MIN_HARD_RANGE_RATE,
+        },
+        onChapterResult: (_completedBookId, result) => {
+          latestChapterResults.set(result.chapterNumber, result);
+        },
+        onChapterComplete: (_completedBookId, chapterNumber, status) => {
+          const existing = chapterRuns.get(chapterNumber) ?? {
+            telemetry: [],
+            diagnostics: [],
+            statuses: [],
+          };
+          existing.telemetry.push(...allTelemetry.slice(telemetryCursor));
+          existing.diagnostics.push(...allDiagnostics.slice(diagnosticCursor));
+          existing.statuses.push(status);
+          chapterRuns.set(chapterNumber, existing);
+          telemetryCursor = allTelemetry.length;
+          diagnosticCursor = allDiagnostics.length;
+        },
+        onError: (_failedBookId, error) => {
+          report.warnings.push(`unattended provider/action error: ${error.message}`);
+        },
+        onPause: (_pausedBookId, reason) => {
+          report.warnings.push(`unattended scheduler paused: ${reason}`);
+        },
       });
-      chapterReport.diagnostics = allDiagnostics.slice(beforeDiagnostics);
+      await scheduler.runOnce();
+      report.unattendedState = (await new UnattendedStateStore(projectRoot).load()).books[bookId];
+      report.unassignedTelemetry = summarizeLLMCallTelemetry(allTelemetry.slice(telemetryCursor));
       await flushReport();
-      if (result.status === "state-degraded") break;
-      if (result.status === "audit-failed") {
-        report.warnings.push(`audit-failed after chapter ${result.chapterNumber}`);
-        break;
-      }
     }
 
     // ── Health checks ────────────────────────────────────────────────────────
@@ -655,6 +681,43 @@ async function main() {
       : Array.isArray(chaptersIndex?.chapters)
         ? chaptersIndex.chapters
         : [];
+    report.chapters = chapterEntries.map((chapter) => {
+      const result = latestChapterResults.get(chapter.number);
+      const run = chapterRuns.get(chapter.number) ?? {
+        telemetry: [],
+        diagnostics: [],
+        statuses: [],
+      };
+      const auditIssues = result?.auditResult?.issues ?? chapter.auditIssues ?? [];
+      return {
+        chapterNumber: chapter.number,
+        title: chapter.title,
+        wordCount: chapter.wordCount,
+        auditPassed: chapter.status === "ready-for-review",
+        auditSummary: result?.auditResult?.summary,
+        auditScore: result?.auditResult?.overallScore,
+        auditIssues,
+        reviewAttempts: result?.reviewAttempts,
+        issueCount: auditIssues.length,
+        revised: result?.revised ?? false,
+        initialStatus: result?.status,
+        status: chapter.status,
+        durationMs: run.telemetry.reduce((sum, record) => sum + record.durationMs, 0),
+        length: buildLengthReport(chapter.lengthTelemetry, chapter.lengthWarnings),
+        telemetry: summarizeLLMCallTelemetry(run.telemetry),
+        tokenBudget: buildLLMTokenBudgetReport(run.telemetry, {
+          ...(MAX_CHAPTER_TOKENS !== undefined ? { maxTotalTokens: MAX_CHAPTER_TOKENS } : {}),
+          ...(MAX_PROMPT_TOKENS_PER_CALL !== undefined
+            ? { maxPromptEstimatedTokensPerCall: MAX_PROMPT_TOKENS_PER_CALL }
+            : {}),
+        }),
+        diagnostics: run.diagnostics,
+        recovery: {
+          mode: "unattended-state-machine",
+          statuses: run.statuses,
+        },
+      };
+    });
     report.health = {
       chaptersIndex: { chapterCount: chapterEntries.length },
       currentStateMd: await fileHealth(join(bookRoot, "story", "current_state.md")),
@@ -719,9 +782,11 @@ async function main() {
       report: reportPath,
     }, null, 2));
   } finally {
+    process.removeListener("SIGINT", onSigint);
+    process.removeListener("SIGTERM", onSigterm);
     logHandle.end();
     await new Promise((resolveEnd) => logHandle.on("finish", resolveEnd));
-    await rm(secretsPath, { force: true });
+    await removeEphemeralSecret();
   }
 
   // ── Secret leak scan ───────────────────────────────────────────────────────

@@ -243,8 +243,8 @@ function applyCurrentStatePatch(
     keyof typeof labels,
     string[],
   ]>) {
-    const value = delta.currentStatePatch[patchKey];
-    if (value === undefined) continue;
+    const value = delta.currentStatePatch[patchKey]?.trim();
+    if (!value) continue;
 
     for (let index = nextFacts.length - 1; index >= 0; index -= 1) {
       const predicate = nextFacts[index]?.predicate ?? "";

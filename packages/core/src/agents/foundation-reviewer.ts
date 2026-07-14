@@ -1,5 +1,6 @@
 import { BaseAgent } from "./base.js";
 import type { ArchitectOutput } from "./architect.js";
+import { validateFoundationVolumeScale } from "../utils/foundation-scale.js";
 
 export interface FoundationReviewResult {
   readonly passed: boolean;
@@ -10,6 +11,7 @@ export interface FoundationReviewResult {
     readonly feedback: string;
   }>;
   readonly overallFeedback: string;
+  readonly blockingIssues?: ReadonlyArray<string>;
 }
 
 const PASS_THRESHOLD = 80;
@@ -50,7 +52,41 @@ export class FoundationReviewerAgent extends BaseAgent {
       { role: "user", content: userPrompt },
     ], { temperature: 0.3, stream: false, callPhase: "foundation-review" });
 
-    return this.parseReviewResult(response.content, dimensions);
+    const parsed = this.parseReviewResult(response.content, dimensions);
+    if (params.mode !== "original" || params.targetChapters === undefined) {
+      return parsed;
+    }
+
+    const scaleIssues = validateFoundationVolumeScale(
+      params.foundation.volumeMap ?? params.foundation.volumeOutline,
+      params.targetChapters,
+    );
+    if (scaleIssues.length === 0) return parsed;
+
+    const blockingIssues = scaleIssues.map((issue) => (
+      params.language === "en" ? issue.en : issue.zh
+    ));
+    const dimensionsWithGate = parsed.dimensions.map((dimension, index) => (
+      index === parsed.dimensions.length - 1
+        ? {
+            ...dimension,
+            score: Math.min(dimension.score, 40),
+            feedback: `${blockingIssues.join("\n")}\n${dimension.feedback}`,
+          }
+        : dimension
+    ));
+    const averagedScore = dimensionsWithGate.length > 0
+      ? Math.round(dimensionsWithGate.reduce((sum, dimension) => sum + dimension.score, 0) / dimensionsWithGate.length)
+      : 0;
+    const totalScore = Math.min(PASS_THRESHOLD - 1, averagedScore);
+
+    return {
+      passed: false,
+      totalScore,
+      dimensions: dimensionsWithGate,
+      overallFeedback: `${blockingIssues.join("\n")}\n${parsed.overallFeedback}`,
+      blockingIssues,
+    };
   }
 
   private originalDimensions(language: "zh" | "en", targetChapters?: number): ReadonlyArray<string> {

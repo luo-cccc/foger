@@ -44,6 +44,17 @@ describe("validatePostWrite", () => {
     expect(normalized).toBe("他把U盘攥进手心，回头看了一眼档案室的黑窗。");
   });
 
+  it("strips a model-generated chapter heading from the persisted body", () => {
+    expect(normalizePostWriteSurface("# 4\n\n张恒把工具箱放到墙角。"))
+      .toBe("张恒把工具箱放到墙角。");
+    expect(normalizePostWriteSurface("# 第5章 防爆门\n\n林默按下门禁键。"))
+      .toBe("林默按下门禁键。");
+    expect(normalizePostWriteSurface("# 第五章 防爆门\n\n林默按下门禁键。"))
+      .toBe("林默按下门禁键。");
+    expect(normalizePostWriteSurface("# Chapter 5: Blast Door\n\nLin pressed the key.", "en"))
+      .toBe("Lin pressed the key.");
+  });
+
   it("returns no violations for clean content", () => {
     const content = "他走过去，端起杯子，灌了一口。外面的雨越下越大。\n\n她站在窗前，看着街上的行人匆匆走过。";
     const result = validatePostWrite(content, baseProfile, null);

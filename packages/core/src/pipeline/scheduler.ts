@@ -1,5 +1,5 @@
 import { PipelineRunner } from "./runner.js";
-import type { PipelineConfig } from "./runner.js";
+import type { ChapterPipelineResult, PipelineConfig } from "./runner.js";
 import { StateManager } from "../state/manager.js";
 import type { BookConfig } from "../models/book.js";
 import type { QualityGates, DetectionConfig } from "../models/project.js";
@@ -32,6 +32,7 @@ export interface SchedulerConfig extends PipelineConfig {
   readonly qualityGates?: QualityGates;
   readonly detection?: DetectionConfig;
   readonly onChapterComplete?: (bookId: string, chapter: number, status: string) => void;
+  readonly onChapterResult?: (bookId: string, result: ChapterPipelineResult) => void;
   readonly onError?: (bookId: string, error: Error) => void;
   readonly onPause?: (bookId: string, reason: string) => void;
 }
@@ -112,6 +113,20 @@ export class Scheduler {
       });
     }, writeCycleMs);
     this.tasks.push(writeTask);
+  }
+
+  /** Run exactly one write cycle without installing a recurring timer. */
+  async runOnce(): Promise<void> {
+    if (this.running) {
+      throw new Error("Scheduler is already running");
+    }
+    await this.restoreUnattendedState();
+    this.running = true;
+    try {
+      await this.triggerWriteCycle();
+    } finally {
+      this.running = false;
+    }
   }
 
   stop(): void {
@@ -450,6 +465,7 @@ export class Scheduler {
         : undefined;
 
       const result = await this.pipeline.writeNextChapter(bookId, undefined, tempOverride);
+      this.config.onChapterResult?.(bookId, result);
 
       if (result.status === "ready-for-review") {
         return await this.completeChapter(

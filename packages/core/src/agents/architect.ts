@@ -11,6 +11,10 @@ import {
   type VolumeBoundary,
 } from "../utils/hook-promotion.js";
 import type { StoredHook } from "../state/memory-db.js";
+import {
+  normalizeFoundationVolumeContracts,
+  renderFoundationScaleGuidance,
+} from "../utils/foundation-scale.js";
 
 // ---------------------------------------------------------------------------
 // Phase 5 (v13) — Static 骨架 layer collapse
@@ -156,7 +160,7 @@ export class ArchitectAgent extends BaseAgent {
       { role: "user", content: userMessage },
     ], { temperature: 0.8, stream: false, callPhase: "architect" });
 
-    return this.parseSectionsWithRepair(response.content, resolvedLanguage);
+    return this.parseSectionsWithRepair(response.content, resolvedLanguage, book.targetChapters);
   }
 
   private buildRevisePrompt(reviseFrom: {
@@ -209,6 +213,7 @@ ${reviseFrom.userFeedback || "（无）"}
     powerBlock: string,
     eraBlock: string,
   ): string {
+    const scaleGuidance = renderFoundationScaleGuidance(book.targetChapters, "zh");
     return `你是这本书的总架构师。你的唯一输出是**散文密度的基础设定**——不是表格、不是 schema、不是条目化 bullet。v6 以后这本书的"灵气"从哪里来？从你这里来。你的散文密度决定了后面 planner 能不能读出"稀疏 memo"，writer 能不能写出活人，reviewer 能不能校准硬伤。${contextBlock}${reviewFeedbackBlock}
 
 ## 书籍元信息
@@ -217,6 +222,8 @@ ${reviseFrom.userFeedback || "（无）"}
 - 目标章数：${book.targetChapters}章
 - 每章字数：${book.chapterWordCount}字
 - 标题：${book.title}
+
+${scaleGuidance}
 
 ## 题材底色
 ${genreBody}
@@ -283,7 +290,7 @@ ${eraBlock}
 - **Objective（卷级目标）**：本卷结束时主角必须达成的**可验证状态**，一句话，与全书 Objective 逻辑递进相连（例：全书 O = "成为宗门长老并公开冤案"；卷 1 O = "从杂役转入正式弟子籍并拿到第一份能指向真相的线索"）
 - **Key Results（3 条，可量化/可观察）**：支撑该 O 达成的三个关键子成果，每条必须是外部观察者能判定是否完成的状态变更（例 KR1 = "拿下药园执事位置"、KR2 = "与灵安峰结成稳定盟约"、KR3 = "发现父辈案卷的第一半页残片"）。不要写"变强"、"成长"这类模糊 KR
 
-次要角色的阶段性变化也要点到（师父在第 2 卷会死、对手在第 3 卷会黑化等），写在 KR 条目下作为附注。写阶段性，不写完整弧线（完整弧线在 roles）。**每一卷 3 个 KR 是下游 planner 分解章节任务的直接依据——planner 拿到一卷的 3 个 KR 后，按每 3-5 章推进一个 KR 的节奏排章。**
+次要角色的阶段性变化也要点到（师父在第 2 卷会死、对手在第 3 卷会黑化等），写在 KR 条目下作为附注。写阶段性，不写完整弧线（完整弧线在 roles）。**每一卷 3 个 KR 是下游 planner 分解章节任务的直接依据。KR 必须全部装进上方“全书尺度合同”分配的章节范围；交付间距按尺度合同计算，禁止再机械套用固定 3-5 章。**
 
 ### 段 4：卷尾必须发生的改变
 每一卷最后一章必须发生什么不可逆的事——权力结构改变、关系破裂、秘密暴露、主角身份重定位。写散文，一卷一段。**只写"必须发生什么"，不指定是第几章**。
@@ -415,6 +422,7 @@ ${gp.eraResearch ? `## 年代限制
     powerBlock: string,
     eraBlock: string,
   ): string {
+    const scaleGuidance = renderFoundationScaleGuidance(book.targetChapters, "en");
     return `You are the architect of this book. Your only job is to produce **prose-density foundation design** — not tables, not schema, not bullet lists. The book's aura comes from your prose density: Phase 3 planner reads sparse memos out of your volume_map only if it was written to chapter-level prose; the writer only produces living characters because your role sheets carry contrast details; the reviewer only catches hard errors because your story_frame set the tonal anchors.${contextBlock}${reviewFeedbackBlock}
 
 ## Book metadata
@@ -423,6 +431,8 @@ ${gp.eraResearch ? `## 年代限制
 - Target chapters: ${book.targetChapters}
 - Chapter length: ${book.chapterWordCount}
 - Title: ${book.title}
+
+${scaleGuidance}
 
 ## Genre body
 ${genreBody}
@@ -489,7 +499,7 @@ Recursive OKR outline that decomposes the Book Objective (root O set at the end 
 - **Objective (volume-level goal)**: a **verifiable state** the protagonist must reach by volume end, one sentence, logically chained to the Book Objective (e.g., if Book O = "become sect elder and vindicate the parental case", then Vol 1 O = "move from errand disciple into the registered disciple roster and recover the first lead pointing to the truth")
 - **Key Results (3 items, quantifiable / observable)**: three concrete sub-achievements whose completion can be checked by an outside observer (e.g., KR1 = "take over the pharmacy garden steward seat", KR2 = "lock in a stable alliance with Lingan Peak", KR3 = "uncover the first half-page fragment of the parental case file"). No vague KRs like "gets stronger" / "matures".
 
-Supporting characters' stage changes (master dies end of vol 2, opponent breaks bad in vol 3) go as notes under the relevant KR. Stage only — full arc lives in roles. **The 3 KRs per volume are the direct input for the planner: once it sees 3 KRs for a volume, it paces chapter tasks at roughly one KR advanced every 3-5 chapters.**
+Supporting characters' stage changes (master dies end of vol 2, opponent breaks bad in vol 3) go as notes under the relevant KR. Stage only — full arc lives in roles. **The 3 KRs per volume are the direct input for the planner. All three must fit inside the chapter range assigned by the whole-book scale contract; use that contract's delivery cadence instead of a fixed 3-5 chapters per KR.**
 
 ## 04_Volume_End_Mandatory_Changes
 Each volume's last chapter must contain an irreversible event. Prose, one paragraph per volume. **Write what must happen, not which chapter**.
@@ -606,9 +616,13 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
   // -------------------------------------------------------------------------
   // Parsing
   // -------------------------------------------------------------------------
-  private async parseSectionsWithRepair(content: string, language: "zh" | "en"): Promise<ArchitectOutput> {
+  private async parseSectionsWithRepair(
+    content: string,
+    language: "zh" | "en",
+    targetChapters?: number,
+  ): Promise<ArchitectOutput> {
     try {
-      return this.parseSections(content, language);
+      return this.parseSections(content, language, targetChapters);
     } catch (error) {
       if (!(error instanceof MissingArchitectSectionsError)) {
         throw error;
@@ -616,7 +630,7 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
 
       const repaired = await this.repairMissingSections(error, language);
       try {
-        return this.parseSections(repaired, language);
+        return this.parseSections(repaired, language, targetChapters);
       } catch (repairError) {
         if (repairError instanceof MissingArchitectSectionsError) {
           const missing = repairError.missing.join("、");
@@ -697,7 +711,11 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
     return `${error.content.trim()}\n\n${repairContent.trim()}`;
   }
 
-  private parseSections(content: string, language: "zh" | "en"): ArchitectOutput {
+  private parseSections(
+    content: string,
+    language: "zh" | "en",
+    targetChapters?: number,
+  ): ArchitectOutput {
     const parsedSections = this.parseArchitectSectionMap(content);
 
     // Phase 5 new sections take precedence.
@@ -736,7 +754,10 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
 
     const missing: string[] = [];
     const effectiveStoryFrame = storyFrame || legacyStoryBible;
-    const effectiveVolumeMap = volumeMap || legacyVolumeOutline;
+    const effectiveVolumeMapRaw = volumeMap || legacyVolumeOutline;
+    const effectiveVolumeMap = targetChapters === undefined
+      ? effectiveVolumeMapRaw
+      : normalizeFoundationVolumeContracts(effectiveVolumeMapRaw, targetChapters, language);
     if (!effectiveStoryFrame) missing.push("story_frame");
     if (!effectiveVolumeMap) missing.push("volume_map");
     if (roles.length === 0 && !usingLegacyOutlineNames) missing.push("roles");
@@ -1075,6 +1096,7 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
           : "- 本题材无数值系统");
 
     const isSeries = options?.importMode === "series";
+    const scaleGuidance = renderFoundationScaleGuidance(book.targetChapters, resolvedLanguage);
 
     const continuationDirective = resolvedLanguage === "en"
       ? (isSeries
@@ -1098,6 +1120,8 @@ Naturally extend the existing arc. Advance existing conflicts, pay off planted h
 - Target chapters: ${book.targetChapters}
 - Chapter length: ${book.chapterWordCount}
 
+${scaleGuidance}
+
 ## Genre body
 ${genreBody}
 
@@ -1118,6 +1142,8 @@ All output MUST be written in English.`
 - 平台：${book.platform}
 - 题材：${gp.name}（${book.genre}）
 - 目标章数：${book.targetChapters}章
+
+${scaleGuidance}
 
 ## 题材底色
 ${genreBody}
@@ -1140,7 +1166,7 @@ ${continuationDirective}
       { role: "user", content: userMessage },
     ], { temperature: 0.5, stream: false, callPhase: "architect-import" });
 
-    return this.parseSectionsWithRepair(response.content, resolvedLanguage);
+    return this.parseSectionsWithRepair(response.content, resolvedLanguage, book.targetChapters);
   }
 
   // -------------------------------------------------------------------------

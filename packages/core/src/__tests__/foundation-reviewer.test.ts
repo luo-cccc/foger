@@ -71,6 +71,94 @@ describe("FoundationReviewerAgent", () => {
     expect(messages[0]?.content).not.toContain("连续10章");
   });
 
+  it("deterministically rejects a multi-volume expansion of a compact complete book", async () => {
+    const agent = new FoundationReviewerAgent({
+      client: TEST_CLIENT,
+      model: "test-model",
+      projectRoot: process.cwd(),
+    });
+    vi.spyOn(
+      agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> },
+      "chat",
+    ).mockResolvedValue({
+      content: [
+        ...Array.from({ length: 5 }, (_, index) => [
+          `=== DIMENSION: ${index + 1} ===`,
+          "分数：90",
+          "意见：模型认为可用",
+        ]).flat(),
+        "=== OVERALL ===",
+        "总分：90",
+        "通过：是",
+        "总评：可开写。",
+      ].join("\n"),
+      usage: ZERO_USAGE,
+    });
+
+    const result = await agent.review({
+      language: "zh",
+      mode: "original",
+      targetChapters: 5,
+      foundation: {
+        storyBible: "故事框架",
+        volumeOutline: "全书共5卷。\n第1卷发现录音。\n第5卷解决事故。",
+        bookRules: "规则",
+        currentState: "状态",
+        pendingHooks: "伏笔",
+      },
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.totalScore).toBeLessThan(80);
+    expect(result.blockingIssues).toEqual(expect.arrayContaining([
+      expect.stringContaining("目标5章只能规划1卷"),
+    ]));
+    expect(result.dimensions.at(-1)?.score).toBe(40);
+  });
+
+  it("deterministically rejects a prose-only volume map that yields no runtime contract", async () => {
+    const agent = new FoundationReviewerAgent({
+      client: TEST_CLIENT,
+      model: "test-model",
+      projectRoot: process.cwd(),
+    });
+    vi.spyOn(
+      agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> },
+      "chat",
+    ).mockResolvedValue({
+      content: [
+        ...Array.from({ length: 5 }, (_, index) => [
+          `=== DIMENSION: ${index + 1} ===`,
+          "分数：90",
+          "意见：模型认为可用",
+        ]).flat(),
+        "=== OVERALL ===",
+        "总分：90",
+        "通过：是",
+        "总评：可开写。",
+      ].join("\n"),
+      usage: ZERO_USAGE,
+    });
+
+    const result = await agent.review({
+      language: "zh",
+      mode: "original",
+      targetChapters: 5,
+      foundation: {
+        storyBible: "故事框架",
+        volumeOutline: "本书共1卷。\n第1卷覆盖第1-5章，但没有执行合同字段。",
+        bookRules: "规则",
+        currentState: "状态",
+        pendingHooks: "伏笔",
+      },
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.blockingIssues).toEqual([
+      expect.stringContaining("实际解析到0个"),
+    ]);
+  });
+
   it("does not silently truncate foundation, canon, or style inputs before review", async () => {
     const agent = new FoundationReviewerAgent({
       client: TEST_CLIENT,

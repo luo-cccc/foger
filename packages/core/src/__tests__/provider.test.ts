@@ -511,6 +511,47 @@ describe("chatCompletion via pi-ai", () => {
     vi.unstubAllGlobals();
   });
 
+  it("merges per-call provider extras without allowing reserved field overrides", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: "{}" } }],
+        usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = makeClient(0.7, {
+      service: "custom",
+      stream: false,
+      _piModel: {
+        ...MOCK_PI_MODEL,
+        provider: "openai",
+        baseUrl: "https://openrouter.ai/api/v1",
+      },
+    });
+    await chatCompletion(client, "deepseek/deepseek-v4-flash", [
+      { role: "user", content: "return JSON" },
+    ], {
+      maxTokens: 8192,
+      extra: {
+        response_format: { type: "json_object" },
+        reasoning: { effort: "none" },
+        max_tokens: 1,
+      },
+    });
+
+    const init = fetchMock.mock.calls[0]?.[1] as { body?: string };
+    const body = JSON.parse(init.body ?? "{}") as Record<string, unknown>;
+    expect(body).toMatchObject({
+      max_tokens: 8192,
+      response_format: { type: "json_object" },
+      reasoning: { effort: "none" },
+    });
+
+    vi.unstubAllGlobals();
+  });
+
   it("rejects non-ASCII API keys before native custom fetch builds headers", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

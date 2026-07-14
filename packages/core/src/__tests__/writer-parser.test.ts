@@ -82,6 +82,33 @@ describe("WriterAgent parseOutput", () => {
     expect(result.updatedHooks).toContain("H001");
   });
 
+  it("removes a repeated chapter-number prefix from model titles", () => {
+    const result = callParseOutput(5, [
+      "=== CHAPTER_TITLE ===",
+      "第5章 防爆门",
+      "=== CHAPTER_CONTENT ===",
+      "林默按下门禁键。",
+    ].join("\n"));
+
+    expect(result.title).toBe("防爆门");
+
+    const chineseNumeral = callParseOutput(5, [
+      "=== CHAPTER_TITLE ===",
+      "第五章：防爆门",
+      "=== CHAPTER_CONTENT ===",
+      "林默按下门禁键。",
+    ].join("\n"));
+    expect(chineseNumeral.title).toBe("防爆门");
+
+    const english = callParseOutput(5, [
+      "=== CHAPTER_TITLE ===",
+      "Chapter 5: Blast Door",
+      "=== CHAPTER_CONTENT ===",
+      "Lin pressed the key.",
+    ].join("\n"), defaultGenreProfile, "en_words");
+    expect(english.title).toBe("Blast Door");
+  });
+
   it("calculates wordCount with the shared counting helper", () => {
     const result = callParseOutput(1, fullOutput);
     const expectedContent =
