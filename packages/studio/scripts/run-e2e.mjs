@@ -19,6 +19,13 @@ const linkedMaxPromptTokensPerCall = positiveInteger(
   consumeOption(rawArgs, "--linked-max-prompt-tokens-per-call"),
   linkedLive ? 16_000 : 0,
 );
+const linkedQualityPolicy = parseLinkedQualityPolicy(
+  consumeOption(rawArgs, "--linked-quality-policy"),
+);
+const linkedCreateAttempts = Math.max(
+  1,
+  positiveInteger(consumeOption(rawArgs, "--linked-create-attempts"), linkedLive ? 2 : 1),
+);
 const linkedRun = linkedLive || rawArgs.some((arg) => arg.includes("@linked"));
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
 const linkedSourceRoot = resolve(process.env.INKOS_LINKED_SOURCE_ROOT?.trim() || workspaceRoot);
@@ -35,6 +42,8 @@ const linkedFingerprint = linkedRun
       words: linkedWords,
       maxTotalTokens: linkedMaxTotalTokens,
       maxPromptTokensPerCall: linkedMaxPromptTokensPerCall,
+      qualityPolicy: linkedQualityPolicy,
+      createAttempts: linkedCreateAttempts,
     })
   : "";
 
@@ -91,6 +100,8 @@ const child = spawn(process.execPath, [pnpmCli, "exec", "playwright", "test", ..
     INKOS_LINKED_WORDS: String(linkedWords),
     INKOS_LINKED_MAX_TOTAL_TOKENS: String(linkedMaxTotalTokens),
     INKOS_LINKED_MAX_PROMPT_TOKENS_PER_CALL: String(linkedMaxPromptTokensPerCall),
+    INKOS_LINKED_QUALITY_POLICY: linkedQualityPolicy,
+    INKOS_LINKED_CREATE_ATTEMPTS: String(linkedCreateAttempts),
     INKOS_MAX_PROMPT_ESTIMATED_TOKENS_PER_CALL: String(linkedMaxPromptTokensPerCall),
     INKOS_E2E_LAUNCHER_PID: String(process.pid),
     INKOS_STUDIO_PORT: String(apiPort),
@@ -147,6 +158,14 @@ function positiveInteger(value, fallback) {
     throw new Error(`Expected a non-negative integer, received "${value}".`);
   }
   return parsed;
+}
+
+function parseLinkedQualityPolicy(value) {
+  const policy = value?.trim() || "strict";
+  if (policy !== "strict" && policy !== "report-only") {
+    throw new Error(`Expected --linked-quality-policy to be strict or report-only, received "${value}".`);
+  }
+  return policy;
 }
 
 function readJsonFile(path) {
@@ -231,6 +250,8 @@ async function buildLinkedFingerprint(options) {
     words: options.words,
     maxTotalTokens: options.maxTotalTokens,
     maxPromptTokensPerCall: options.maxPromptTokensPerCall,
+    qualityPolicy: options.qualityPolicy,
+    createAttempts: options.createAttempts,
   }));
 
   const roots = [

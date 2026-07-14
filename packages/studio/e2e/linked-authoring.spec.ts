@@ -42,13 +42,49 @@ interface LinkedChapterReport {
   readonly auditIssues: ReadonlyArray<string>;
   readonly lengthWarnings: ReadonlyArray<string>;
   readonly telemetry: ReadonlyArray<Record<string, unknown>>;
+  doctorVerified: boolean;
 }
+
+interface LinkedCreationAttemptReport {
+  readonly attempt: number;
+  readonly bookId: string;
+  readonly status: "ready" | "failed";
+  readonly error?: string;
+  readonly totalTokens: number;
+  readonly telemetry: ReadonlyArray<Record<string, unknown>>;
+}
+
+type LinkedQualityPolicy = "strict" | "report-only";
+
+interface LinkedGateReport {
+  readonly passed: boolean;
+  readonly reasons: ReadonlyArray<string>;
+}
+
+interface LinkedQualityChapterReport {
+  readonly chapterNumber: number;
+  readonly status: string;
+  readonly passed: boolean;
+  readonly reasons: ReadonlyArray<string>;
+}
+
+interface LinkedQualityGateReport {
+  readonly passed: boolean;
+  readonly policy: LinkedQualityPolicy;
+  readonly enforced: boolean;
+  readonly chapters: ReadonlyArray<LinkedQualityChapterReport>;
+  readonly reasons: ReadonlyArray<string>;
+}
+
+class LinkedQualityGateError extends Error {}
 
 const liveMode = process.env.INKOS_E2E_LLM_MODE === "live";
 const requestedChapters = Math.max(1, readPositiveInteger("INKOS_LINKED_CHAPTERS", 1));
 const wordsPerChapter = Math.max(1000, readPositiveInteger("INKOS_LINKED_WORDS", 1000));
 const maxTotalTokens = readPositiveInteger("INKOS_LINKED_MAX_TOTAL_TOKENS", 0);
 const maxPromptTokensPerCall = readPositiveInteger("INKOS_LINKED_MAX_PROMPT_TOKENS_PER_CALL", 0);
+const qualityPolicy = readQualityPolicy();
+const maxCreateAttempts = Math.max(1, readPositiveInteger("INKOS_LINKED_CREATE_ATTEMPTS", liveMode ? 2 : 1));
 const creationTimeoutMs = liveMode ? 30 * 60_000 : 180_000;
 const operationTimeoutMs = liveMode ? 30 * 60_000 : 180_000;
 
@@ -72,20 +108,33 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
       wordsPerChapter: number;
       maxTotalTokens: number;
       maxPromptTokensPerCall: number;
+      qualityPolicy: LinkedQualityPolicy;
+      createAttempts: number;
     };
     bookId?: string;
+    creationAttempts: LinkedCreationAttemptReport[];
     chapters: LinkedChapterReport[];
     totalTokens: number;
     failureStage?: string;
     failureMessage?: string;
     failureSignature?: string;
     failureTelemetry?: ReadonlyArray<Record<string, unknown>>;
+    linkedGate?: LinkedGateReport;
+    qualityGate?: LinkedQualityGateReport;
   } = {
     status: "running",
     mode: liveMode ? "live" : "stub",
     runFingerprint: process.env.INKOS_LINKED_RUN_FINGERPRINT?.trim() || "untracked",
     startedAt: new Date().toISOString(),
-    scenario: { chapters: requestedChapters, wordsPerChapter, maxTotalTokens, maxPromptTokensPerCall },
+    scenario: {
+      chapters: requestedChapters,
+      wordsPerChapter,
+      maxTotalTokens,
+      maxPromptTokensPerCall,
+      qualityPolicy,
+      createAttempts: maxCreateAttempts,
+    },
+    creationAttempts: [],
     chapters: [],
     totalTokens: 0,
   };
@@ -95,32 +144,71 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
     await page.goto("/");
     await startLinkedEventCollector(page);
 
-    stage = "book-create";
-    const title = `Linked Acceptance ${liveMode ? "Live" : "Stub"} ${Date.now()}`;
-    const creation = await createBookFromBrowser(page, {
-      title,
-      genre: "urban",
-      language: "zh",
-      platform: "other",
-      chapterWordCount: wordsPerChapter,
-      targetChapters: Math.max(12, requestedChapters),
-      blurb: "近未来港城中，一名账房追查导师失踪与伪造债务账本，证据必须通过行动、对话和可验证物件逐步推进。",
-    });
-    expect(creation.status).toBe(200);
-    expect(creation.body.status).toBe("creating");
-    expect(creation.body.bookId).toEqual(expect.any(String));
-    const bookId = creation.body.bookId;
-    report.bookId = bookId;
-    await waitForCreateReady(request, bookId);
+    let bookId = "";
+    for (let attempt = 1; attempt <= maxCreateAttempts; attempt += 1) {
+      stage = `book-create-${attempt}`;
+      const eventOffset = (await readLinkedEvents(page)).length;
+      const title = `Linked Acceptance ${liveMode ? "Live" : "Stub"} ${Date.now()} A${attempt}`;
+      const creation = await createBookFromBrowser(page, {
+        title,
+        genre: "urban",
+        language: "zh",
+        platform: "other",
+        chapterWordCount: wordsPerChapter,
+        targetChapters: Math.max(12, requestedChapters),
+        blurb: "近未来港城中，一名账房追查导师失踪与伪造债务账本，证据必须通过行动、对话和可验证物件逐步推进。",
+      });
+      expect(creation.status).toBe(200);
+      expect(creation.body.status).toBe("creating");
+      expect(creation.body.bookId).toEqual(expect.any(String));
+      const attemptedBookId = creation.body.bookId;
+      report.bookId = attemptedBookId;
 
-    const creationEvents = await readLinkedEvents(page);
-    expect(creationEvents.some((event) => event.event === "book:creating" && event.data?.bookId === bookId)).toBe(true);
-    expect(creationEvents.some((event) => event.event === "book:created" && event.data?.bookId === bookId)).toBe(true);
-    const creationTokens = sumTelemetryTokens(creationEvents);
-    if (maxTotalTokens > 0 && creationTokens > maxTotalTokens) {
-      throw new Error(`Book creation used ${creationTokens} tokens, exceeding the linked run budget of ${maxTotalTokens}.`);
+      let creationError: string | undefined;
+      try {
+        await waitForCreateReady(request, attemptedBookId);
+      } catch (cause) {
+        creationError = cause instanceof Error ? cause.message : String(cause);
+      }
+
+      const allCreationEvents = await readLinkedEvents(page);
+      const attemptEvents = allCreationEvents.slice(eventOffset);
+      const attemptTelemetry = attemptEvents
+        .filter((event) => event.event === "llm:telemetry")
+        .map((event) => sanitizeTelemetry(event.data ?? {}));
+      report.creationAttempts.push({
+        attempt,
+        bookId: attemptedBookId,
+        status: creationError ? "failed" : "ready",
+        ...(creationError ? { error: creationError } : {}),
+        totalTokens: sumTelemetryTokens(attemptEvents),
+        telemetry: attemptTelemetry,
+      });
+      report.totalTokens = sumTelemetryTokens(allCreationEvents);
+      if (maxTotalTokens > 0 && report.totalTokens > maxTotalTokens) {
+        throw new Error(
+          `Book creation used ${report.totalTokens} tokens, exceeding the linked run budget of ${maxTotalTokens}.`,
+        );
+      }
+      assertPromptBudget(attemptEvents, maxPromptTokensPerCall, `Book creation attempt ${attempt}`);
+
+      if (creationError) {
+        if (attempt >= maxCreateAttempts || !isRetryableFoundationError(creationError)) {
+          throw new Error(creationError);
+        }
+        continue;
+      }
+
+      expect(attemptEvents.some((event) =>
+        event.event === "book:creating" && event.data?.bookId === attemptedBookId
+      )).toBe(true);
+      expect(attemptEvents.some((event) =>
+        event.event === "book:created" && event.data?.bookId === attemptedBookId
+      )).toBe(true);
+      bookId = attemptedBookId;
+      break;
     }
-    assertPromptBudget(creationEvents, maxPromptTokensPerCall, "Book creation");
+    if (!bookId) throw new Error(`Book creation did not succeed after ${maxCreateAttempts} attempt(s).`);
 
     await navigateHash(page, `#/book/${encodeURIComponent(bookId)}/settings`);
     await expect(page.getByTestId("write-next-button")).toBeVisible();
@@ -175,18 +263,16 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
         auditIssues: chapter?.auditIssues ?? [],
         lengthWarnings: chapter?.lengthWarnings ?? [],
         telemetry: telemetry.map(sanitizeTelemetry),
+        doctorVerified: false,
       };
       report.chapters.push(chapterReport);
       report.totalTokens = sumTelemetryTokens(await readLinkedEvents(page));
       assertPromptBudget(events, maxPromptTokensPerCall, `Chapter ${chapterNumber}`);
 
       expect(chapter?.operationId).toBe(operationId);
-      expect(chapter?.status).toBe("ready-for-review");
+      expect(chapter?.status).not.toBe("state-degraded");
       expect(new Set(chapter?.auditIssues ?? []).size).toBe(chapter?.auditIssues?.length ?? 0);
-      expect((chapter?.auditIssues ?? []).some((issue) => issue.startsWith("[critical]"))).toBe(false);
       expect(new Set(chapter?.lengthWarnings ?? []).size).toBe(chapter?.lengthWarnings?.length ?? 0);
-      expect(chapter?.wordCount).toBeGreaterThanOrEqual(Math.floor(wordsPerChapter * 0.728));
-      expect(chapter?.wordCount).toBeLessThanOrEqual(Math.ceil(wordsPerChapter * 1.272));
 
       stage = `chapter-${chapterNumber}-doctor`;
       await expect(page.getByTestId(`chapter-row-${chapterNumber}`)).toBeVisible();
@@ -195,6 +281,19 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
       await expect(page.getByTestId("operation-trace-filter")).toContainText(operationId);
       await expect(page.getByTestId("operation-telemetry-call-count")).not.toContainText("还没有最近调用");
       await expect(page.getByTestId("operation-telemetry-call-count")).not.toContainText("No recent calls yet");
+      chapterReport.doctorVerified = true;
+
+      stage = `chapter-${chapterNumber}-quality`;
+      const chapterQuality = buildChapterQualityReport(chapterReport, wordsPerChapter);
+      if (qualityPolicy === "strict" && !chapterQuality.passed) {
+        throw new LinkedQualityGateError(
+          `Chapter ${chapterNumber} failed the strict linked quality gate: ${chapterQuality.reasons.join("; ")}`,
+        );
+      }
+
+      if (chapterReport.status === "audit-failed" && chapterNumber < requestedChapters) {
+        break;
+      }
 
       if (chapterNumber < requestedChapters) {
         await navigateHash(page, `#/book/${encodeURIComponent(bookId)}/settings`);
@@ -203,6 +302,11 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
     }
 
     stage = "complete";
+    report.linkedGate = buildLinkedGate(report, requestedChapters);
+    report.qualityGate = buildQualityGate(report.chapters, wordsPerChapter, qualityPolicy);
+    if (!report.linkedGate.passed) {
+      throw new Error(`Linked acceptance gate failed: ${report.linkedGate.reasons.join("; ")}`);
+    }
     report.status = "passed";
     report.finishedAt = new Date().toISOString();
     await persistReport(reportPath, report, testInfo);
@@ -216,6 +320,12 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
     report.failureTelemetry = failureEvents
       .filter((event) => event.event === "llm:telemetry")
       .map((event) => sanitizeTelemetry(event.data ?? {}));
+    report.linkedGate = buildLinkedGate(
+      report,
+      requestedChapters,
+      cause instanceof LinkedQualityGateError ? undefined : `[${stage}] ${message}`,
+    );
+    report.qualityGate = buildQualityGate(report.chapters, wordsPerChapter, qualityPolicy);
     report.failureSignature = buildFailureSignature(stage, message, report);
     report.finishedAt = new Date().toISOString();
     await persistReport(reportPath, report, testInfo).catch(() => undefined);
@@ -230,6 +340,90 @@ function readPositiveInteger(name: string, fallback: number): number {
   if (!raw) return fallback;
   const value = Number(raw);
   return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+}
+
+function readQualityPolicy(): LinkedQualityPolicy {
+  const value = process.env.INKOS_LINKED_QUALITY_POLICY?.trim() || "strict";
+  if (value !== "strict" && value !== "report-only") {
+    throw new Error(`INKOS_LINKED_QUALITY_POLICY must be strict or report-only, received "${value}".`);
+  }
+  return value;
+}
+
+function isRetryableFoundationError(message: string): boolean {
+  return /基础设定没有生成完整|story foundation came back incomplete|architect foundation incomplete|missing sections/i.test(message);
+}
+
+function buildLinkedGate(
+  report: { readonly bookId?: string; readonly chapters: ReadonlyArray<LinkedChapterReport> },
+  expectedChapters: number,
+  externalFailure?: string,
+): LinkedGateReport {
+  const reasons: string[] = [];
+  if (!report.bookId) reasons.push("Book creation did not produce a persisted book ID.");
+  if (report.chapters.length !== expectedChapters) {
+    reasons.push(`Expected ${expectedChapters} persisted chapter(s), observed ${report.chapters.length}.`);
+  }
+  for (const chapter of report.chapters) {
+    if (!chapter.requestId) reasons.push(`Chapter ${chapter.chapterNumber} is missing its HTTP request ID.`);
+    if (!chapter.operationId) reasons.push(`Chapter ${chapter.chapterNumber} is missing its Core operation ID.`);
+    if (chapter.telemetry.length === 0) reasons.push(`Chapter ${chapter.chapterNumber} has no correlated LLM telemetry.`);
+    if (!chapter.doctorVerified) reasons.push(`Chapter ${chapter.chapterNumber} was not correlated in Doctor.`);
+    if (chapter.status === "state-degraded" || chapter.status === "missing") {
+      reasons.push(`Chapter ${chapter.chapterNumber} persistence status is ${chapter.status}.`);
+    }
+    if (new Set(chapter.auditIssues).size !== chapter.auditIssues.length) {
+      reasons.push(`Chapter ${chapter.chapterNumber} contains duplicate audit issues.`);
+    }
+    if (new Set(chapter.lengthWarnings).size !== chapter.lengthWarnings.length) {
+      reasons.push(`Chapter ${chapter.chapterNumber} contains duplicate length warnings.`);
+    }
+  }
+  if (externalFailure) reasons.push(externalFailure);
+  return { passed: reasons.length === 0, reasons };
+}
+
+function buildChapterQualityReport(
+  chapter: LinkedChapterReport,
+  targetWords: number,
+): LinkedQualityChapterReport {
+  const reasons: string[] = [];
+  const minimumWords = Math.floor(targetWords * 0.728);
+  const maximumWords = Math.ceil(targetWords * 1.272);
+  if (chapter.status !== "ready-for-review") {
+    reasons.push(`status is ${chapter.status}, expected ready-for-review`);
+  }
+  if (chapter.auditIssues.some((issue) => issue.startsWith("[critical]"))) {
+    reasons.push("critical audit issues remain");
+  }
+  if (chapter.wordCount < minimumWords || chapter.wordCount > maximumWords) {
+    reasons.push(`word count ${chapter.wordCount} is outside ${minimumWords}-${maximumWords}`);
+  }
+  return {
+    chapterNumber: chapter.chapterNumber,
+    status: chapter.status,
+    passed: reasons.length === 0,
+    reasons,
+  };
+}
+
+function buildQualityGate(
+  chapters: ReadonlyArray<LinkedChapterReport>,
+  targetWords: number,
+  policy: LinkedQualityPolicy,
+): LinkedQualityGateReport {
+  const chapterReports = chapters.map((chapter) => buildChapterQualityReport(chapter, targetWords));
+  const reasons = chapterReports.flatMap((chapter) =>
+    chapter.reasons.map((reason) => `Chapter ${chapter.chapterNumber}: ${reason}`)
+  );
+  if (chapterReports.length === 0) reasons.push("No persisted chapters were available for quality evaluation.");
+  return {
+    passed: chapterReports.length > 0 && chapterReports.every((chapter) => chapter.passed),
+    policy,
+    enforced: policy === "strict",
+    chapters: chapterReports,
+    reasons,
+  };
 }
 
 async function startLinkedEventCollector(page: Page): Promise<void> {
@@ -416,7 +610,11 @@ function sumTelemetryTokens(events: ReadonlyArray<LinkedEvent>): number {
     .reduce((sum, event) => sum + (typeof event.data?.totalTokens === "number" ? event.data.totalTokens : 0), 0);
 }
 
-function buildFailureSignature(stage: string, message: string, report: { chapters: LinkedChapterReport[] }): string {
+function buildFailureSignature(
+  stage: string,
+  message: string,
+  report: { chapters: LinkedChapterReport[]; creationAttempts: LinkedCreationAttemptReport[] },
+): string {
   const normalized = message
     .replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, "<uuid>")
     .replace(/\b\d+(?:\.\d+)?\s*(?:ms|seconds?|minutes?|tokens?|字)?\b/gi, "<number>")
@@ -425,6 +623,7 @@ function buildFailureSignature(stage: string, message: string, report: { chapter
     stage: stage.replace(/chapter-\d+/g, "chapter-N"),
     message: normalized,
     chapterStatuses: report.chapters.map((chapter) => chapter.status),
+    creationStatuses: report.creationAttempts.map((attempt) => attempt.status),
     auditIssues: report.chapters.flatMap((chapter) => chapter.auditIssues)
       .map((issue) => issue.replace(/\b(?:c|H)\d+\b/gi, "<id>")),
     telemetryFailures: report.chapters.flatMap((chapter) => chapter.telemetry)

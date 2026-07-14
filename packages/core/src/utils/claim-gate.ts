@@ -367,18 +367,18 @@ function activelyUsesCostBoundClaim(text: string, claim: CanonClaim): boolean {
     || claim.domain === "protagonist"
     || claim.claimType === "character_exception";
   if (capabilityClaim) return mentionsRuleSubjectOrAction(text, claim);
-  return bypassEvidenceSegments(text).some((segment) => mentionsRuleSubjectOrAction(segment, claim));
+  return bypassEvidenceSegments(text, claim).some((segment) => mentionsRuleSubjectOrAction(segment, claim));
 }
 
 function detectsInstitutionRuleBypass(text: string, claim: CanonClaim): boolean {
-  return bypassEvidenceSegments(text).some((segment) =>
+  return bypassEvidenceSegments(text, claim).some((segment) =>
     textMentionsClaim(normalizeText(segment), claim)
     && !hasGroundedException(segment)
   );
 }
 
 function detectsHardRuleBypass(text: string, claim: CanonClaim): boolean {
-  return bypassEvidenceSegments(text).some((segment) => {
+  return bypassEvidenceSegments(text, claim).some((segment) => {
     if (!mentionsRuleSubjectOrAction(segment, claim)) return false;
     if (claim.constraints.requiresCost.some((cost) => normalizeText(segment).includes(normalizeText(cost)))) {
       return false;
@@ -387,20 +387,27 @@ function detectsHardRuleBypass(text: string, claim: CanonClaim): boolean {
   });
 }
 
-function bypassEvidenceSegments(text: string): string[] {
+function bypassEvidenceSegments(text: string, claim: CanonClaim): string[] {
   return text
     .split(/(?<=[。！？.!?])|\r?\n+/u)
     .map((segment) => segment.trim())
-    .filter((segment) => segment.length > 0 && hasBypassSignal(segment));
+    .filter((segment) => segment.length > 0 && hasBypassSignal(segment, claim));
 }
 
-function hasBypassSignal(text: string): boolean {
+function hasBypassSignal(text: string, claim: CanonClaim): boolean {
   // Only strong "the rule was circumvented" signals. Generic narrative adverbs
   // (直接/照样/依然能/仍然能/轻易/随手, freely, "still can") were removed: they
   // fire constantly in ordinary prose ("他直接推门而入") and produced critical
   // false positives on hard/institution rule bypass checks. Real bypasses in the
   // corpus pair a rule mention with an explicit circumvention verb below.
-  return /无视|绕过|越过|跳过|破例|例外|失效|失灵|作废|不再生效|无需(?:遵守|遵循|服从|执行|支付|承担|付出)|没有(?:任何)?代价|不必(?:遵守|遵循|服从|执行|支付|付出|承担)|bypass(?:es|ed)?|ignore(?:s|d)?|without\s+(?:any\s+)?cost|no\s+cost/i.test(text);
+  if (/无视|绕过|越过|跳过|破例|例外|失效|失灵|作废|不再生效|无需(?:遵守|遵循|服从|执行)|不必(?:遵守|遵循|服从|执行)|bypass(?:es|ed)?|ignore(?:s|d)?/i.test(text)) {
+    return true;
+  }
+
+  // Payment/cost wording is ordinary story content for financial and legal
+  // claims. It only proves a bypass when this claim actually declares a cost.
+  return claim.constraints.requiresCost.length > 0
+    && /无需(?:支付|承担|付出)|没有(?:任何)?代价|不必(?:支付|付出|承担)|without\s+(?:any\s+)?cost|no\s+cost/i.test(text);
 }
 
 function hasGroundedException(text: string): boolean {

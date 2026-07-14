@@ -45,6 +45,19 @@ const COST_CLAIM = claim({
   constraints: { requiresCost: ["寿元"], forbiddenUses: [] },
 });
 
+const COSTLESS_REAL_WORLD_RULES = [
+  claim({
+    id: "world-002",
+    content: "世界的质感是湿冷且带铁锈味的。港城的冬天不下雪，街边茶餐厅的鸳鸯奶茶冒着白气。",
+    constraints: { requiresCost: [], forbiddenUses: [] },
+  }),
+  claim({
+    id: "world-003",
+    content: "所有核心物证必须是账本、凭证、银行流水、合同、邮件、录音等可验证的金融或法律文档。",
+    constraints: { requiresCost: [], forbiddenUses: [] },
+  }),
+] satisfies ReadonlyArray<CanonClaim>;
+
 describe("compileChapterClaims", () => {
   it("hides a secret_truth not yet revealed to the reader", () => {
     const ctx: ChapterClaimContext = { chapterNumber: 10 };
@@ -86,6 +99,13 @@ describe("compileChapterClaims", () => {
     const ctx: ChapterClaimContext = { chapterNumber: 5 };
     const compiled = compileChapterClaims([COST_CLAIM], ctx);
     expect(compiled.costRequired.map((c) => c.id)).toContain("c-1");
+  });
+
+  it("keeps costless world texture and evidence rules out of the cost-required set", () => {
+    const compiled = compileChapterClaims(COSTLESS_REAL_WORLD_RULES, { chapterNumber: 1 });
+
+    expect(compiled.usable.map((entry) => entry.id)).toEqual(["world-002", "world-003"]);
+    expect(compiled.costRequired).toEqual([]);
   });
 
   it("keeps style and POV constraints usable even when extracted with visibility boundaries", () => {

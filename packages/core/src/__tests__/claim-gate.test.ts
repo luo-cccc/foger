@@ -609,4 +609,34 @@ describe("claim gates", () => {
 
     expect(issues.map((issue) => issue.category)).not.toContain("claim-hard-rule-bypass");
   });
+
+  it("does not treat ordinary payment wording as bypassing costless world texture or evidence rules", () => {
+    const hardRules = [
+      claim({
+        id: "world-002",
+        claimType: "objective_rule",
+        content: "世界的质感是湿冷且带铁锈味的。港城的冬天不下雪，街边茶餐厅的鸳鸯奶茶冒着白气，旧写字楼里总有打字机和传真机的机械噪音。",
+        authority: { source: "story_frame", priority: "hard" },
+        constraints: { requiresCost: [], forbiddenUses: [] },
+      }),
+      claim({
+        id: "world-003",
+        claimType: "objective_rule",
+        content: "所有核心物证必须是账本、凭证、银行流水、合同、邮件、录音等可验证的金融或法律文档；对手的反制也必须通过财务和法律手段实现。",
+        authority: { source: "story_frame", priority: "hard" },
+        constraints: { requiresCost: [], forbiddenUses: [] },
+      }),
+    ];
+
+    const issues = runPostWriteClaimGate({
+      text: [
+        "鸳鸯奶茶旁的账单写着本桌无需支付，陈渡生仍把发票夹进文件袋。",
+        "银行流水显示尾款无需支付，陈渡生随后核对账本、合同和录音。",
+      ].join("\n"),
+      compiled: compiled({ usable: hardRules }),
+      phase: "post",
+    });
+
+    expect(issues.map((issue) => issue.category)).not.toContain("claim-hard-rule-bypass");
+  });
 });

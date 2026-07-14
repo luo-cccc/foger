@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ContinuityAuditor } from "../agents/continuity.js";
+import { estimateTextTokens } from "../llm/provider.js";
 
 const ZERO_USAGE = {
   promptTokens: 0,
@@ -13,6 +14,7 @@ const ZERO_USAGE = {
 describe("ContinuityAuditor", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it("returns a critical audit issue instead of throwing when audit output is not JSON", () => {
@@ -226,6 +228,7 @@ describe("ContinuityAuditor", () => {
       expect(systemPrompt).toContain("stays dormant long enough to feel abandoned");
       expect(systemPrompt).toContain("3-question test");
       expect(systemPrompt).toContain("same mode long enough to flatten rhythm");
+      expect(systemPrompt).toContain("a critical issue requires identifying a 4th or later scene");
       expect(systemPrompt).not.toContain("more than 5 chapters");
       expect(systemPrompt).not.toContain("3 straight chapters");
       expect(systemPrompt).not.toContain("3+ consecutive chapters");
@@ -328,6 +331,11 @@ describe("ContinuityAuditor", () => {
                 reason: "Carry forward unresolved hook.",
                 excerpt: "relationship | open | 101 | Mentor oath debt with Lin Yue",
               },
+              {
+                source: "runtime/chapter_claim_brief",
+                reason: "Deterministic claim gate input.",
+                excerpt: "CLAIM_BRIEF_MUST_NOT_BE_DUPLICATED_IN_THE_LLM_AUDIT_PROMPT",
+              },
             ],
           },
           ruleStack: {
@@ -350,8 +358,59 @@ describe("ContinuityAuditor", () => {
 
       expect(userPrompt).toContain("story/chapter_summaries.md#99");
       expect(userPrompt).toContain("story/pending_hooks.md#mentor-oath");
+      expect(userPrompt.match(/story\/chapter_summaries\.md#99/g)).toHaveLength(1);
+      expect(userPrompt.match(/story\/pending_hooks\.md#mentor-oath/g)).toHaveLength(1);
+      expect(userPrompt).not.toContain("CLAIM_BRIEF_MUST_NOT_BE_DUPLICATED_IN_THE_LLM_AUDIT_PROMPT");
       expect(userPrompt).not.toContain("| 1 | Guild Trail |");
       expect(userPrompt).not.toContain("guild-route | 1 | mystery");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("compacts lower-priority audit context below the provider prompt budget", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-auditor-budget-test-"));
+    const bookDir = join(root, "book");
+    const storyDir = join(bookDir, "story");
+    await mkdir(storyDir, { recursive: true });
+    const largeBlock = Array.from({ length: 1200 }, (_, index) => `上下文条目${index}：重复的低优先级历史证据。`).join("\n");
+
+    await Promise.all([
+      writeFile(join(storyDir, "current_state.md"), "# 当前状态\n\n- 主角持有关键账本。\n", "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), `# 伏笔池\n${largeBlock}\n`, "utf-8"),
+      writeFile(join(storyDir, "chapter_summaries.md"), `# 章节摘要\n${largeBlock}\n`, "utf-8"),
+      writeFile(join(storyDir, "subplot_board.md"), `# 支线\n${largeBlock}\n`, "utf-8"),
+      writeFile(join(storyDir, "emotional_arcs.md"), `# 情感\n${largeBlock}\n`, "utf-8"),
+      writeFile(join(storyDir, "character_matrix.md"), `# 矩阵\n${largeBlock}\n`, "utf-8"),
+      writeFile(join(storyDir, "style_guide.md"), `# 文风\n${largeBlock}\n`, "utf-8"),
+    ]);
+
+    const auditor = new ContinuityAuditor({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: root,
+    });
+    const chatSpy = vi.spyOn(ContinuityAuditor.prototype as never, "chat" as never).mockResolvedValue({
+      content: JSON.stringify({ passed: true, issues: [], summary: "ok" }),
+      usage: ZERO_USAGE,
+    });
+    vi.stubEnv("INKOS_MAX_PROMPT_ESTIMATED_TOKENS_PER_CALL", "16000");
+
+    try {
+      const chapterBody = "这是必须完整保留的待审章节正文。".repeat(120);
+      await auditor.auditChapter(bookDir, chapterBody, 1, "urban");
+
+      const messages = chatSpy.mock.calls[0]?.[0] as ReadonlyArray<{ content: string }>;
+      const estimatedTokens = messages.reduce((sum, message) => sum + estimateTextTokens(message.content), 0);
+      expect(estimatedTokens).toBeLessThanOrEqual(15_520);
+      expect(messages[1]?.content).toContain(chapterBody);
+      expect(messages[1]?.content).toContain("主角持有关键账本");
+      expect(messages[1]?.content).not.toContain("上下文条目1199");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -443,6 +502,7 @@ describe("ContinuityAuditor", () => {
       expect(systemPrompt).toContain("稀疏 memo 是合法状态");
       expect(systemPrompt).toContain("章节备忘偏离");
       expect(systemPrompt).toContain("Auditor 不发明剧情");
+      expect(systemPrompt).toContain("第4个及以后新增场景");
       expect(systemPrompt).not.toContain("7 段正文");
       expect(systemPrompt).not.toContain("大纲偏离检测");
 
