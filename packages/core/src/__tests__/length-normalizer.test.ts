@@ -61,6 +61,11 @@ describe("LengthNormalizerAgent", () => {
     });
 
     expect(chatSpy).toHaveBeenCalled();
+    const prompt = (chatSpy.mock.calls[0]?.[0] as ReadonlyArray<{ content: string }> | undefined)
+      ?.map((message) => message.content)
+      .join("\n") ?? "";
+    expect(prompt).toContain("Preserve the first concrete action, event, dialogue, anomaly, objective, or resistance");
+    expect(prompt).toContain("Preserve the final concrete action, evidence, decision, dialogue, or threat");
     expect(result.applied).toBe(true);
     expect(result.mode).toBe("compress");
     expect(result.normalizedContent).toContain("[[KEEP_ME]]");

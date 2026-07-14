@@ -338,6 +338,8 @@ export class LengthNormalizerAgent extends BaseAgent {
       "You are a chapter length normalizer.",
       "Rewrite the chapter body exactly once. Do not explain your work.",
       `Goal: ${action} the chapter into the requested range while preserving facts, names, hooks, and required markers.`,
+      "- Preserve the first concrete action, event, dialogue, anomaly, objective, or resistance; do not replace it with atmosphere or background exposition.",
+      "- Preserve the final concrete action, evidence, decision, dialogue, or threat; do not replace it with abstract recap or a future-facing forecast.",
       "- Do not add new subplots, future reveals, or recap commentary.",
       "- Output only the full revised chapter body.",
       strictLine,
@@ -391,6 +393,7 @@ ${currentCount}
 ## Correction Rules
 - Rewrite once only
 - Preserve names, places, facts, markers, and continuity
+- Preserve the opening's first concrete story beat and the ending's final concrete consequence or choice
 - Do not invent new subplot material
 - Do not add meta explanation or analysis
 - Return only the revised chapter body

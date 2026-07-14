@@ -14,6 +14,7 @@ export interface PostWriteViolation {
   readonly severity: "error" | "warning";
   readonly description: string;
   readonly suggestion: string;
+  readonly repairScope?: "local" | "structural" | "unknown";
 }
 
 export function normalizePostWriteSurface(
@@ -75,6 +76,130 @@ const COLLECTIVE_SHOCK_PATTERNS = [
   /(?:全场|众人|所有人|在场的人)[，,]?(?:都|全|齐齐|纷纷)?(?:震惊|惊呆|倒吸凉气|目瞪口呆|哗然|惊呼)/,
   /(?:全场|一片)[，,]?(?:寂静|哗然|沸腾|震动)/,
 ];
+
+const CHINESE_STATIC_OPENING_PATTERNS: ReadonlyArray<RegExp> = [
+  /^(?:港城|城市|小镇|村庄|镇上|街道|巷子|房间|屋里|院子|天空|夜色|暮色|晨雾|空气|海风|冷风|雨|雪|雾|春天|夏天|秋天|冬天)[^。！？]{0,120}(?:总是|一向|向来|常年|依旧|仍旧|显得|笼罩|弥漫|沉浸|安静|寂静|沉寂|昏暗|潮湿|寒冷|闷热|灰蒙蒙|阴沉)/,
+  /^(?:清晨|黄昏|傍晚|夜晚|夜里|黎明|入夜|天亮前)[，,\s][^。！？]{0,120}(?:天空|街道|城市|小镇|房间|屋里|空气|风|雨|雪|雾|夜色|灯光)[^。！？]{0,80}(?:笼罩|弥漫|安静|寂静|昏暗|潮湿|寒冷|沉沉|缓缓|静静)/,
+  /^(?:这是|那是|又是)[^。！？]{0,80}(?:清晨|黄昏|夜晚|冬天|夏天|雨天|雾天)[^。！？]{0,80}(?:总是|一向|依旧|仍旧|安静|寂静|昏暗|寒冷|潮湿)/,
+  /^(?:雨|雪|雾|风|阳光|月光|夜色|暮色)[^。！？]{0,120}(?:落|下|飘|吹|笼罩|弥漫|铺|洒|压|吞没|覆盖|盘旋|停留|挂)[^。！？]*[。！？]?$/,
+];
+
+const ENGLISH_STATIC_OPENING_PATTERNS: ReadonlyArray<RegExp> = [
+  /^(?:the\s+)?(?:city|town|village|street|room|house|sky|night|morning|evening|air|rain|snow|fog|wind|winter|summer)\b.{0,180}\b(?:always|usually|seemed|was|were|lay|hung|felt|remained)\b.{0,100}\b(?:quiet|still|dark|cold|wet|gray|grey|empty|silent|heavy|dim|gloomy)\b/i,
+  /^(?:it was|there was)\b.{0,120}\b(?:night|morning|evening|winter|summer|rain|snow|fog|silence|darkness)\b.{0,120}\b(?:quiet|still|dark|cold|wet|gray|grey|empty|silent|heavy|dim|gloomy)\b/i,
+  /^(?:in|over|across|under)\s+(?:the\s+)?(?:city|town|village|street|room|house|sky)\b.{0,180}\b(?:quiet|still|dark|cold|wet|gray|grey|empty|silent|heavy|dim|gloomy)\b/i,
+  /^(?:rain|snow|fog|wind|sunlight|moonlight|darkness)\b.{0,180}\b(?:fell|drifted|hung|covered|pressed|blew|spread|lay)\b/i,
+];
+
+const CHINESE_SUMMARY_ENDING_PATTERNS: ReadonlyArray<RegExp> = [
+  /(?:这|那|一切|所有这一切|故事|旅程)(?:不过|也不过|都不过|只是|也只是|都只是|才|才刚|才刚刚|不过才)?(?:一个)?开始[。！？.!]*$/,
+  /(?:真正的)?(?:较量|战斗|考验|挑战|危机)(?:才|即将|正要|就要|还未|才刚|才刚刚)?(?:开始|到来|展开)[。！？.!]*$/,
+  /(?:命运|时代)的齿轮[^。！？]{0,12}(?:开始|已经|正在|正)[^。！？]{0,8}(?:转动|运转)[。！？.!]*$/,
+  /(?:新的|崭新的)(?:篇章|旅程|时代|征程)[^。！？]{0,12}(?:即将|正要|就要|已经)?(?:开启|开始|到来)[。！？.!]*$/,
+  /(?:序幕|大幕)[^。！？]{0,12}(?:才刚|刚刚|正式)?(?:拉开|揭开)[。！？.!]*$/,
+];
+
+const ENGLISH_SUMMARY_ENDING_PATTERNS: ReadonlyArray<RegExp> = [
+  /(?:this|that|everything|all of this|the story|the journey)\s+(?:was\s+|is\s+)?(?:only\s+|just\s+|merely\s+)?(?:the\s+)?beginning[.!?]*$/i,
+  /the real (?:battle|fight|test|challenge|struggle) (?:was|is) (?:still )?(?:yet )?to come[.!?]*$/i,
+  /(?:a|the) new (?:chapter|journey|era) (?:was|is) (?:about|set) to begin[.!?]*$/i,
+  /the wheels? of (?:fate|destiny) (?:had |have |has )?(?:begun|started) to turn[.!?]*$/i,
+  /(?:the curtain|a curtain) (?:had |has )?(?:only |just )?(?:risen|opened)[.!?]*$/i,
+];
+
+function firstSentence(text: string): string {
+  const boundary = text.search(/[。！？.!?]/);
+  return boundary >= 0 ? text.slice(0, boundary + 1).trim() : text.trim();
+}
+
+function lastSentence(text: string): string {
+  const sentences = text.match(/[^。！？.!?]+[。！？.!?]+[”」』"']?|[^。！？.!?]+$/g);
+  return sentences?.at(-1)?.trim() ?? text.trim();
+}
+
+function hasConcreteOpeningBeat(text: string, language: "zh" | "en"): boolean {
+  if (/[“”「」『』"]/.test(text)) return true;
+
+  if (language === "en") {
+    return /(?:^|[.!?\n]\s*)(?:I|he|she|they|we|[A-Z][a-z]+)\s+(?:(?:immediately|suddenly|quickly)\s+)?(?:opened|pushed|pulled|grabbed|raised|drew|threw|dropped|slammed|locked|unlocked|entered|left|ran|stepped|turned|stopped|knocked|dialed|answered|shouted|asked|said|refused|blocked|chased|fled|heard|saw|noticed|realized|knew|found)\b/i.test(text)
+      || /\b(?:phone|doorbell|alarm|gun|glass|light|screen|door handle|lock|elevator|engine|brakes?)\b.{0,24}\b(?:rang|buzzed|sounded|fired|shattered|lit|flashed|went out|turned|clicked|opened|stopped|exploded|cracked|jammed)\b/i.test(text)
+      || /\b(?:had to|must|needed to|could not let|couldn't let|blocked|refused|chased|trapped)\b/i.test(text);
+  }
+
+  return /(?:^|[。！？\n]\s*)(?:我|你|他|她|他们|她们|[\u4e00-\u9fff]{2,4})(?:猛地|立刻|马上|随即|忽然|突然)?(?:推开|拉开|抓起|抬起|转身|起身|站起|冲进|冲出|跑进|跑出|走进|走出|闯入|踢开|敲响|按下|拨通|接起|挂断|掏出|拔出|扔下|摔下|捡起|翻开|打开|关上|停下|蹲下|跪下|扑向|躲开|追上|逃出|喊道|问道|说道|答道|拒绝|挡住|拦住|发现|看见|听见|认出|知道|盯住|攥住|扣下|锁上|塞进|递出|拍下|打翻)/.test(text)
+    || /(?:电话|手机|门铃|警报|枪声|玻璃|灯|屏幕|门把手|锁舌|电梯|引擎|刹车)[^。！？]{0,16}(?:响|震|亮|灭|碎|开|转|弹|停|炸|裂|跳|闪|卡住)/.test(text)
+    || /(?:必须|得在|来不及|不能让|拒绝|拦住|挡住|追上|逃出|困在|堵在)/.test(text);
+}
+
+function isDialogueEnding(sentence: string, language: "zh" | "en"): boolean {
+  if (/^[“「『"]/.test(sentence)) return true;
+  return language === "en"
+    ? /["”]\s*(?:he|she|they|[A-Z][a-z]+)\s+(?:said|asked|whispered|warned|shouted|replied)\b/i.test(sentence)
+    : /[”」』"]\s*(?:我|他|她|他们|她们|[\u4e00-\u9fff]{2,4})(?:说|问|低声道|警告|喊道|答道)/.test(sentence);
+}
+
+export function detectChapterBoundaryQuality(
+  content: string,
+  language: "zh" | "en" = "zh",
+): ReadonlyArray<PostWriteViolation> {
+  const paragraphs = extractParagraphs(content);
+  if (paragraphs.length === 0) return [];
+
+  const violations: PostWriteViolation[] = [];
+  const openingLimit = language === "en" ? 420 : 240;
+  const openingWindow = paragraphs.slice(0, 2).join("\n").slice(0, openingLimit);
+  const openingSentence = firstSentence(openingWindow);
+  const staticOpeningPatterns = language === "en"
+    ? ENGLISH_STATIC_OPENING_PATTERNS
+    : CHINESE_STATIC_OPENING_PATTERNS;
+  if (
+    staticOpeningPatterns.some((pattern) => pattern.test(openingSentence))
+    && !hasConcreteOpeningBeat(openingWindow, language)
+  ) {
+    violations.push(language === "en"
+      ? {
+          rule: "Empty opening",
+          severity: "error",
+          description: "The opening stays in weather or background exposition without a concrete action, event, dialogue, anomaly, objective, or resistance in the opening window.",
+          suggestion: "Keep only necessary atmosphere and move the first concrete story beat into the opening window.",
+          repairScope: "local",
+        }
+      : {
+          rule: "空开头",
+          severity: "error",
+          description: "章节开头停留在天气或环境说明，开头窗口内没有具体行动、事件、对话、异常、目标或阻力。",
+          suggestion: "保留必要氛围，但把首个具体事件、动作、对话或异常提前到开头窗口内。",
+          repairScope: "local",
+        });
+  }
+
+  const endingSentence = lastSentence(paragraphs.at(-1) ?? "");
+  const summaryEndingPatterns = language === "en"
+    ? ENGLISH_SUMMARY_ENDING_PATTERNS
+    : CHINESE_SUMMARY_ENDING_PATTERNS;
+  if (
+    !isDialogueEnding(endingSentence, language)
+    && summaryEndingPatterns.some((pattern) => pattern.test(endingSentence))
+  ) {
+    violations.push(language === "en"
+      ? {
+          rule: "Summary ending",
+          severity: "error",
+          description: "The chapter ends with an abstract recap or generic forecast instead of a concrete action, discovery, decision, dialogue, or threat.",
+          suggestion: "Replace the forecast with the final concrete consequence or choice already present in the scene.",
+          repairScope: "local",
+        }
+      : {
+          rule: "总结式结尾",
+          severity: "error",
+          description: "章节以抽象总结或泛化预告收尾，没有落在具体行动、证据、决定、对话或威胁上。",
+          suggestion: "删除总结和预告，把结尾落在场景中已经发生的最后一个具体后果或选择上。",
+          repairScope: "local",
+        });
+  }
+
+  return violations;
+}
 
 // --- Validator ---
 
@@ -297,6 +422,8 @@ export function validatePostWrite(
   // are conservative so genuine first-person prose (many 我) never trips.
   const personViolation = detectNarrativePersonDrift(content, bookRules);
   if (personViolation) violations.push(personViolation);
+
+  violations.push(...detectChapterBoundaryQuality(content, "zh"));
 
   return violations;
 }
@@ -536,6 +663,8 @@ function validatePostWriteEnglish(
       });
     }
   }
+
+  violations.push(...detectChapterBoundaryQuality(content, "en"));
 
   return violations;
 }

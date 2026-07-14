@@ -21,6 +21,7 @@ import { PolisherAgent } from "../agents/polisher.js";
 import { buildExportArtifact } from "../interaction/export-artifact.js";
 import type { BookConfig } from "../models/book.js";
 import type { ChapterMeta } from "../models/chapter.js";
+import type { GenreProfile } from "../models/genre-profile.js";
 import { MemoryDB } from "../state/memory-db.js";
 import * as memoryDbModule from "../state/memory-db.js";
 import { countChapterLength } from "../utils/length-metrics.js";
@@ -2893,6 +2894,51 @@ describe("PipelineRunner", () => {
     expect(reviseChapter.mock.calls[0]?.[4]).toBe("auto");
 
     await rm(root, { recursive: true, force: true });
+  });
+
+  it("propagates local boundary repair scope through the linked audit gate", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const genreProfile: GenreProfile = {
+      id: "test",
+      name: "测试",
+      language: "zh",
+      chapterTypes: [],
+      fatigueWords: [],
+      pacingRule: "",
+      numericalSystem: false,
+      powerScaling: false,
+      eraResearch: false,
+      auditDimensions: [],
+      satisfactionTypes: [],
+    };
+
+    try {
+      const gates = await (runner as unknown as {
+        prepareChapterAuditGates: (params: {
+          readonly bookId: string;
+          readonly bookDir: string;
+          readonly chapterNumber: number;
+          readonly language: "zh";
+          readonly genreProfile: GenreProfile;
+        }) => Promise<{
+          runPostWriteChecks: (content: string) => ReadonlyArray<AuditIssue>;
+        }>;
+      }).prepareChapterAuditGates({
+        bookId,
+        bookDir: state.bookDir(bookId),
+        chapterNumber: 1,
+        language: "zh",
+        genreProfile,
+      });
+
+      const issues = gates.runPostWriteChecks("林越收起地图，离开仓库。\n\n一切才刚刚开始。");
+      const boundaryIssue = issues.find((issue) => issue.category === "总结式结尾");
+
+      expect(boundaryIssue?.severity).toBe("critical");
+      expect(boundaryIssue?.repairScope).toBe("local");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("honors an explicit one-iteration automatic repair limit", async () => {

@@ -832,10 +832,10 @@ describe("ReviserAgent", () => {
         1,
         [
 	          {
-	            severity: "warning",
-	            category: "模型审稿判断",
-	            description: "'不禁' 密度过高",
-	            suggestion: "替换成具体动作",
+	            severity: "critical",
+	            category: "空开头",
+	            description: "开头只有天气和背景说明，没有具体事件",
+	            suggestion: "把首个具体动作提前到开头窗口",
 	            repairScope: "local",
 	          },
         ],

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  detectChapterBoundaryQuality,
   detectDuplicateTitle,
   detectParagraphLengthDrift,
   detectParagraphShapeWarnings,
@@ -47,6 +48,84 @@ describe("validatePostWrite", () => {
     const content = "他走过去，端起杯子，灌了一口。外面的雨越下越大。\n\n她站在窗前，看着街上的行人匆匆走过。";
     const result = validatePostWrite(content, baseProfile, null);
     expect(result).toHaveLength(0);
+  });
+
+  it("flags a purely atmospheric opening as a local blocking issue", () => {
+    const content = [
+      "港城的冬天总是阴沉，海雾常年笼罩着灰色屋顶。",
+      "街道依旧寂静，潮湿的冷气贴在每一扇窗上。",
+      "直到很久以后，人才渐渐多起来。",
+    ].join("\n\n");
+
+    const result = detectChapterBoundaryQuality(content, "zh");
+    const violation = findRule(result, "空开头");
+
+    expect(violation?.severity).toBe("error");
+    expect(violation?.repairScope).toBe("local");
+    expect(findRule(validatePostWrite(content, baseProfile, null), "空开头")).toBeDefined();
+  });
+
+  it("allows atmosphere when an immediate event enters the opening window", () => {
+    const content = "港城的冬天总是阴沉，海雾压着窗户。门把手转了一下。\n\n林越抬头看向门口。";
+
+    expect(findRule(detectChapterBoundaryQuality(content, "zh"), "空开头")).toBeUndefined();
+  });
+
+  it("allows dialogue and action openings", () => {
+    const content = "“把门锁上。”林越抓起桌上的账本，冲进走廊。\n\n楼下已经响起脚步声。";
+
+    expect(findRule(detectChapterBoundaryQuality(content, "zh"), "空开头")).toBeUndefined();
+  });
+
+  it("flags an abstract summary ending as a local blocking issue", () => {
+    const endings = [
+      "一切才刚刚开始。",
+      "真正的较量即将到来。",
+      "命运的齿轮已经转动。",
+      "新的篇章即将开启。",
+    ];
+
+    for (const ending of endings) {
+      const content = `林越收起地图，离开仓库。\n\n${ending}`;
+      expect(findRule(detectChapterBoundaryQuality(content, "zh"), "总结式结尾")).toBeDefined();
+    }
+
+    const content = `林越收起地图，离开仓库。\n\n${endings[0]}`;
+
+    const violation = findRule(detectChapterBoundaryQuality(content, "zh"), "总结式结尾");
+
+    expect(violation?.severity).toBe("error");
+    expect(violation?.repairScope).toBe("local");
+    expect(findRule(validatePostWrite(content, baseProfile, null), "总结式结尾")).toBeDefined();
+  });
+
+  it("allows concrete evidence, decisions, and discoveries at the ending", () => {
+    const endings = [
+      "林越把带血的收据锁进抽屉，决定天亮前去警局。",
+      "他知道门后有人。",
+    ];
+
+    for (const content of endings) {
+      expect(findRule(detectChapterBoundaryQuality(content, "zh"), "总结式结尾")).toBeUndefined();
+    }
+  });
+
+  it("detects English empty openings and summary endings", () => {
+    const emptyOpening = "The city was always quiet beneath its gray winter sky. Fog hung over every roof.\n\nPeople would arrive much later.";
+    const summaryEnding = "Mara folded the map and left the warehouse.\n\nThis was only the beginning.";
+
+    expect(findRule(detectChapterBoundaryQuality(emptyOpening, "en"), "Empty opening")?.repairScope).toBe("local");
+    expect(findRule(detectChapterBoundaryQuality(summaryEnding, "en"), "Summary ending")?.repairScope).toBe("local");
+  });
+
+  it("allows concrete English opening and ending beats", () => {
+    const immediateEvent = "The city was always quiet beneath its gray winter sky. The phone rang.\n\nMara grabbed her coat.";
+    const concreteEnding = "Mara locked the evidence in the safe and called the detective.";
+    const dialogueThreat = "Mara blocked the doorway.\n\n\"The real battle is yet to come,\" she warned.";
+
+    expect(findRule(detectChapterBoundaryQuality(immediateEvent, "en"), "Empty opening")).toBeUndefined();
+    expect(findRule(detectChapterBoundaryQuality(concreteEnding, "en"), "Summary ending")).toBeUndefined();
+    expect(findRule(detectChapterBoundaryQuality(dialogueThreat, "en"), "Summary ending")).toBeUndefined();
   });
 
   it("flags third-person prose in a first-person book (#290 adherence)", () => {

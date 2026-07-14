@@ -3227,6 +3227,7 @@ ${matrix}`,
           category: violation.rule,
           description: violation.description,
           suggestion: violation.suggestion,
+          repairScope: violation.repairScope,
         }));
         const memoBody = params.chapterMemo?.body ?? "";
         const ledgerIssues = memoBody
