@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WriterAgent } from "../agents/writer.js";
+import { estimateTextTokens } from "../llm/provider.js";
 import { buildLengthSpec } from "../utils/length-metrics.js";
 
 const ZERO_USAGE = {
@@ -366,6 +367,141 @@ describe("WriterAgent", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("compacts lower-priority settlement context below the provider prompt budget", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-settler-budget-test-"));
+    const bookDir = join(root, "book");
+    const storyDir = join(bookDir, "story");
+    await mkdir(storyDir, { recursive: true });
+    const largeHistory = (label: string): string => Array.from(
+      { length: 900 },
+      (_, index) => `${label}低优先级历史条目${index}：这部分只用于状态结算预算回归。`,
+    ).join("\n");
+    const chapterBody = "林澈握紧监听记录，确认 H-KEEP 指向旧港仓库。".repeat(120);
+
+    await Promise.all([
+      writeFile(
+        join(storyDir, "current_state.md"),
+        "# 当前状态\n\n- 林澈正在追查旧港监听记录。\n",
+        "utf-8",
+      ),
+      writeFile(
+        join(storyDir, "pending_hooks.md"),
+        "# 伏笔池\n\n| hook_id | 状态 | 备注 |\n| --- | --- | --- |\n| H-KEEP | open | 旧港监听记录仍待解释 |\n",
+        "utf-8",
+      ),
+      writeFile(join(storyDir, "chapter_summaries.md"), `# 章节摘要\n${largeHistory("摘要")}\n`, "utf-8"),
+      writeFile(join(storyDir, "subplot_board.md"), `# 支线\n${largeHistory("支线")}\n`, "utf-8"),
+      writeFile(join(storyDir, "emotional_arcs.md"), `# 情感弧线\n${largeHistory("情感")}\n`, "utf-8"),
+      writeFile(join(storyDir, "character_matrix.md"), `# 角色矩阵\n${largeHistory("矩阵")}\n`, "utf-8"),
+      writeFile(join(storyDir, "volume_outline.md"), `# 卷纲\n${largeHistory("卷纲")}\n`, "utf-8"),
+    ]);
+
+    const agent = new WriterAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: root,
+      maxPromptEstimatedTokens: 16_000,
+    });
+    const chatSpy = vi.spyOn(WriterAgent.prototype as never, "chat" as never)
+      .mockResolvedValueOnce({
+        content: "=== OBSERVATIONS ===\n- OBSERVER_FACT_MUST_SURVIVE: H-KEEP points to the old harbor warehouse.",
+        usage: ZERO_USAGE,
+      })
+      .mockResolvedValueOnce({
+        content: [
+          "=== POST_SETTLEMENT ===",
+          "- settled",
+          "",
+          "=== UPDATED_STATE ===",
+          "状态卡",
+          "",
+          "=== UPDATED_HOOKS ===",
+          "伏笔池",
+          "",
+          "=== CHAPTER_SUMMARY ===",
+          "| 7 | 监听记录 | 林澈 | 锁定旧港仓库 |",
+        ].join("\n"),
+        usage: ZERO_USAGE,
+      });
+
+    try {
+      await agent.settleChapterState({
+        book: {
+          id: "writer-book",
+          title: "Writer Book",
+          platform: "tomato",
+          genre: "other",
+          status: "active",
+          targetChapters: 20,
+          chapterWordCount: 2200,
+          language: "zh",
+          createdAt: "2026-07-15T00:00:00.000Z",
+          updatedAt: "2026-07-15T00:00:00.000Z",
+        },
+        bookDir,
+        chapterNumber: 7,
+        title: "监听记录",
+        content: chapterBody,
+        validationFeedback: "VALIDATION_FEEDBACK_MUST_SURVIVE：不得刷新未推进伏笔的章节号。",
+      });
+
+      const messages = chatSpy.mock.calls[1]?.[0] as ReadonlyArray<{ content: string }>;
+      const estimatedTokens = messages.reduce(
+        (sum, message) => sum + estimateTextTokens(message.content),
+        0,
+      );
+      expect(estimatedTokens).toBeLessThanOrEqual(15_520);
+      expect(messages[1]?.content).toContain(chapterBody);
+      expect(messages[1]?.content).toContain("OBSERVER_FACT_MUST_SURVIVE");
+      expect(messages[1]?.content).toContain("VALIDATION_FEEDBACK_MUST_SURVIVE");
+      expect(messages[1]?.content).toContain("林澈正在追查旧港监听记录");
+      expect(messages[1]?.content).toContain("H-KEEP");
+      expect(messages[1]?.content).not.toContain("支线低优先级历史条目899");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("forwards the prompt budget to a dedicated settler client preflight", async () => {
+    const client = {
+      provider: "openai" as const,
+      apiFormat: "chat" as const,
+      stream: false,
+      defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+    };
+    const agent = new WriterAgent(
+      {
+        client,
+        model: "writer-model",
+        projectRoot: "/tmp/inkos-writer-settler-preflight-test",
+      },
+      {
+        client,
+        model: "settler-model",
+        projectRoot: "/tmp/inkos-writer-settler-preflight-test",
+        maxPromptEstimatedTokens: 5,
+      },
+    );
+
+    await expect((agent as unknown as {
+      settlerChat(
+        messages: ReadonlyArray<{ readonly role: "system" | "user"; readonly content: string }>,
+        options: { readonly callPhase: string },
+      ): Promise<unknown>;
+    }).settlerChat(
+      [
+        { role: "system", content: "这是超过五个估算 token 的系统提示。" },
+        { role: "user", content: "不会发往网络。" },
+      ],
+      { callPhase: "settle" },
+    )).rejects.toThrow("Prompt budget exceeded before request");
   });
 
   it("builds structured runtime-state artifacts when settler returns a delta", async () => {

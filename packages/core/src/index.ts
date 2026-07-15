@@ -170,6 +170,7 @@ export * from './utils/cadence-policy.js';
 export * from './utils/chapter-cadence.js';
 export * from './utils/chapter-memo-parser.js';
 export * from './utils/chapter-splitter.js';
+export * from './utils/chapter-sample-report.js';
 export * from './utils/config-loader.js';
 export * from './utils/context-assembly.js';
 export * from './utils/context-compilation-cache.js';

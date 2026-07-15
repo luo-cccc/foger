@@ -283,6 +283,44 @@ describe("StateValidatorAgent", () => {
     expect(chatSpy).not.toHaveBeenCalled();
   });
 
+  it("deterministically rejects deferred hooks that refresh lastAdvancedChapter", async () => {
+    const agent = new StateValidatorAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: process.cwd(),
+    });
+    const chatSpy = vi.spyOn(
+      agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> },
+      "chat",
+    );
+    const oldHooks = [
+      "| hook_id | 起始章节 | 类型 | 状态 | 最近推进 | 预期回收 | 备注 |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| H004 | 1 | 信息 | progressing | 3 | 查明替代名单 | 第3章获得部分明文 |",
+    ].join("\n");
+    const newHooks = [
+      "| hook_id | 起始章节 | 类型 | 状态 | 最近推进 | 预期回收 | 备注 |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| H004 | 1 | 信息 | deferred | 4 | 查明替代名单 | 第3章获得部分明文 |",
+    ].join("\n");
+
+    const result = await agent.validate("正文没有推进替代名单。", 4, "old", "new", oldHooks, newHooks, "zh");
+
+    expect(result.passed).toBe(false);
+    expect(result.warnings[0]?.description).toContain("延后必须保留此前的推进章节");
+    expect(chatSpy).not.toHaveBeenCalled();
+  });
+
   it("allows a progressing hook to note that its final payoff has not happened yet", async () => {
     const agent = new StateValidatorAgent({
       client: {

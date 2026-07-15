@@ -414,6 +414,59 @@ describe("applyRuntimeStateDelta", () => {
     ]);
   });
 
+  it("defers hooks without refreshing their last advancement chapter", () => {
+    const result = applyRuntimeStateDelta({
+      snapshot: {
+        manifest: {
+          schemaVersion: 2,
+          language: "zh",
+          lastAppliedChapter: 3,
+          projectionVersion: 1,
+          migrationWarnings: [],
+        },
+        currentState: { chapter: 3, facts: [] },
+        hooks: {
+          hooks: [{
+            hookId: "H004",
+            startChapter: 1,
+            type: "information",
+            status: "progressing",
+            lastAdvancedChapter: 3,
+            expectedPayoff: "解开替代名单。",
+            notes: "第3章取得部分明文。",
+          }],
+        },
+        chapterSummaries: { rows: [] },
+      },
+      delta: RuntimeStateDeltaSchema.parse({
+        chapter: 4,
+        hookOps: {
+          upsert: [{
+            hookId: "H004",
+            startChapter: 1,
+            type: "information",
+            status: "deferred",
+            lastAdvancedChapter: 4,
+            expectedPayoff: "解开替代名单。",
+            notes: "第3章取得部分明文。",
+          }],
+          mention: [],
+          resolve: [],
+          defer: ["H004"],
+        },
+        notes: [],
+      }),
+    });
+
+    expect(result.hooks.hooks).toEqual([
+      expect.objectContaining({
+        hookId: "H004",
+        status: "deferred",
+        lastAdvancedChapter: 3,
+      }),
+    ]);
+  });
+
   it("does not downgrade an existing progressed hook when the next delta restates it as open", () => {
     const result = applyRuntimeStateDelta({
       snapshot: {

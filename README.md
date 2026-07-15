@@ -414,7 +414,7 @@ Studio 工作台本地实测截图。
 | `inkos detect [id] [n]`                     | AIGC 检测（`--all` 全部章节，`--stats` 统计）                                                         |
 | `inkos import canon [id] --from <parent>`   | 导入正传正典到番外书                                                                                 |
 | `inkos import chapters [id] --from <path>`  | 导入已有章节续写（`--split`、`--resume-from`）                                                        |
-| `inkos analytics [id]` / `inkos stats [id]` | 书籍数据分析（审计通过率、高频问题、章节排名、token 用量）                                                           |
+| `inkos analytics [id]` / `inkos stats [id]` | 书籍数据分析；`--chapters 4-6 --llm-report` 可按 operation 生成多章 LLM 成本/门禁报告，`--save-report` 保存到 `.inkos/reports` |
 | `inkos update`                              | 更新到最新版本                                                                                    |
 | `inkos studio` / `inkos`                    | 启动 Web 工作台（`-p` 指定端口，默认 4567；Studio 使用服务页配置，不使用 env 覆盖）                                    |
 | `inkos tui`                                 | 启动终端全屏 TUI                                                                                 |
@@ -422,6 +422,8 @@ Studio 工作台本地实测截图。
 
 
 `[id]` 参数在项目只有一本书时可省略，自动检测。所有命令支持 `--json` 输出结构化数据。`draft` / `write next` / `plan chapter` / `compose chapter` 支持 `--context` 传入创作指导，`--words` 覆盖每章目标字数。`book create` 支持 `--brief <file>` 传入创作简报（你的脑洞/设定文档），Architect 会基于此生成设定而非凭空创作。`plan chapter` 会调用 LLM 生成章节意图；`compose chapter` 不要求在线 LLM，可在配置 API Key 之前先检查输入治理结果。
+
+真实章节成本复盘示例：`inkos analytics --chapters 4-6 --llm-report --save-report --max-total-tokens 600000 --max-chapter-tokens 200000 --max-prompt-tokens 16000 --max-retry-rate 0.2`。报告以持久化 operation telemetry 为准，同时显示章节索引 token 与 telemetry 的差额；历史无 operationId 的恢复调用会单独标记，不能静默漏算。
 
 CLI 运行时还支持一次性 LLM 覆盖参数：`--service`、`--model`、`--api-key-env`、`--base-url`、`--api-format <chat|responses>`、`--stream`、`--no-stream`。例如：
 

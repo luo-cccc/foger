@@ -39,7 +39,12 @@ import { extractPOVFromOutline, filterMatrixByPOV, filterHooksByPOV } from "../u
 import { parseCreativeOutput } from "./writer-parser.js";
 import { buildRuntimeStateArtifacts, saveRuntimeStateSnapshot, type RuntimeStateArtifacts } from "../state/runtime-state-store.js";
 import type { RuntimeStateSnapshot } from "../state/state-reducer.js";
-import { chatCompletion, type LLMMessage, type LLMPromptSourceInput } from "../llm/provider.js";
+import {
+  chatCompletion,
+  estimateTextTokens,
+  type LLMMessage,
+  type LLMPromptSourceInput,
+} from "../llm/provider.js";
 import { parsePendingHooksMarkdown } from "../utils/memory-retrieval.js";
 import { analyzeHookHealth } from "../utils/hook-health.js";
 import { buildEnglishVarianceBrief } from "../utils/long-span-fatigue.js";
@@ -50,6 +55,7 @@ import {
   sanitizeNarrativeEvidenceBlock,
 } from "../utils/narrative-control.js";
 import { getContextSourceTier } from "../utils/context-assembly.js";
+import { resolvePromptCompactionTarget, truncatePromptBlock } from "../utils/prompt-budget.js";
 import { readFile, writeFile, mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -174,6 +180,8 @@ export class WriterAgent extends BaseAgent {
       onStreamProgress: this.settlerCtx.onStreamProgress,
       onCallTelemetry: this.settlerCtx.onCallTelemetry,
       timeoutMs: this.settlerCtx.defaultTimeoutMs,
+      maxPromptEstimatedTokens:
+        this.settlerCtx.maxPromptEstimatedTokens ?? this.ctx.maxPromptEstimatedTokens,
       signal: this.settlerCtx.signal,
     });
   }
@@ -652,7 +660,7 @@ export class WriterAgent extends BaseAgent {
     const settlerSystem = buildSettlerSystemPrompt(
       params.book, params.genreProfile, params.bookRules, resolvedLang,
     );
-    const governedControlBlock = params.chapterIntent && params.contextPackage && params.ruleStack
+    let governedControlBlock = params.chapterIntent && params.contextPackage && params.ruleStack
       ? this.buildSettlerGovernedControlBlock(
           params.chapterIntent,
           params.contextPackage,
@@ -660,32 +668,115 @@ export class WriterAgent extends BaseAgent {
           resolvedLang,
         )
       : undefined;
+    const currentState = this.capLegacyContext(
+      "current_state",
+      params.currentState,
+      LEGACY_WRITER_CONTEXT_BUDGET.currentState,
+    );
+    const ledger = this.capLegacyContext(
+      "particle_ledger",
+      params.ledger,
+      LEGACY_WRITER_CONTEXT_BUDGET.ledger,
+    );
+    let hooks = this.capLegacyContext(
+      "pending_hooks",
+      params.hooks,
+      LEGACY_WRITER_CONTEXT_BUDGET.hooks,
+    );
+    let chapterSummaries = this.capLegacyContext(
+      "chapter_summaries",
+      params.chapterSummaries,
+      LEGACY_WRITER_CONTEXT_BUDGET.chapterSummaries,
+    );
+    let subplotBoard = this.capLegacyContext(
+      "subplot_board",
+      params.subplotBoard,
+      LEGACY_WRITER_CONTEXT_BUDGET.subplotBoard,
+    );
+    let emotionalArcs = this.capLegacyContext(
+      "emotional_arcs",
+      params.emotionalArcs,
+      LEGACY_WRITER_CONTEXT_BUDGET.emotionalArcs,
+    );
+    let characterMatrix = this.capLegacyContext(
+      "character_matrix",
+      params.characterMatrix,
+      LEGACY_WRITER_CONTEXT_BUDGET.characterMatrix,
+    );
+    let volumeOutline = this.capLegacyContext(
+      "volume_outline",
+      params.volumeOutline,
+      LEGACY_WRITER_CONTEXT_BUDGET.volumeOutline,
+    );
+    let selectedEvidenceBlock = governedControlBlock ? undefined : params.selectedEvidenceBlock;
 
-    const settlerUser = buildSettlerUserPrompt({
+    const renderSettlerUser = (): string => buildSettlerUserPrompt({
       chapterNumber: params.chapterNumber,
       title: params.title,
       content: params.content,
-      currentState: this.capLegacyContext("current_state", params.currentState, LEGACY_WRITER_CONTEXT_BUDGET.currentState),
-      ledger: this.capLegacyContext("particle_ledger", params.ledger, LEGACY_WRITER_CONTEXT_BUDGET.ledger),
-      hooks: this.capLegacyContext("pending_hooks", params.hooks, LEGACY_WRITER_CONTEXT_BUDGET.hooks),
-      chapterSummaries: this.capLegacyContext(
-        "chapter_summaries",
-        params.chapterSummaries,
-        LEGACY_WRITER_CONTEXT_BUDGET.chapterSummaries,
-      ),
-      subplotBoard: this.capLegacyContext("subplot_board", params.subplotBoard, LEGACY_WRITER_CONTEXT_BUDGET.subplotBoard),
-      emotionalArcs: this.capLegacyContext("emotional_arcs", params.emotionalArcs, LEGACY_WRITER_CONTEXT_BUDGET.emotionalArcs),
-      characterMatrix: this.capLegacyContext(
-        "character_matrix",
-        params.characterMatrix,
-        LEGACY_WRITER_CONTEXT_BUDGET.characterMatrix,
-      ),
-      volumeOutline: this.capLegacyContext("volume_outline", params.volumeOutline, LEGACY_WRITER_CONTEXT_BUDGET.volumeOutline),
+      currentState,
+      ledger,
+      hooks,
+      chapterSummaries,
+      subplotBoard,
+      emotionalArcs,
+      characterMatrix,
+      volumeOutline,
       observations,
-      selectedEvidenceBlock: governedControlBlock ? undefined : params.selectedEvidenceBlock,
+      selectedEvidenceBlock,
       governedControlBlock,
       validationFeedback: params.validationFeedback,
     });
+
+    let settlerUser = renderSettlerUser();
+    const promptTarget = resolvePromptCompactionTarget(
+      this.settlerCtx?.maxPromptEstimatedTokens ?? this.ctx.maxPromptEstimatedTokens,
+    );
+    if (promptTarget !== undefined) {
+      const promptTokens = (): number =>
+        estimateTextTokens(settlerSystem) + estimateTextTokens(settlerUser);
+      const rebuild = (): void => {
+        settlerUser = renderSettlerUser();
+      };
+      const optionalBlocks: Array<() => void> = [
+        () => { subplotBoard = ""; },
+        () => { emotionalArcs = ""; },
+        () => { characterMatrix = ""; },
+        () => { chapterSummaries = ""; },
+        () => { volumeOutline = ""; },
+        () => { selectedEvidenceBlock = undefined; },
+      ];
+
+      for (const dropOptionalBlock of optionalBlocks) {
+        if (promptTokens() <= promptTarget) break;
+        dropOptionalBlock();
+        rebuild();
+      }
+
+      const compactBlock = (
+        value: string | undefined,
+        minimumTokens: number,
+        assign: (next: string) => void,
+      ): void => {
+        const overage = promptTokens() - promptTarget;
+        if (overage <= 0 || !value) return;
+        const currentTokens = estimateTextTokens(value);
+        const nextBudget = Math.max(minimumTokens, currentTokens - overage - 64);
+        if (nextBudget >= currentTokens) return;
+        assign(truncatePromptBlock(
+          value,
+          nextBudget,
+          resolvedLang === "en"
+            ? "\n[Lower-priority settlement context truncated.]"
+            : "\n[低优先级状态结算上下文已截断]",
+        ));
+        rebuild();
+      };
+
+      compactBlock(governedControlBlock, 512, (next) => { governedControlBlock = next; });
+      compactBlock(selectedEvidenceBlock, 384, (next) => { selectedEvidenceBlock = next; });
+      compactBlock(hooks, 512, (next) => { hooks = next; });
+    }
 
     const response = await this.settlerChat(
       [

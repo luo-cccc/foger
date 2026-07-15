@@ -306,6 +306,16 @@ function detectHookStateContradictions(
       continue;
     }
 
+    if (status === "deferred" && chapterAdvanced) {
+      warnings.push({
+        category: "hook-state-contradiction",
+        description: language === "en"
+          ? `Hook ${hook.hookId} is deferred in chapter ${chapterNumber}, but lastAdvancedChapter was also advanced. Deferral must preserve the previous advancement chapter.`
+          : `伏笔 ${hook.hookId} 在第${chapterNumber}章被标记为延后，却同时更新了最近推进章节；延后必须保留此前的推进章节。`,
+      });
+      continue;
+    }
+
     if ((statusAdvanced || chapterAdvanced) && noteDeniesCurrentChapterMovement(note)) {
       warnings.push({
         category: "hook-state-contradiction",

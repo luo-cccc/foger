@@ -98,11 +98,23 @@ function isEmptyRuntimeStateDelta(delta: RuntimeStateDelta): boolean {
 
 function applyHookOps(hooksState: HooksState, delta: RuntimeStateDelta): HooksState {
   const hooksById = new Map(hooksState.hooks.map((hook) => [hook.hookId, { ...hook }]));
+  const mentionedHookIds = new Set(delta.hookOps.mention);
+  const deferredHookIds = new Set(delta.hookOps.defer);
+  const resolvedHookIds = new Set(delta.hookOps.resolve);
 
   for (const hook of delta.hookOps.upsert) {
     const sameHook = hooksById.get(hook.hookId);
     if (sameHook) {
-      hooksById.set(sameHook.hookId, mergeHookRecord(sameHook, hook));
+      // Model output sometimes repeats a mentioned/deferred hook in upsert and
+      // stamps the current chapter into lastAdvancedChapter. Mention/defer are
+      // explicitly non-advancing operations, so they cannot refresh hook age.
+      if (mentionedHookIds.has(hook.hookId)) {
+        continue;
+      }
+      const normalizedHook = deferredHookIds.has(hook.hookId)
+        ? { ...hook, lastAdvancedChapter: sameHook.lastAdvancedChapter }
+        : hook;
+      hooksById.set(sameHook.hookId, mergeHookRecord(sameHook, normalizedHook));
       continue;
     }
 
@@ -143,13 +155,12 @@ function applyHookOps(hooksState: HooksState, delta: RuntimeStateDelta): HooksSt
 
   for (const hookId of delta.hookOps.defer) {
     const existing = hooksById.get(hookId);
-    if (!existing) {
+    if (!existing || existing.status === "resolved" || resolvedHookIds.has(hookId)) {
       continue;
     }
     hooksById.set(hookId, {
       ...existing,
       status: "deferred",
-      lastAdvancedChapter: Math.max(existing.lastAdvancedChapter, delta.chapter),
     });
   }
 

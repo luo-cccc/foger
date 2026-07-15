@@ -1992,22 +1992,26 @@ export class PipelineRunner {
 
   async repairChapterState(bookId: string, chapterNumber?: number): Promise<ChapterPipelineResult> {
     const releaseLock = await this.state.acquireBookLock(bookId);
+    const operationId = this.startOperation(bookId);
     try {
       const recovery = await this.state.recoverIncompleteChapterPersistence(bookId);
       const result = await this._repairChapterStateLocked(bookId, chapterNumber);
-      return { ...result, ...(recovery.kind === "none" ? {} : { recovery }) };
+      return { ...result, operationId, ...(recovery.kind === "none" ? {} : { recovery }) };
     } finally {
+      this.finishOperation(bookId, operationId);
       await releaseLock();
     }
   }
 
   async resyncChapterArtifacts(bookId: string, chapterNumber?: number): Promise<ChapterPipelineResult> {
     const releaseLock = await this.state.acquireBookLock(bookId);
+    const operationId = this.startOperation(bookId);
     try {
       const recovery = await this.state.recoverIncompleteChapterPersistence(bookId);
       const result = await this._resyncChapterArtifactsLocked(bookId, chapterNumber);
-      return { ...result, ...(recovery.kind === "none" ? {} : { recovery }) };
+      return { ...result, operationId, ...(recovery.kind === "none" ? {} : { recovery }) };
     } finally {
+      this.finishOperation(bookId, operationId);
       await releaseLock();
     }
   }

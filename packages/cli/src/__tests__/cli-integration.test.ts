@@ -167,6 +167,144 @@ describe("CLI integration", () => {
     });
   });
 
+  describe("inkos analytics LLM report", () => {
+    it("joins chapter operations with telemetry and saves a range report", async () => {
+      const bookId = "analytics-llm-report";
+      const bookDir = join(projectDir, "books", bookId);
+      const telemetryDir = join(projectDir, ".inkos", "runtime", "llm-calls");
+      const reportPath = join(
+        projectDir,
+        ".inkos",
+        "reports",
+        `${bookId}-chapters-4-5-llm-report.json`,
+      );
+      const configPath = join(projectDir, "inkos.json");
+      const originalConfig = await readFile(configPath, "utf-8").catch(() => undefined);
+      const operation4 = "11111111-1111-4111-8111-111111111111";
+      const operation5 = "22222222-2222-4222-8222-222222222222";
+      const makeTelemetry = (operationId: string, timestamp: string) => ({
+        bookId,
+        operationId,
+        agent: "writer",
+        model: "test-model",
+        service: "test-service",
+        apiFormat: "chat",
+        stream: false,
+        phase: "chat",
+        durationMs: 10,
+        attemptCount: 1,
+        retryCount: 0,
+        promptAssembly: {
+          totalChars: 40,
+          estimatedTokens: 10,
+          messages: [],
+          sources: [],
+          duplicateSourceGroups: [],
+        },
+        status: "success",
+        usage: { promptTokens: 8, completionTokens: 4, totalTokens: 12 },
+        timestamp,
+      });
+
+      try {
+        await writeFile(configPath, JSON.stringify({
+          name: "analytics-report-test",
+          version: "0.1.0",
+          language: "en",
+          llm: {
+            provider: "openai",
+            service: "custom",
+            baseUrl: "http://127.0.0.1:9/v1",
+            model: "test-model",
+            apiFormat: "chat",
+            stream: false,
+            temperature: 0.7,
+          },
+          modelOverrides: {},
+          notify: [],
+          daemon: { schedule: { writeCron: "0 * * * *" }, maxConcurrentBooks: 1 },
+        }, null, 2), "utf-8");
+        await mkdir(join(bookDir, "chapters"), { recursive: true });
+        await mkdir(telemetryDir, { recursive: true });
+        await writeFile(join(bookDir, "book.json"), JSON.stringify({
+          id: bookId,
+          title: "Analytics Report",
+          platform: "other",
+          genre: "other",
+          status: "active",
+          targetChapters: 10,
+          chapterWordCount: 1000,
+          language: "en",
+          createdAt: "2026-07-15T00:00:00.000Z",
+          updatedAt: "2026-07-15T00:00:00.000Z",
+        }, null, 2), "utf-8");
+        await writeFile(join(bookDir, "chapters", "index.json"), JSON.stringify([
+          {
+            number: 4,
+            title: "Fourth",
+            status: "ready-for-review",
+            wordCount: 1000,
+            createdAt: "2026-07-15T00:00:00.000Z",
+            updatedAt: "2026-07-15T00:00:30.000Z",
+            auditIssues: [],
+            lengthWarnings: [],
+            operationId: operation4,
+            tokenUsage: { promptTokens: 6, completionTokens: 4, totalTokens: 10 },
+          },
+          {
+            number: 5,
+            title: "Fifth",
+            status: "ready-for-review",
+            wordCount: 1000,
+            createdAt: "2026-07-15T00:01:00.000Z",
+            updatedAt: "2026-07-15T00:01:30.000Z",
+            auditIssues: [],
+            lengthWarnings: [],
+            operationId: operation5,
+            tokenUsage: { promptTokens: 6, completionTokens: 4, totalTokens: 10 },
+          },
+        ], null, 2), "utf-8");
+        await writeFile(
+          join(telemetryDir, `${bookId}.jsonl`),
+          [
+            JSON.stringify(makeTelemetry(operation4, "2026-07-15T00:00:00.000Z")),
+            JSON.stringify(makeTelemetry(operation5, "2026-07-15T00:01:00.000Z")),
+          ].join("\n") + "\n",
+          "utf-8",
+        );
+
+        const output = JSON.parse(run([
+          "analytics",
+          bookId,
+          "--chapters",
+          "4-5",
+          "--llm-report",
+          "--save-report",
+          "--max-total-tokens",
+          "100",
+          "--json",
+        ]));
+
+        expect(output.analytics).toMatchObject({ totalChapters: 2, totalWords: 2000 });
+        expect(output.llmReport).toMatchObject({
+          totals: { telemetryCalls: 2, telemetryTokens: 24 },
+          telemetryWindow: { matchedChapterOperations: 2, unattributedCalls: 0 },
+          gate: { passed: true, issues: [] },
+        });
+        await expect(readFile(reportPath, "utf-8")).resolves.toContain('"telemetryTokens": 24');
+      } finally {
+        await rm(bookDir, { recursive: true, force: true });
+        await rm(join(telemetryDir, `${bookId}.jsonl`), { force: true });
+        await rm(reportPath, { force: true });
+        if (originalConfig === undefined) {
+          await rm(configPath, { force: true });
+        } else {
+          await writeFile(configPath, originalConfig, "utf-8");
+        }
+      }
+    }, CLI_PROCESS_TIMEOUT_MS);
+  });
+
   describe("inkos config set", () => {
     it("sets a known config value", () => {
       const output = run(["config", "set", "llm.provider", "anthropic"]);

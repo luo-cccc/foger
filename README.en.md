@@ -415,13 +415,15 @@ Local Studio screenshot.
 | `inkos detect [id] [n]` | AIGC detection (`--all` for all chapters, `--stats` for statistics) |
 | `inkos import canon [id] --from <parent>` | Import parent canon into a spinoff book |
 | `inkos import chapters [id] --from <path>` | Import existing chapters for continuation (`--split`, `--resume-from`) |
-| `inkos analytics [id]` / `inkos stats [id]` | Book analytics (audit pass rate, top issues, chapter ranking, token usage) |
+| `inkos analytics [id]` / `inkos stats [id]` | Book analytics; `--chapters 4-6 --llm-report` builds an operation-correlated multi-chapter LLM cost/gate report, and `--save-report` writes it under `.inkos/reports` |
 | `inkos update` | Update to the latest version |
 | `inkos` / `inkos studio` | Start web workbench (`-p` for port, default 4567) |
 | `inkos tui` | Start terminal full-screen TUI |
 | `inkos up / down` | Start/stop daemon (`-q` quiet mode, auto-writes `inkos.log`) |
 
 `[id]` is auto-detected when the project has only one book. All commands support `--json` for structured output. `draft` / `write next` / `plan chapter` / `compose chapter` accept `--context` for steering, and `--words` overrides the target chapter size. `book create` supports `--brief <file>` to pass a creative brief — the Architect builds from your ideas instead of generating from scratch. `plan chapter` calls the LLM to create chapter intent; `compose chapter` does not require a live LLM, so you can inspect governed inputs before finishing API setup.
+
+Example live-cost review: `inkos analytics --chapters 4-6 --llm-report --save-report --max-total-tokens 600000 --max-chapter-tokens 200000 --max-prompt-tokens 16000 --max-retry-rate 0.2`. The report treats persisted operation telemetry as authoritative, shows the gap against chapter-index token totals, and surfaces legacy recovery calls without an operation ID instead of silently dropping their cost.
 
 The CLI also accepts one-off LLM override flags at runtime: `--service`, `--model`, `--api-key-env`, `--base-url`, `--api-format <chat|responses>`, `--stream`, `--no-stream`. For example:
 

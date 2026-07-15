@@ -3783,6 +3783,9 @@ describe("PipelineRunner", () => {
 
     expect(result.status).toBe("ready-for-review");
     expect(result.chapterNumber).toBe(1);
+    expect((result as { operationId?: string }).operationId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
     expect(settleSpy).toHaveBeenCalledWith(expect.objectContaining({
       allowReapply: true,
     }));
