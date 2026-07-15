@@ -115,4 +115,65 @@ describe("chapter sample report", () => {
     expect(parsed.records).toEqual([valid]);
     expect(parsed.invalidLines).toBe(2);
   });
+
+  it("reports persisted review termination and operation-level governance calls", () => {
+    const reviewedChapter: ChapterMeta = {
+      ...chapter(4, "op-4"),
+      reviewTelemetry: {
+        terminationReason: "issue-set-unchanged",
+        auditCalls: 2,
+        revisionCalls: 1,
+        normalizationCalls: 1,
+        reviewedCandidates: 2,
+        configuredMaxRevisions: 2,
+      },
+    };
+    const report = buildChapterSampleReport({
+      bookId: "sample-book",
+      chapters: [reviewedChapter],
+      telemetry: [
+        telemetry({ timestamp: "2026-07-15T00:00:00.000Z", operationId: "op-4", agent: "auditor", phase: "audit" }),
+        telemetry({ timestamp: "2026-07-15T00:00:10.000Z", operationId: "op-4", agent: "reviser", phase: "revise" }),
+        telemetry({ timestamp: "2026-07-15T00:00:20.000Z", operationId: "op-4", agent: "length-normalizer", phase: "normalize-length" }),
+        telemetry({ timestamp: "2026-07-15T00:00:30.000Z", operationId: "op-4", agent: "auditor", phase: "audit" }),
+        telemetry({ timestamp: "2026-07-15T00:00:40.000Z", operationId: "op-4", agent: "settler", phase: "settle-observe" }),
+        telemetry({ timestamp: "2026-07-15T00:00:50.000Z", operationId: "op-4", agent: "settler", phase: "settle" }),
+        telemetry({ timestamp: "2026-07-15T00:01:00.000Z", operationId: "op-4", agent: "state-validator", phase: "validate-state" }),
+      ],
+      limits: {
+        maxAuditCallsPerChapter: 1,
+        maxRevisionCallsPerChapter: 1,
+        maxLengthNormalizationCallsPerChapter: 1,
+        maxSettlementCallsPerChapter: 1,
+      },
+    });
+
+    expect(report.chapters[0]).toMatchObject({
+      reviewTelemetry: { terminationReason: "issue-set-unchanged" },
+      governanceCalls: {
+        audit: 2,
+        revision: 1,
+        lengthNormalization: 1,
+        settlement: 1,
+        settlementObservation: 1,
+        stateValidation: 1,
+        chapterAnalysis: 0,
+      },
+    });
+    expect(report.totals).toMatchObject({
+      reviewTelemetryChapters: 1,
+      governanceCalls: {
+        audit: 2,
+        revision: 1,
+        lengthNormalization: 1,
+        settlement: 1,
+        settlementObservation: 1,
+        stateValidation: 1,
+        chapterAnalysis: 0,
+      },
+      reviewTerminationReasons: { "issue-set-unchanged": 1 },
+    });
+    expect(report.gate.issues.map((issue) => issue.code)).toContain("chapter-audit-call-budget");
+    expect(report.gate.issues.map((issue) => issue.code)).not.toContain("chapter-revision-call-budget");
+  });
 });

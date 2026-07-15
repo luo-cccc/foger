@@ -3,6 +3,10 @@ import type { ReviseMode, ReviseOutput } from "../agents/reviser.js";
 import type { WriteChapterOutput } from "../agents/writer.js";
 import type { ChapterIntent, ChapterMemo, ContextPackage, RuleStack } from "../models/input-governance.js";
 import type { LengthSpec } from "../models/length-governance.js";
+import type {
+  ChapterReviewTelemetry,
+  ChapterReviewTerminationReason,
+} from "../models/chapter.js";
 import { hasCriticalIssue } from "./chapter-quality-gate.js";
 import { countChapterLength, isOutsideHardRange } from "../utils/length-metrics.js";
 
@@ -30,6 +34,7 @@ export interface ChapterReviewCycleResult {
   readonly postReviseCount: number;
   readonly normalizeApplied: boolean;
   readonly reviewAttempts: ReadonlyArray<ChapterReviewAttempt>;
+  readonly reviewTelemetry: ChapterReviewTelemetry;
 }
 
 export interface ChapterReviewAttempt {
@@ -130,6 +135,9 @@ export async function runChapterReviewCycle(params: {
   let normalizeApplied = false;
   let finalContent = params.initialOutput.content;
   let finalWordCount = params.initialOutput.wordCount;
+  let auditCalls = 0;
+  let revisionCalls = 0;
+  let normalizationCalls = 0;
 
   // ---------------------------------------------------------------------------
   // Length normalization: dedicated step, only runs for clear hard-range drift.
@@ -144,6 +152,7 @@ export async function runChapterReviewCycle(params: {
     if (!isOutsideHardRange(wordCount, params.lengthSpec)) {
       return { content, wordCount, applied: false };
     }
+    normalizationCalls += 1;
     const result = await params.normalizeDraftLengthIfNeeded(content);
     totalUsage = params.addUsage(totalUsage, result.tokenUsage);
     return result;
@@ -163,6 +172,7 @@ export async function runChapterReviewCycle(params: {
     content: string,
     options?: { temperature?: number },
   ): Promise<ReviewAssessment> => {
+    auditCalls += 1;
     const evaluation = await params.evaluateChapter(content, options);
     const reportedScore = evaluation.auditResult.overallScore;
     const score = reportedScore === undefined || (reportedScore <= 0 && evaluation.auditResult.passed)
@@ -186,16 +196,74 @@ export async function runChapterReviewCycle(params: {
     };
   };
 
+  const addInitialPostWriteIssues = (assessment: ReviewAssessment): ReviewAssessment => {
+    const postWriteIssues: AuditIssue[] = [
+      ...params.initialOutput.postWriteErrors.map((issue): AuditIssue => ({
+        severity: "critical",
+        category: issue.rule,
+        description: issue.description,
+        suggestion: issue.suggestion,
+        repairScope: issue.repairScope,
+      })),
+      ...params.initialOutput.postWriteWarnings.map((issue): AuditIssue => ({
+        severity: "warning",
+        category: issue.rule,
+        description: issue.description,
+        suggestion: issue.suggestion,
+        repairScope: issue.repairScope,
+      })),
+    ];
+    if (postWriteIssues.length === 0) return assessment;
+
+    const revisionBlockingIssues = deduplicateIssues([
+      ...assessment.revisionBlockingIssues,
+      ...postWriteIssues,
+    ]);
+    const auditIssues = deduplicateIssues([
+      ...assessment.auditResult.issues,
+      ...postWriteIssues,
+    ]);
+    return {
+      ...assessment,
+      auditResult: {
+        ...assessment.auditResult,
+        passed: assessment.auditResult.passed
+          && !auditIssues.some((issue) => issue.severity === "critical"),
+        issues: auditIssues,
+      },
+      blockingCount: revisionBlockingIssues.filter(
+        (issue) => issue.severity === "warning" || issue.severity === "critical",
+      ).length,
+      criticalCount: revisionBlockingIssues.filter((issue) => issue.severity === "critical").length,
+      revisionBlockingIssues,
+    };
+  };
+
   const isPassed = (assessment: ReviewAssessment): boolean =>
     !hasCriticalIssue(assessment.auditResult.issues)
     && assessment.score >= PASS_SCORE_THRESHOLD
     && assessment.lengthInRange;
 
+  const actionableIssueFingerprint = (assessment: ReviewAssessment): string =>
+    assessment.revisionBlockingIssues
+      .filter((issue) => issue.severity !== "info")
+      .map((issue) => [
+        issue.severity,
+        normalizeFingerprintText(issue.category),
+        normalizeFingerprintText(issue.description),
+        issue.repairScope ?? "",
+      ].join("|"))
+      .sort()
+      .join("\n");
+
   const hasMeaningfulProgress = (before: ReviewAssessment, after: ReviewAssessment): boolean =>
-    after.score >= before.score + NET_IMPROVEMENT_EPSILON
-    || after.criticalCount < before.criticalCount
+    after.criticalCount < before.criticalCount
     || after.blockingCount < before.blockingCount
-    || after.aiTellCount < before.aiTellCount;
+    || after.aiTellCount < before.aiTellCount
+    || (
+      after.score >= before.score + NET_IMPROVEMENT_EPSILON
+      && actionableIssueFingerprint(after) !== actionableIssueFingerprint(before)
+    );
 
   // ---------------------------------------------------------------------------
   // Scoring loop: assess → revise → assess. Default is two automatic repair
@@ -203,7 +271,7 @@ export async function runChapterReviewCycle(params: {
   // ---------------------------------------------------------------------------
   const maxReviewIterations = Math.max(0, Math.floor(params.maxReviewIterations ?? DEFAULT_MAX_REVIEW_ITERATIONS));
   params.logStage({ zh: "审计草稿", en: "auditing draft" });
-  const initial = await assess(finalContent);
+  const initial = addInitialPostWriteIssues(await assess(finalContent));
 
   const snapshots: ReviewSnapshot[] = [{
     content: finalContent,
@@ -236,8 +304,20 @@ export async function runChapterReviewCycle(params: {
 
   let currentAudit = initial;
   let postReviseCount = 0;
+  let terminationReason: ChapterReviewTerminationReason = isPassed(initial)
+    ? "initial-passed"
+    : "max-review-iterations";
+  const buildReviewTelemetry = (): ChapterReviewTelemetry => ({
+    terminationReason,
+    auditCalls,
+    revisionCalls,
+    normalizationCalls,
+    reviewedCandidates: snapshots.length,
+    configuredMaxRevisions: maxReviewIterations,
+  });
 
   if (initial.auditResult.parseFailed) {
+    terminationReason = "audit-parse-failed";
     params.logWarn({
       zh: "审稿输出解析失败，跳过自动修稿以避免误改正文",
       en: "Audit output parsing failed; skipping automatic repair to avoid rewriting valid prose from an unreliable audit.",
@@ -252,22 +332,36 @@ export async function runChapterReviewCycle(params: {
       postReviseCount,
       normalizeApplied,
       reviewAttempts: buildReviewAttempts(snapshots[0]!),
+      reviewTelemetry: buildReviewTelemetry(),
     };
   }
 
   if (!isPassed(initial)) {
     for (let iteration = 0; iteration < maxReviewIterations; iteration++) {
+      const actionableIssues = currentAudit.revisionBlockingIssues.filter(
+        (issue) => issue.severity !== "info",
+      );
+      if (actionableIssues.length === 0) {
+        terminationReason = "no-actionable-issues";
+        params.logWarn({
+          zh: "审计未通过但没有可执行修复项，跳过自动修稿",
+          en: "Audit did not pass but exposed no actionable repair issues; skipping automatic revision.",
+        });
+        break;
+      }
+
       params.logStage({
         zh: `修复轮次 ${iteration + 1}/${maxReviewIterations}（当前 ${currentAudit.score} 分）`,
         en: `repair iteration ${iteration + 1}/${maxReviewIterations} (current score: ${currentAudit.score})`,
       });
 
       const reviser = params.createReviser();
+      revisionCalls += 1;
       const reviseOutput = await reviser.reviseChapter(
         params.bookDir,
         finalContent,
         params.chapterNumber,
-        currentAudit.revisionBlockingIssues.filter((issue) => issue.severity !== "info"),
+        actionableIssues,
         "auto",
         params.book.genre,
         { ...params.reducedControlInput, lengthSpec: params.lengthSpec },
@@ -275,6 +369,7 @@ export async function runChapterReviewCycle(params: {
       totalUsage = params.addUsage(totalUsage, reviseOutput.tokenUsage);
 
       if (reviseOutput.revisedContent.length === 0 || reviseOutput.revisedContent === finalContent) {
+        terminationReason = "revision-unchanged";
         params.logWarn({
           zh: `修复轮次 ${iteration + 1} 未产出新内容，退出循环`,
           en: `repair iteration ${iteration + 1} produced no new content, exiting loop`,
@@ -287,6 +382,23 @@ export async function runChapterReviewCycle(params: {
       normalizeApplied = normalizeApplied || normalizedRevision.applied;
       const revisedContent = params.normalizePostWriteSurface?.(normalizedRevision.content) ?? normalizedRevision.content;
       const revisedWordCount = countChapterLength(revisedContent, params.lengthSpec.countingMode);
+
+      if (revisedContent === finalContent) {
+        terminationReason = "normalized-revision-unchanged";
+        params.logWarn({
+          zh: `修复轮次 ${iteration + 1} 经长度/表面归一化后与当前正文相同，跳过重复审计`,
+          en: `repair iteration ${iteration + 1} normalized back to the current chapter; skipping duplicate audit`,
+        });
+        break;
+      }
+      if (snapshots.some((snapshot) => snapshot.content === revisedContent)) {
+        terminationReason = "revision-cycle-detected";
+        params.logWarn({
+          zh: `修复轮次 ${iteration + 1} 回到了已审版本，跳过重复审计并退出循环`,
+          en: `repair iteration ${iteration + 1} returned to an already reviewed version; skipping duplicate audit and exiting`,
+        });
+        break;
+      }
 
       // Every repair is normalized before re-audit so a structural fix is not
       // discarded solely because the reviser drifted outside hard bounds.
@@ -324,6 +436,7 @@ export async function runChapterReviewCycle(params: {
 
       // Check if passed
       if (isPassed(nextAssessment)) {
+        terminationReason = "passed-after-revision";
         params.logStage({
           zh: `修复后达到通过线（${nextAssessment.score} 分），退出循环`,
           en: `repair reached pass threshold (${nextAssessment.score}), exiting loop`,
@@ -337,6 +450,19 @@ export async function runChapterReviewCycle(params: {
 
       // Continue when actionable issues improved even if the model's numeric
       // score did not move.
+      const issueSetUnchanged = actionableIssueFingerprint(currentAudit)
+        === actionableIssueFingerprint(nextAssessment);
+      const countImproved = nextAssessment.criticalCount < currentAudit.criticalCount
+        || nextAssessment.blockingCount < currentAudit.blockingCount
+        || nextAssessment.aiTellCount < currentAudit.aiTellCount;
+      if (issueSetUnchanged && !countImproved) {
+        terminationReason = "issue-set-unchanged";
+        params.logWarn({
+          zh: `修复轮次 ${iteration + 1} 的可执行问题集合未变化，忽略随机分数波动并退出循环`,
+          en: `repair iteration ${iteration + 1} left the actionable issue set unchanged; ignoring score noise and exiting`,
+        });
+        break;
+      }
       if (hasMeaningfulProgress(currentAudit, nextAssessment)) {
         finalContent = revisedContent;
         finalWordCount = revisedWordCount;
@@ -344,6 +470,7 @@ export async function runChapterReviewCycle(params: {
         currentAudit = nextAssessment;
         // Continue to next iteration
       } else {
+        terminationReason = "no-material-progress";
         params.logWarn({
           zh: `修复轮次 ${iteration + 1} 未净提升（分数 ${currentAudit.score} → ${nextAssessment.score}，critical ${currentAudit.criticalCount} → ${nextAssessment.criticalCount}，blocking ${currentAudit.blockingCount} → ${nextAssessment.blockingCount}），退出循环`,
           en: `repair iteration ${iteration + 1} no net improvement (score ${currentAudit.score} → ${nextAssessment.score}, critical ${currentAudit.criticalCount} → ${nextAssessment.criticalCount}, blocking ${currentAudit.blockingCount} → ${nextAssessment.blockingCount}), exiting loop`,
@@ -398,5 +525,29 @@ export async function runChapterReviewCycle(params: {
     postReviseCount,
     normalizeApplied,
     reviewAttempts: buildReviewAttempts(bestSnapshot),
+    reviewTelemetry: buildReviewTelemetry(),
   };
+}
+
+function normalizeFingerprintText(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\s\p{P}\p{S}]+/gu, " ")
+    .trim();
+}
+
+function deduplicateIssues(issues: ReadonlyArray<AuditIssue>): AuditIssue[] {
+  const seen = new Set<string>();
+  return issues.filter((issue) => {
+    const key = [
+      issue.severity,
+      normalizeFingerprintText(issue.category),
+      normalizeFingerprintText(issue.description),
+      issue.repairScope ?? "",
+    ].join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }

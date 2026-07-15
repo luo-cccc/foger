@@ -2,7 +2,7 @@ import type { LLMClient, LLMCallTelemetry, OnCallTelemetry, OnStreamProgress } f
 import { chatCompletion, createLLMClient } from "../llm/provider.js";
 import type { Logger } from "../utils/logger.js";
 import type { BookConfig, RevisionGate } from "../models/book.js";
-import type { ChapterMeta } from "../models/chapter.js";
+import type { ChapterMeta, ChapterReviewTelemetry } from "../models/chapter.js";
 import type { NotifyChannel, LLMConfig, AgentLLMOverride, InputGovernanceMode } from "../models/project.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import { ArchitectAgent, type ArchitectOutput } from "../agents/architect.js";
@@ -362,6 +362,7 @@ export interface ChapterPipelineResult {
   readonly lengthTelemetry?: LengthTelemetry;
   readonly tokenUsage?: TokenUsageSummary;
   readonly reviewAttempts?: ReadonlyArray<ChapterReviewAttempt>;
+  readonly reviewTelemetry?: ChapterReviewTelemetry;
   readonly recovery?: Exclude<ChapterPersistenceRecovery, { readonly kind: "none" }>;
 }
 
@@ -2090,6 +2091,7 @@ export class PipelineRunner {
     let normalizeApplied: boolean;
     let preAuditNormalizedWordCount: number | undefined;
     let reviewAttempts: ReadonlyArray<ChapterReviewAttempt> | undefined;
+    let reviewTelemetry: ChapterReviewTelemetry;
 
     if ((this.config.chapterReviewMode ?? "auto") === "manual") {
       // C4a: write-only checkpoint. Stop right after the draft — skip the
@@ -2109,6 +2111,14 @@ export class PipelineRunner {
         summary: pipelineLang === "en"
           ? "Not reviewed yet (manual mode: stopped after writing — run review when ready)."
           : "尚未审查（手动模式：写完即停，需要时点“审查”）。",
+      };
+      reviewTelemetry = {
+        terminationReason: "manual-mode",
+        auditCalls: 0,
+        revisionCalls: 0,
+        normalizationCalls: 0,
+        reviewedCandidates: 0,
+        configuredMaxRevisions: 0,
       };
     } else {
       const auditor = new ContinuityAuditor(this.agentCtxFor("auditor", bookId));
@@ -2164,6 +2174,7 @@ export class PipelineRunner {
       normalizeApplied = reviewResult.normalizeApplied;
       preAuditNormalizedWordCount = reviewResult.preAuditNormalizedWordCount;
       reviewAttempts = reviewResult.reviewAttempts;
+      reviewTelemetry = reviewResult.reviewTelemetry;
     }
 
     this.throwIfAborted();
@@ -2404,6 +2415,7 @@ export class PipelineRunner {
         lengthTelemetry,
         degradedIssues,
         tokenUsage: totalUsage,
+        reviewTelemetry,
         operationId: this.activeOperationIds.get(bookId),
         loadChapterIndex: () => this.state.loadChapterIndex(bookId),
         saveChapter: ({ persistTruth }) => writer.saveChapter(
@@ -2489,6 +2501,7 @@ export class PipelineRunner {
       lengthTelemetry,
       tokenUsage: totalUsage,
       ...(reviewAttempts ? { reviewAttempts } : {}),
+      reviewTelemetry,
     };
   }
 

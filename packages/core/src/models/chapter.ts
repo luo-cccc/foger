@@ -18,6 +18,31 @@ export const ChapterStatusSchema = z.enum([
 ]);
 export type ChapterStatus = z.infer<typeof ChapterStatusSchema>;
 
+export const ChapterReviewTerminationReasonSchema = z.enum([
+  "manual-mode",
+  "initial-passed",
+  "audit-parse-failed",
+  "no-actionable-issues",
+  "revision-unchanged",
+  "normalized-revision-unchanged",
+  "revision-cycle-detected",
+  "passed-after-revision",
+  "issue-set-unchanged",
+  "no-material-progress",
+  "max-review-iterations",
+]);
+export type ChapterReviewTerminationReason = z.infer<typeof ChapterReviewTerminationReasonSchema>;
+
+export const ChapterReviewTelemetrySchema = z.object({
+  terminationReason: ChapterReviewTerminationReasonSchema,
+  auditCalls: z.number().int().min(0),
+  revisionCalls: z.number().int().min(0),
+  normalizationCalls: z.number().int().min(0),
+  reviewedCandidates: z.number().int().min(0),
+  configuredMaxRevisions: z.number().int().min(0),
+});
+export type ChapterReviewTelemetry = z.infer<typeof ChapterReviewTelemetrySchema>;
+
 export const ChapterMetaSchema = z.object({
   number: z.number().int().min(1),
   title: z.string(),
@@ -37,6 +62,7 @@ export const ChapterMetaSchema = z.object({
     completionTokens: z.number().int().default(0),
     totalTokens: z.number().int().default(0),
   }).optional(),
+  reviewTelemetry: ChapterReviewTelemetrySchema.optional(),
   operationId: z.string().uuid().optional(),
 });
 

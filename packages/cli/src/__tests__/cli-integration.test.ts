@@ -282,6 +282,14 @@ describe("CLI integration", () => {
           "--save-report",
           "--max-total-tokens",
           "100",
+          "--max-audit-calls",
+          "2",
+          "--max-revision-calls",
+          "2",
+          "--max-normalize-calls",
+          "2",
+          "--max-settle-calls",
+          "2",
           "--json",
         ]));
 

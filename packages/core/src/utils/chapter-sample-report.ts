@@ -1,4 +1,4 @@
-import type { ChapterMeta } from "../models/chapter.js";
+import type { ChapterMeta, ChapterReviewTelemetry } from "../models/chapter.js";
 import type { LLMCallTelemetry } from "../llm/provider.js";
 import {
   summarizeLLMCallTelemetry,
@@ -15,6 +15,10 @@ export interface ChapterSampleReportLimits {
   readonly maxChapterTokens?: number;
   readonly maxPromptEstimatedTokensPerCall?: number;
   readonly maxRetryRate?: number;
+  readonly maxAuditCallsPerChapter?: number;
+  readonly maxRevisionCallsPerChapter?: number;
+  readonly maxLengthNormalizationCallsPerChapter?: number;
+  readonly maxSettlementCallsPerChapter?: number;
 }
 
 export interface ChapterSampleReportIssue {
@@ -38,7 +42,19 @@ export interface ChapterSampleReportChapter {
   readonly auditIssueCount: number;
   readonly operationId?: string;
   readonly indexedTokens: number;
+  readonly reviewTelemetry?: ChapterReviewTelemetry;
+  readonly governanceCalls: ChapterSampleGovernanceCalls;
   readonly telemetry: LLMCallTelemetryAggregate;
+}
+
+export interface ChapterSampleGovernanceCalls {
+  readonly audit: number;
+  readonly revision: number;
+  readonly lengthNormalization: number;
+  readonly settlement: number;
+  readonly settlementObservation: number;
+  readonly stateValidation: number;
+  readonly chapterAnalysis: number;
 }
 
 export interface ChapterSampleReport {
@@ -55,6 +71,9 @@ export interface ChapterSampleReport {
     readonly indexedTelemetryCoverageRate: number;
     readonly telemetryCalls: number;
     readonly retryRate: number;
+    readonly reviewTelemetryChapters: number;
+    readonly governanceCalls: ChapterSampleGovernanceCalls;
+    readonly reviewTerminationReasons: Readonly<Record<string, number>>;
   };
   readonly telemetryWindow: {
     readonly start?: string;
@@ -159,6 +178,7 @@ export function buildChapterSampleReport(params: {
       ? operationTelemetry.filter((record) => record.operationId === chapter.operationId)
       : [];
     const summary = summarizeLLMCallTelemetry(records);
+    const governanceCalls = countGovernanceCalls(records);
 
     if (!acceptedStatuses.has(chapter.status)) {
       issues.push({
@@ -186,6 +206,38 @@ export function buildChapterSampleReport(params: {
         maximum: limits.maxChapterTokens,
       });
     }
+    addGovernanceCallLimitIssue({
+      issues,
+      chapter: chapter.number,
+      code: "chapter-audit-call-budget",
+      label: "audit",
+      actual: governanceCalls.audit,
+      maximum: limits.maxAuditCallsPerChapter,
+    });
+    addGovernanceCallLimitIssue({
+      issues,
+      chapter: chapter.number,
+      code: "chapter-revision-call-budget",
+      label: "revision",
+      actual: governanceCalls.revision,
+      maximum: limits.maxRevisionCallsPerChapter,
+    });
+    addGovernanceCallLimitIssue({
+      issues,
+      chapter: chapter.number,
+      code: "chapter-normalization-call-budget",
+      label: "length-normalization",
+      actual: governanceCalls.lengthNormalization,
+      maximum: limits.maxLengthNormalizationCallsPerChapter,
+    });
+    addGovernanceCallLimitIssue({
+      issues,
+      chapter: chapter.number,
+      code: "chapter-settlement-call-budget",
+      label: "settlement",
+      actual: governanceCalls.settlement,
+      maximum: limits.maxSettlementCallsPerChapter,
+    });
 
     return {
       number: chapter.number,
@@ -195,6 +247,8 @@ export function buildChapterSampleReport(params: {
       auditIssueCount: chapter.auditIssues.length,
       operationId: chapter.operationId,
       indexedTokens: chapter.tokenUsage?.totalTokens ?? 0,
+      reviewTelemetry: chapter.reviewTelemetry,
+      governanceCalls,
       telemetry: pickAggregate(summary),
     };
   });
@@ -252,6 +306,18 @@ export function buildChapterSampleReport(params: {
     (sum, chapter) => sum + (chapter.tokenUsage?.totalTokens ?? 0),
     0,
   );
+  const governanceCalls = chapterReports.reduce(
+    (total, chapter) => addGovernanceCalls(total, chapter.governanceCalls),
+    emptyGovernanceCalls(),
+  );
+  const reviewTerminationReasons = chapterReports.reduce<Record<string, number>>(
+    (counts, chapter) => {
+      const reason = chapter.reviewTelemetry?.terminationReason;
+      if (reason) counts[reason] = (counts[reason] ?? 0) + 1;
+      return counts;
+    },
+    {},
+  );
 
   return {
     schemaVersion: 1,
@@ -269,6 +335,9 @@ export function buildChapterSampleReport(params: {
         : 1,
       telemetryCalls: telemetry.calls,
       retryRate,
+      reviewTelemetryChapters: chapterReports.filter((chapter) => chapter.reviewTelemetry).length,
+      governanceCalls,
+      reviewTerminationReasons,
     },
     telemetryWindow: {
       start: startMs === undefined ? undefined : new Date(startMs).toISOString(),
@@ -286,7 +355,66 @@ export function buildChapterSampleReport(params: {
     limitations: [
       "Fallback diagnostics are not persisted in llm-calls JSONL and must be joined from pipeline diagnostics when available.",
       "Per-chapter telemetry excludes additional or unattributed recovery operations; totals include every call inside the sample window.",
+      "Review termination telemetry is available only for chapters written after that field was introduced; governance phase counts remain available from operation telemetry.",
     ],
+  };
+}
+
+function addGovernanceCallLimitIssue(params: {
+  readonly issues: ChapterSampleReportIssue[];
+  readonly chapter: number;
+  readonly code: string;
+  readonly label: string;
+  readonly actual: number;
+  readonly maximum?: number;
+}): void {
+  if (params.maximum === undefined || params.actual <= params.maximum) return;
+  params.issues.push({
+    code: params.code,
+    chapter: params.chapter,
+    message: `Chapter ${params.chapter} used ${params.actual} ${params.label} call(s), above ${params.maximum}.`,
+    actual: params.actual,
+    maximum: params.maximum,
+  });
+}
+
+function countGovernanceCalls(records: ReadonlyArray<LLMCallTelemetry>): ChapterSampleGovernanceCalls {
+  const countPhase = (phase: string): number => records.filter((record) => record.phase === phase).length;
+  return {
+    audit: countPhase("audit"),
+    revision: countPhase("revise"),
+    lengthNormalization: countPhase("normalize-length"),
+    settlement: countPhase("settle"),
+    settlementObservation: countPhase("settle-observe"),
+    stateValidation: countPhase("validate-state"),
+    chapterAnalysis: countPhase("analyze"),
+  };
+}
+
+function emptyGovernanceCalls(): ChapterSampleGovernanceCalls {
+  return {
+    audit: 0,
+    revision: 0,
+    lengthNormalization: 0,
+    settlement: 0,
+    settlementObservation: 0,
+    stateValidation: 0,
+    chapterAnalysis: 0,
+  };
+}
+
+function addGovernanceCalls(
+  left: ChapterSampleGovernanceCalls,
+  right: ChapterSampleGovernanceCalls,
+): ChapterSampleGovernanceCalls {
+  return {
+    audit: left.audit + right.audit,
+    revision: left.revision + right.revision,
+    lengthNormalization: left.lengthNormalization + right.lengthNormalization,
+    settlement: left.settlement + right.settlement,
+    settlementObservation: left.settlementObservation + right.settlementObservation,
+    stateValidation: left.stateValidation + right.stateValidation,
+    chapterAnalysis: left.chapterAnalysis + right.chapterAnalysis,
   };
 }
 

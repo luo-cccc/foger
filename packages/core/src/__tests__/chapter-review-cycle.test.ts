@@ -523,7 +523,16 @@ describe("runChapterReviewCycle v9", () => {
 
   it("normalizes a revised draft before re-auditing it", async () => {
     const auditChapter = vi.fn()
-      .mockResolvedValueOnce(createAuditResult({ passed: false, overallScore: 70 }))
+      .mockResolvedValueOnce(createAuditResult({
+        passed: false,
+        overallScore: 70,
+        issues: [{
+          severity: "warning",
+          category: "pacing",
+          description: "The middle repeats the same beat.",
+          suggestion: "Tighten the repeated beat.",
+        }],
+      }))
       .mockResolvedValueOnce(createAuditResult({ passed: true, overallScore: 90 }));
     const reviseChapter = vi.fn().mockResolvedValue({
       revisedContent: "x".repeat(400),
@@ -626,5 +635,214 @@ describe("runChapterReviewCycle v9", () => {
     expect(result.finalContent).not.toContain("——");
     expect(result.auditResult.passed).toBe(true);
     expect(reviseChapter).not.toHaveBeenCalled();
+  });
+
+  it("does not call the reviser when a failed audit exposes no actionable issues", async () => {
+    const auditChapter = vi.fn().mockResolvedValue(createAuditResult({
+      passed: false,
+      overallScore: 72,
+      issues: [{
+        severity: "info",
+        category: "trace",
+        description: "No repair target was identified.",
+        suggestion: "None.",
+      }],
+    }));
+    const reviseChapter = vi.fn();
+
+    const result = await runChapterReviewCycle({
+      ...baseParams,
+      initialOutput: {
+        content: "a".repeat(200),
+        wordCount: 200,
+        postWriteErrors: [],
+        postWriteWarnings: [],
+      },
+      createReviser: () => ({ reviseChapter }),
+      evaluateChapter: createEvaluation(auditChapter),
+      normalizeDraftLengthIfNeeded: async (content) => ({
+        content,
+        wordCount: content.length,
+        applied: false,
+        tokenUsage: ZERO_USAGE,
+      }),
+    });
+
+    expect(reviseChapter).not.toHaveBeenCalled();
+    expect(result.reviewTelemetry).toEqual({
+      terminationReason: "no-actionable-issues",
+      auditCalls: 1,
+      revisionCalls: 0,
+      normalizationCalls: 0,
+      reviewedCandidates: 1,
+      configuredMaxRevisions: 2,
+    });
+  });
+
+  it("skips duplicate audit when length normalization restores the current chapter", async () => {
+    const currentContent = "a".repeat(200);
+    const issue: AuditIssue = {
+      severity: "critical",
+      category: "continuity",
+      description: "Repair the evidence chain.",
+      suggestion: "Add the missing action.",
+    };
+    const auditChapter = vi.fn().mockResolvedValue(createAuditResult({
+      passed: false,
+      overallScore: 70,
+      issues: [issue],
+    }));
+    const reviseChapter = vi.fn().mockResolvedValue({
+      revisedContent: "x".repeat(400),
+      wordCount: 400,
+      fixedIssues: ["continuity"],
+      updatedState: "",
+      updatedLedger: "",
+      updatedHooks: "",
+      tokenUsage: ZERO_USAGE,
+    });
+    const normalizeDraftLengthIfNeeded = vi.fn().mockResolvedValue({
+      content: currentContent,
+      wordCount: currentContent.length,
+      applied: true,
+      tokenUsage: ZERO_USAGE,
+    });
+
+    const result = await runChapterReviewCycle({
+      ...baseParams,
+      initialOutput: {
+        content: currentContent,
+        wordCount: currentContent.length,
+        postWriteErrors: [],
+        postWriteWarnings: [],
+      },
+      createReviser: () => ({ reviseChapter }),
+      evaluateChapter: createEvaluation(auditChapter),
+      normalizeDraftLengthIfNeeded,
+    });
+
+    expect(auditChapter).toHaveBeenCalledTimes(1);
+    expect(reviseChapter).toHaveBeenCalledTimes(1);
+    expect(normalizeDraftLengthIfNeeded).toHaveBeenCalledTimes(1);
+    expect(result.finalContent).toBe(currentContent);
+    expect(result.reviewTelemetry).toMatchObject({
+      terminationReason: "normalized-revision-unchanged",
+      auditCalls: 1,
+      revisionCalls: 1,
+      normalizationCalls: 1,
+      reviewedCandidates: 1,
+    });
+  });
+
+  it("does not spend another revision on an unchanged issue set and a higher random score", async () => {
+    const issue: AuditIssue = {
+      severity: "warning",
+      category: "pacing",
+      description: "The middle repeats the same deduction.",
+      suggestion: "Remove the duplicate deduction.",
+    };
+    const auditChapter = vi.fn()
+      .mockResolvedValueOnce(createAuditResult({ passed: false, overallScore: 70, issues: [issue] }))
+      .mockResolvedValueOnce(createAuditResult({ passed: false, overallScore: 79, issues: [issue] }));
+    const reviseChapter = vi.fn().mockResolvedValue({
+      revisedContent: "b".repeat(200),
+      wordCount: 200,
+      fixedIssues: ["pacing"],
+      updatedState: "",
+      updatedLedger: "",
+      updatedHooks: "",
+      tokenUsage: ZERO_USAGE,
+    });
+
+    const result = await runChapterReviewCycle({
+      ...baseParams,
+      initialOutput: {
+        content: "a".repeat(200),
+        wordCount: 200,
+        postWriteErrors: [],
+        postWriteWarnings: [],
+      },
+      createReviser: () => ({ reviseChapter }),
+      evaluateChapter: createEvaluation(auditChapter),
+      normalizeDraftLengthIfNeeded: async (content) => ({
+        content,
+        wordCount: content.length,
+        applied: false,
+        tokenUsage: ZERO_USAGE,
+      }),
+      maxReviewIterations: 2,
+    });
+
+    expect(auditChapter).toHaveBeenCalledTimes(2);
+    expect(reviseChapter).toHaveBeenCalledTimes(1);
+    expect(result.reviewTelemetry).toMatchObject({
+      terminationReason: "issue-set-unchanged",
+      auditCalls: 2,
+      revisionCalls: 1,
+      reviewedCandidates: 2,
+    });
+  });
+
+  it("detects a revision cycle before re-auditing an already reviewed version", async () => {
+    const firstIssue: AuditIssue = {
+      severity: "warning",
+      category: "pacing",
+      description: "First issue.",
+      suggestion: "Fix first issue.",
+    };
+    const secondIssue: AuditIssue = {
+      severity: "warning",
+      category: "continuity",
+      description: "Second issue.",
+      suggestion: "Fix second issue.",
+    };
+    const initialContent = "a".repeat(200);
+    const auditChapter = vi.fn()
+      .mockResolvedValueOnce(createAuditResult({ passed: false, overallScore: 70, issues: [firstIssue] }))
+      .mockResolvedValueOnce(createAuditResult({ passed: false, overallScore: 80, issues: [secondIssue] }));
+    const reviseChapter = vi.fn()
+      .mockResolvedValueOnce({
+        revisedContent: "b".repeat(200),
+        wordCount: 200,
+        fixedIssues: ["first"],
+        updatedState: "", updatedLedger: "", updatedHooks: "",
+        tokenUsage: ZERO_USAGE,
+      })
+      .mockResolvedValueOnce({
+        revisedContent: initialContent,
+        wordCount: 200,
+        fixedIssues: ["second"],
+        updatedState: "", updatedLedger: "", updatedHooks: "",
+        tokenUsage: ZERO_USAGE,
+      });
+
+    const result = await runChapterReviewCycle({
+      ...baseParams,
+      initialOutput: {
+        content: initialContent,
+        wordCount: 200,
+        postWriteErrors: [],
+        postWriteWarnings: [],
+      },
+      createReviser: () => ({ reviseChapter }),
+      evaluateChapter: createEvaluation(auditChapter),
+      normalizeDraftLengthIfNeeded: async (content) => ({
+        content,
+        wordCount: content.length,
+        applied: false,
+        tokenUsage: ZERO_USAGE,
+      }),
+      maxReviewIterations: 2,
+    });
+
+    expect(auditChapter).toHaveBeenCalledTimes(2);
+    expect(reviseChapter).toHaveBeenCalledTimes(2);
+    expect(result.finalContent).toBe("b".repeat(200));
+    expect(result.reviewTelemetry).toMatchObject({
+      terminationReason: "revision-cycle-detected",
+      auditCalls: 2,
+      revisionCalls: 2,
+      reviewedCandidates: 2,
+    });
   });
 });

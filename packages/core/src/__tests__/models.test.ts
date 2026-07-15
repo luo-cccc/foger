@@ -267,6 +267,23 @@ describe("ChapterMetaSchema", () => {
     expect(() => ChapterMetaSchema.parse({ ...validChapter, operationId: "not-a-uuid" })).toThrow();
   });
 
+  it("accepts bounded review telemetry and rejects unknown termination reasons", () => {
+    const reviewTelemetry = {
+      terminationReason: "issue-set-unchanged",
+      auditCalls: 2,
+      revisionCalls: 1,
+      normalizationCalls: 1,
+      reviewedCandidates: 2,
+      configuredMaxRevisions: 2,
+    } as const;
+    const result = ChapterMetaSchema.parse({ ...validChapter, reviewTelemetry });
+    expect(result.reviewTelemetry).toEqual(reviewTelemetry);
+    expect(() => ChapterMetaSchema.parse({
+      ...validChapter,
+      reviewTelemetry: { ...reviewTelemetry, terminationReason: "keep-spending" },
+    })).toThrow();
+  });
+
   it("omits reviewNote when not provided", () => {
     const result = ChapterMetaSchema.parse(validChapter);
     expect(result.reviewNote).toBeUndefined();

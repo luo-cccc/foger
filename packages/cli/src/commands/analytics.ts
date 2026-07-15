@@ -19,6 +19,10 @@ interface AnalyticsOptions {
   readonly maxChapterTokens?: string;
   readonly maxPromptTokens?: string;
   readonly maxRetryRate?: string;
+  readonly maxAuditCalls?: string;
+  readonly maxRevisionCalls?: string;
+  readonly maxNormalizeCalls?: string;
+  readonly maxSettleCalls?: string;
 }
 
 export const analyticsCommand = new Command("analytics")
@@ -33,6 +37,10 @@ export const analyticsCommand = new Command("analytics")
   .option("--max-chapter-tokens <n>", "Fail the LLM report gate above this per-chapter total")
   .option("--max-prompt-tokens <n>", "Fail the LLM report gate above this estimated prompt size")
   .option("--max-retry-rate <ratio>", "Fail the LLM report gate above this retry ratio (0-1)")
+  .option("--max-audit-calls <n>", "Fail above this audit call count per chapter")
+  .option("--max-revision-calls <n>", "Fail above this revision call count per chapter")
+  .option("--max-normalize-calls <n>", "Fail above this length-normalization call count per chapter")
+  .option("--max-settle-calls <n>", "Fail above this settlement call count per chapter")
   .action(async (bookIdArg: string | undefined, opts: AnalyticsOptions) => {
     try {
       await loadConfig();
@@ -67,6 +75,22 @@ export const analyticsCommand = new Command("analytics")
               "--max-prompt-tokens",
             ),
             maxRetryRate: parseRatio(opts.maxRetryRate, "--max-retry-rate"),
+            maxAuditCallsPerChapter: parsePositiveInteger(
+              opts.maxAuditCalls,
+              "--max-audit-calls",
+            ),
+            maxRevisionCallsPerChapter: parsePositiveInteger(
+              opts.maxRevisionCalls,
+              "--max-revision-calls",
+            ),
+            maxLengthNormalizationCallsPerChapter: parsePositiveInteger(
+              opts.maxNormalizeCalls,
+              "--max-normalize-calls",
+            ),
+            maxSettlementCallsPerChapter: parsePositiveInteger(
+              opts.maxSettleCalls,
+              "--max-settle-calls",
+            ),
           },
         });
       }
@@ -153,6 +177,10 @@ export const analyticsCommand = new Command("analytics")
           for (const chapter of llmReport.chapters) {
             log(
               `      Ch.${chapter.number}: ${chapter.telemetry.calls} calls, ${chapter.telemetry.usage.totalTokens.toLocaleString()} telemetry tokens, ${chapter.indexedTokens.toLocaleString()} indexed tokens`,
+            );
+            const governance = chapter.governanceCalls;
+            log(
+              `        governance audit=${governance.audit}, revise=${governance.revision}, normalize=${governance.lengthNormalization}, settle=${governance.settlement}; stop=${chapter.reviewTelemetry?.terminationReason ?? "legacy/unrecorded"}`,
             );
           }
           const topAgentPhases = Object.entries(llmReport.telemetry.byAgentPhase)
