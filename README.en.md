@@ -38,7 +38,7 @@ InkOS now focuses on long-form novel creation. Studio Chat can help create books
 - **Interrupt long tasks**: Studio Chat can abort an in-flight agent turn when a model or provider stalls.
 - **Safer chapter revision from Chat**: rewrite / revise requests now pass the current chat instruction as a one-off reviser brief; if a revision is kept out of disk, InkOS reports the revision gate metrics and remaining issues.
 
-Current quality boundary: local chapter production, structured state, chapter/workflow recovery, and the complete deterministic suite have reached a stable usable baseline. The isolated Studio E2E suite is 10/10; its preparing and committed real child-process force-kill/restart recovery cases passed five combined rounds, 10/10 in total. `pnpm stress:process` passed with 8 workers, 400 contended mutations, and 30 force-kill recovery rounds; the release gate remains green. Known Studio, CLI, Chat, and sub-agent write bypasses, revise-mode validation, recovery preflights, and cross-process config writes are now converged. Exact current test counts and real-model limits are maintained only in the [current architecture and quality matrix](docs/current-architecture-and-priorities.md) so this README does not become stale after routine test changes.
+Current quality boundary: local chapter production, structured state, chapter/workflow recovery, and the complete deterministic suite have reached a stable usable baseline. Isolated Studio E2E, cross-process contention, and real force-kill recovery remain green. On 2026-07-16, the official DeepSeek 20-chapter linked run durably completed 15 chapters; chapter 16 was not committed because a resync projection mixed canonical hook IDs with display labels. The normalization fix is covered offline, but a complete 20/20 rerun is still required. Exact test counts and real-model limits are maintained only in the [current architecture and quality matrix](docs/current-architecture-and-priorities.md) so this README does not become stale after routine test changes.
 
 **Long-form novels** — create from a brief, generate foundations, chapter intent, context packages, prose, review, revision, and state settlement. Context is governed with protected / compressible layers so long books remain steerable.
 
@@ -444,7 +444,7 @@ inkos up --service moonshot --model kimi-k2.5 --api-key-env MOONSHOT_API_KEY
 The authoritative order is maintained in [Current Architecture and Development Priorities](docs/current-architecture-and-priorities.md):
 
 - **P0 (complete)**: unified core mutations, chapter/workflow recovery, cross-process config locking, force-kill E2E, and process contention stress coverage.
-- **P1 (current)**: establish multi-chapter quality reports and token/context budgets; split the Studio server and PipelineRunner by domain; further lazy-load Mermaid, Shiki, and WASM-heavy features.
+- **P1 (current)**: rerun the fixed 20-chapter linked acceptance and require 20/20 durable chapters, consistent truth/snapshots, complete Doctor correlation, and a reliable terminal report; then split the Studio server and PipelineRunner by domain and further lazy-load Mermaid, Shiki, and WASM-heavy features.
 - **P2**: partial chapter rewrites, a custom agent/plugin contract, and platform-specific exports.
 
 Microservices and a remote database are not current goals. The local-first filesystem, structured truth, and SQLite memory remain the default architecture.

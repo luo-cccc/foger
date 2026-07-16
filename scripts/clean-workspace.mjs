@@ -17,6 +17,7 @@ const targets = new Set([
   "packages/cli/node_modules/.vite",
   "packages/core/node_modules/.vite",
   "packages/studio/node_modules/.vite",
+  "packages/studio/.tmp-linked-acceptance",
   "packages/studio/test-results",
   "packages/studio/playwright-report",
   "packages/studio/e2e-server.log",

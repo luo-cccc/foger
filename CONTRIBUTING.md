@@ -114,7 +114,9 @@ Verification is layered:
 
 Changes to locks, transaction markers, recovery, project configuration, or process lifecycle must also run `pnpm stress:process`.
 
-Studio Playwright tests run through `pnpm --filter @actalk/inkos-studio test:e2e`, which allocates an isolated temporary project root and dynamic ports. Do not invoke Playwright directly because the launcher provides the required runtime metadata. Recovery is a release-gate scenario; the 2026-07-11 baseline is 8/8, and its preparing/committed real child-process force-kill/restart cases passed five combined rounds, 10/10 in total. Changes to persistence, locking, or chapter mutations must keep both results green.
+Studio Playwright tests run through `pnpm --filter @actalk/inkos-studio test:e2e`, which allocates an isolated temporary project root and dynamic ports. Do not invoke Playwright directly because the launcher provides the required runtime metadata. The current isolated suite baseline is 10/10, including preparing/committed real child-process force-kill and restart recovery. Changes to persistence, locking, or chapter mutations must keep the suite green.
+
+Real-provider runs are manual acceptance tests, not commit-level tests. Keep credentials outside the repository, summarize durable findings in `docs/live-llm-testing-and-next-goals.md`, and remove raw `.tmp-*` projects with `pnpm clean` after the summary is written. An interrupted report is not authoritative: cross-check the chapter index, structured truth, snapshots, and runtime telemetry before documenting its outcome.
 
 ## Questions?
 
