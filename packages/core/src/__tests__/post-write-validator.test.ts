@@ -150,6 +150,7 @@ describe("validatePostWrite", () => {
     const violation = findRule(result, "叙事人称");
     expect(violation).toBeDefined();
     expect(violation!.severity).toBe("error");
+    expect(violation!.repairScope).toBe("structural");
   });
 
   it("does not flag genuine first-person prose", () => {
@@ -216,6 +217,7 @@ describe("validatePostWrite", () => {
     const result = validatePostWrite(content, baseProfile, null);
     expect(findRule(result, "禁止句式")).toBeDefined();
     expect(findRule(result, "禁止句式")!.severity).toBe("error");
+    expect(findRule(result, "禁止句式")!.repairScope).toBe("local");
   });
 
   it("detects dash '——'", () => {

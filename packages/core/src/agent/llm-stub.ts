@@ -364,6 +364,13 @@ function renderStubFoundation(prompt: string): string {
         "",
       ];
     }),
+    ...(plan.compact ? [
+      "### Compact Chapter Beat Contract",
+      ...Array.from({ length: plan.targetChapters }, (_, index) => (
+        `Chapter ${index + 1}: Goal=Advance investigation action ${index + 1} | Obstacle=Confront concrete resistance ${index + 1} | Turn=Gain decision-changing evidence ${index + 1} | Delivery=Complete observable result ${index + 1} | End Hook=${index + 1 === plan.targetChapters ? "Close with irreversible public aftermath" : `Causally launch chapter ${index + 2}`}`
+      )),
+      "",
+    ] : []),
     "## Hook and payoff map",
     "The harbor ledger fragment pays off the mentor trail, the forged debt notices pay off the system-level conspiracy, and the witness network pays off the possibility of public reversal. Each planned volume closes one practical loop while increasing the moral cost of the next decision.",
     "",

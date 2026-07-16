@@ -39,13 +39,17 @@ const { values: args } = parseArgs({
     "max-prompt-tokens-per-call": { type: "string", default: "0" },
     "max-agent-tokens": { type: "string", default: "" },
     "max-phase-tokens": { type: "string", default: "" },
+    "max-audit-calls": { type: "string", default: "0" },
+    "max-revision-calls": { type: "string", default: "0" },
+    "max-normalize-calls": { type: "string", default: "0" },
+    "max-settle-calls": { type: "string", default: "0" },
   },
 });
 
 const CHAPTER_COUNT = Math.max(1, Number(args.chapters) || 5);
 const WORDS_PER_CHAPTER = Math.max(1000, Number(args.words) || 1000);
 const ROUTE_MODE = args["route-mode"];
-const ROUTE_MODES = new Set(["openrouter-only", "minimax-writer", "minimax-governance"]);
+const ROUTE_MODES = new Set(["single-provider", "openrouter-only", "minimax-writer", "minimax-governance"]);
 if (!ROUTE_MODES.has(ROUTE_MODE)) {
   throw new Error(`Invalid --route-mode: ${ROUTE_MODE}`);
 }
@@ -102,6 +106,10 @@ const MAX_CHAPTER_TOKENS = optionalPositiveLimit(args["max-chapter-tokens"]);
 const MAX_PROMPT_TOKENS_PER_CALL = optionalPositiveLimit(args["max-prompt-tokens-per-call"]);
 const MAX_AGENT_TOKENS = parseBudgetMap(args["max-agent-tokens"], "max-agent-tokens");
 const MAX_PHASE_TOKENS = parseBudgetMap(args["max-phase-tokens"], "max-phase-tokens");
+const MAX_AUDIT_CALLS = optionalPositiveLimit(args["max-audit-calls"]);
+const MAX_REVISION_CALLS = optionalPositiveLimit(args["max-revision-calls"]);
+const MAX_NORMALIZE_CALLS = optionalPositiveLimit(args["max-normalize-calls"]);
+const MAX_SETTLE_CALLS = optionalPositiveLimit(args["max-settle-calls"]);
 const TOKEN_BUDGET_LIMITS = {
   ...(MAX_TOTAL_TOKENS !== undefined ? { maxTotalTokens: MAX_TOTAL_TOKENS } : {}),
   ...(MAX_PROMPT_TOKENS_PER_CALL !== undefined
@@ -109,6 +117,20 @@ const TOKEN_BUDGET_LIMITS = {
     : {}),
   ...(Object.keys(MAX_AGENT_TOKENS).length > 0 ? { maxAgentTokens: MAX_AGENT_TOKENS } : {}),
   ...(Object.keys(MAX_PHASE_TOKENS).length > 0 ? { maxPhaseTokens: MAX_PHASE_TOKENS } : {}),
+};
+const GOVERNANCE_CALL_LIMITS = {
+  ...(MAX_AUDIT_CALLS !== undefined ? { audit: MAX_AUDIT_CALLS } : {}),
+  ...(MAX_REVISION_CALLS !== undefined ? { revision: MAX_REVISION_CALLS } : {}),
+  ...(MAX_NORMALIZE_CALLS !== undefined ? { lengthNormalization: MAX_NORMALIZE_CALLS } : {}),
+  ...(MAX_SETTLE_CALLS !== undefined ? { settlement: MAX_SETTLE_CALLS } : {}),
+};
+const PIPELINE_GOVERNANCE_CALL_LIMITS = {
+  ...(MAX_REVISION_CALLS !== undefined
+    ? { maxRevisionCallsPerChapter: MAX_REVISION_CALLS }
+    : {}),
+  ...(MAX_SETTLE_CALLS !== undefined
+    ? { maxSettlementCallsPerChapter: MAX_SETTLE_CALLS }
+    : {}),
 };
 
 const repoRoot = resolve(import.meta.dirname, "..");
@@ -143,9 +165,21 @@ const minimaxBaseUrl = "https://api.minimaxi.com/v1";
 
 const openrouterKey = process.env.OPENROUTER_API_KEY;
 const minimaxKey = process.env.MINIMAX_API_KEY;
-if (!openrouterKey) throw new Error("OPENROUTER_API_KEY is required");
+const singleProvider = ROUTE_MODE === "single-provider";
+const primaryServiceId = singleProvider ? process.env.INKOS_LLM_SERVICE || "custom" : openrouterServiceId;
+const primaryModel = singleProvider ? process.env.INKOS_LLM_MODEL : openrouterModel;
+const primaryBaseUrl = singleProvider ? process.env.INKOS_LLM_BASE_URL : "https://openrouter.ai/api/v1";
+const primaryProvider = singleProvider ? process.env.INKOS_LLM_PROVIDER || "openai" : "openai";
+const primaryApiFormat = singleProvider ? process.env.INKOS_LLM_API_FORMAT || "chat" : "chat";
+const primaryLabel = singleProvider ? process.env.INKOS_LIVE_PROVIDER_LABEL || primaryServiceId : "OpenRouter";
+const primaryKey = singleProvider ? process.env.INKOS_LLM_API_KEY : openrouterKey;
+if (!primaryKey) {
+  throw new Error(singleProvider ? "INKOS_LLM_API_KEY is required" : "OPENROUTER_API_KEY is required");
+}
+if (!primaryModel) throw new Error("INKOS_LLM_MODEL is required for single-provider mode");
+if (!primaryBaseUrl) throw new Error("INKOS_LLM_BASE_URL is required for single-provider mode");
 if (ROUTE_MODE !== "openrouter-only" && !minimaxKey) {
-  throw new Error("MINIMAX_API_KEY is required for MiniMax route modes");
+  if (!singleProvider) throw new Error("MINIMAX_API_KEY is required for MiniMax route modes");
 }
 
 const minimaxOverride = {
@@ -167,7 +201,7 @@ const minimaxGovernanceAgents = [
 const minimaxWriterAgents = ["writer", "reviser", "length-normalizer"];
 
 function routedAgents() {
-  if (ROUTE_MODE === "openrouter-only") return [];
+  if (ROUTE_MODE === "single-provider" || ROUTE_MODE === "openrouter-only") return [];
   return ROUTE_MODE === "minimax-writer" ? minimaxWriterAgents : minimaxGovernanceAgents;
 }
 
@@ -177,20 +211,24 @@ function buildConfig() {
     version: "0.1.0",
     language: "zh",
     llm: {
-      provider: "openai",
-      service: openrouterServiceId,
+      provider: primaryProvider,
+      service: primaryServiceId,
+      // Custom plan gateways use the native OpenAI-compatible transport so
+      // provider-specific reasoning blocks cannot hide the final text output.
       configSource: "studio",
-      baseUrl: "https://openrouter.ai/api/v1",
+      baseUrl: primaryBaseUrl,
       apiKey: "",
-      model: openrouterModel,
-      defaultModel: openrouterModel,
-      apiFormat: "chat",
+      model: primaryModel,
+      defaultModel: primaryModel,
+      apiFormat: primaryApiFormat,
       stream: false,
       temperature: 0.7,
-      services: [
-        { service: "custom", name: "OpenRouterLive", baseUrl: "https://openrouter.ai/api/v1", apiFormat: "chat", stream: false, temperature: 0.7 },
-        { service: "minimax", baseUrl: minimaxBaseUrl, apiFormat: "chat", stream: false, temperature: 0.9 },
-      ],
+      ...(singleProvider ? {} : {
+        services: [
+          { service: "custom", name: "OpenRouterLive", baseUrl: "https://openrouter.ai/api/v1", apiFormat: "chat", stream: false, temperature: 0.7 },
+          { service: "minimax", baseUrl: minimaxBaseUrl, apiFormat: "chat", stream: false, temperature: 0.9 },
+        ],
+      }),
     },
     foundation: { reviewRetries: FOUNDATION_REVIEW_RETRIES },
     writing: { reviewRetries: REVIEW_RETRIES, reviewMode: REVIEW_MODE, revisionGate: "always" },
@@ -223,6 +261,7 @@ function makePipelineConfig(config, root, logFile) {
     defaultLLMConfig: config.llm,
     foundationReviewRetries: config.foundation.reviewRetries,
     writingReviewRetries: config.writing.reviewRetries,
+    governanceCallLimits: PIPELINE_GOVERNANCE_CALL_LIMITS,
     chapterReviewMode: config.writing.reviewMode,
     revisionGate: config.writing.revisionGate,
     modelOverrides: config.modelOverrides,
@@ -337,6 +376,32 @@ function summarizeChapterLengths(chapters) {
   };
 }
 
+function countGovernanceCalls(records) {
+  const countPhase = (phase) => records.filter((record) => record.phase === phase).length;
+  return {
+    audit: countPhase("audit"),
+    revision: countPhase("revise"),
+    lengthNormalization: countPhase("normalize-length"),
+    settlement: countPhase("settle"),
+    settlementObservation: countPhase("settle-observe"),
+    stateValidation: countPhase("validate-state"),
+    chapterAnalysis: countPhase("analyze"),
+  };
+}
+
+function buildGovernanceCallGate(chapters) {
+  const violations = [];
+  for (const chapter of chapters) {
+    for (const [phase, maximum] of Object.entries(GOVERNANCE_CALL_LIMITS)) {
+      const actual = chapter.governanceCalls?.[phase] ?? 0;
+      if (actual > maximum) {
+        violations.push({ chapter: chapter.chapterNumber, phase, actual, maximum });
+      }
+    }
+  }
+  return { limits: GOVERNANCE_CALL_LIMITS, violations, passed: violations.length === 0 };
+}
+
 function buildQualityGate(report) {
   const telemetry = report.telemetrySummary;
   const retryRate = telemetry.calls === 0 ? 0 : telemetry.retries / telemetry.calls;
@@ -347,6 +412,7 @@ function buildQualityGate(report) {
   const auditFailed = report.chapters.filter((chapter) => chapter.status === "audit-failed").length;
   const unrecoveredStateDegraded = report.chapters.filter((chapter) => chapter.status === "state-degraded").length;
   const chapterBudgetFailures = report.chapters.filter((chapter) => chapter.tokenBudget && !chapter.tokenBudget.passed).length;
+  const governanceCalls = buildGovernanceCallGate(report.chapters);
   const checks = {
     retryRate: {
       actual: retryRate,
@@ -376,6 +442,7 @@ function buildQualityGate(report) {
       chapterFailures: chapterBudgetFailures,
       passed: report.tokenBudget.passed && chapterBudgetFailures === 0,
     },
+    governanceCalls,
   };
   return {
     passed: Object.values(checks).every((check) => check.passed),
@@ -385,6 +452,7 @@ function buildQualityGate(report) {
       maxFallbacks: MAX_FALLBACKS,
       minHardRangeRate: MIN_HARD_RANGE_RATE,
       tokenBudget: TOKEN_BUDGET_LIMITS,
+      governanceCalls: GOVERNANCE_CALL_LIMITS,
     },
     checks,
   };
@@ -471,11 +539,13 @@ async function main() {
 
   const config = buildConfig();
   await writeFile(join(projectRoot, "inkos.json"), JSON.stringify(config, null, 2), "utf-8");
-  await writeFile(
-    secretsPath,
-    JSON.stringify({ services: { [openrouterServiceId]: { apiKey: openrouterKey } } }, null, 2),
-    "utf-8",
-  );
+  if (!singleProvider) {
+    await writeFile(
+      secretsPath,
+      JSON.stringify({ services: { [openrouterServiceId]: { apiKey: openrouterKey } } }, null, 2),
+      "utf-8",
+    );
+  }
 
   const logHandle = await import("node:fs").then(({ createWriteStream }) =>
     createWriteStream(join(reportDir, "pipeline.jsonl"), { flags: "a" }),
@@ -498,9 +568,10 @@ async function main() {
         ...TOKEN_BUDGET_LIMITS,
         ...(MAX_CHAPTER_TOKENS !== undefined ? { maxChapterTokens: MAX_CHAPTER_TOKENS } : {}),
       },
+      governanceCalls: GOVERNANCE_CALL_LIMITS,
     },
     routing: {
-      default: { service: openrouterServiceId, model: openrouterModel },
+      default: { service: primaryServiceId, model: primaryModel, baseUrl: primaryBaseUrl, label: primaryLabel },
       overrides: Object.fromEntries(routedAgents().map((a) => [a, minimaxModel])),
     },
     smoke: {},
@@ -523,14 +594,14 @@ async function main() {
     // ── Load config ──────────────────────────────────────────────────────────
     const loaded = await loadProjectConfig(projectRoot, { consumer: "cli", requireApiKey: true });
 
-    // ── Smoke: OpenRouter ────────────────────────────────────────────────────
+    // ── Smoke: primary provider ──────────────────────────────────────────────
     const defaultClient = createLLMClient(loaded.llm);
-    const orStart = Date.now();
-    const openrouterSmoke = await chatCompletion(
-      defaultClient, openrouterModel,
+    const primaryStart = Date.now();
+    const primarySmoke = await chatCompletion(
+      defaultClient, primaryModel,
       [
         { role: "system", content: "你是严格的连通性测试助手。" },
-        { role: "user", content: "用一句中文回答：OpenRouter 已连通。不要超过 20 个字。" },
+        { role: "user", content: `用一句中文回答：${primaryLabel} 已连通。不要超过 20 个字。` },
       ],
       {
         maxTokens: 80,
@@ -539,22 +610,22 @@ async function main() {
         timeoutMs: TIMEOUT_MS,
         signal: AbortSignal.timeout(TIMEOUT_MS),
         onCallTelemetry: (telemetry) => allTelemetry.push(telemetry),
-        agentName: "smoke-openrouter",
+        agentName: "smoke-primary",
         callPhase: "smoke",
       },
     );
-    report.smoke.openrouter = {
-      content: openrouterSmoke.content.trim(),
-      usage: openrouterSmoke.usage,
+    report.smoke.primary = {
+      content: primarySmoke.content.trim(),
+      usage: primarySmoke.usage,
       service: defaultClient.service,
       apiFormat: defaultClient.apiFormat,
       stream: defaultClient.stream,
-      latencyMs: Date.now() - orStart,
+      latencyMs: Date.now() - primaryStart,
     };
     await flushReport();
 
     // ── Smoke: MiniMax ───────────────────────────────────────────────────────
-    if (ROUTE_MODE !== "openrouter-only") {
+    if (!singleProvider && ROUTE_MODE !== "openrouter-only") {
       const minimaxClient = createLLMClient({
         provider: "openai", service: "minimax", configSource: "env",
         baseUrl: minimaxBaseUrl, apiKey: minimaxKey, model: minimaxModel,
@@ -689,6 +760,7 @@ async function main() {
         statuses: [],
       };
       const auditIssues = result?.auditResult?.issues ?? chapter.auditIssues ?? [];
+      const governanceCalls = countGovernanceCalls(run.telemetry);
       return {
         chapterNumber: chapter.number,
         title: chapter.title,
@@ -698,6 +770,8 @@ async function main() {
         auditScore: result?.auditResult?.overallScore,
         auditIssues,
         reviewAttempts: result?.reviewAttempts,
+        reviewTelemetry: result?.reviewTelemetry ?? chapter.reviewTelemetry,
+        governanceCalls,
         issueCount: auditIssues.length,
         revised: result?.revised ?? false,
         initialStatus: result?.status,
@@ -740,7 +814,7 @@ async function main() {
 
     console.log(JSON.stringify({
       smoke: {
-        openrouter: report.smoke.openrouter?.content,
+        primary: report.smoke.primary?.content,
         minimax: report.smoke.minimax?.content,
       },
       routingProbe: report.routingProbe,
@@ -750,6 +824,8 @@ async function main() {
         auditPassed: c.auditPassed,
         status: c.status,
         durationMs: c.durationMs,
+        reviewTermination: c.reviewTelemetry?.terminationReason,
+        governanceCalls: c.governanceCalls,
       })),
       telemetry: report.telemetrySummary,
       tokenBudget: report.tokenBudget,
@@ -790,7 +866,7 @@ async function main() {
   }
 
   // ── Secret leak scan ───────────────────────────────────────────────────────
-  const scanNeedles = [openrouterKey, minimaxKey].filter(Boolean);
+  const scanNeedles = [primaryKey, minimaxKey].filter(Boolean);
   const reportFiles = await readdir(reportDir).catch(() => []);
   const leaks = [];
   for (const file of reportFiles) {

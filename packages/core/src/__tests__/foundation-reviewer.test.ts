@@ -66,7 +66,9 @@ describe("FoundationReviewerAgent", () => {
     const messages = chatSpy.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
     expect(messages[0]?.content).toContain("用户要求的8章");
     expect(messages[0]?.content).toContain("前5章");
-    expect(messages[0]?.content).toContain("连续8章");
+    expect(messages[0]?.content).toContain("覆盖全部8章");
+    expect(messages[0]?.content).toContain("逐章节拍合同");
+    expect(messages[0]?.content).toContain("目标、阻碍、转折、可观察交付");
     expect(messages[0]?.content).not.toContain("支撑40章");
     expect(messages[0]?.content).not.toContain("连续10章");
   });
@@ -154,9 +156,10 @@ describe("FoundationReviewerAgent", () => {
     });
 
     expect(result.passed).toBe(false);
-    expect(result.blockingIssues).toEqual([
+    expect(result.blockingIssues).toEqual(expect.arrayContaining([
       expect.stringContaining("实际解析到0个"),
-    ]);
+      expect.stringContaining("逐章节拍合同"),
+    ]));
   });
 
   it("does not silently truncate foundation, canon, or style inputs before review", async () => {

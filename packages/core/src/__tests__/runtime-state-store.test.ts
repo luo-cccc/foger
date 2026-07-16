@@ -37,7 +37,7 @@ describe("runtime-state-store memory helpers", () => {
       writeFile(join(storyDir, "current_state.md"), [
         "| Field | Value |",
         "| --- | --- |",
-        "| Current Chapter | 1 |",
+        "| Current Chapter | 2 |",
         "| Current Goal | Recover chapter one truth. |",
       ].join("\n"), "utf-8"),
       writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n", "utf-8"),
@@ -59,6 +59,10 @@ describe("runtime-state-store memory helpers", () => {
 
     expect(manifest.lastAppliedChapter).toBe(1);
     expect(currentState.chapter).toBe(1);
+    expect(currentState.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ validFromChapter: 1, sourceChapter: 1 }),
+    ]));
+    expect(manifest.migrationWarnings).toContain("current_state chapter normalized from 2 to 1");
     expect(summaries.rows.at(-1)?.chapter).toBe(1);
   });
 
@@ -386,12 +390,79 @@ describe("runtime-state-store memory helpers", () => {
     ]);
 
     const snapshot = await loadRuntimeStateSnapshot(bookDir);
+    const persistedHooks = JSON.parse(
+      await readFile(join(stateDir, "hooks.json"), "utf-8"),
+    ) as { hooks: Array<{ hookId: string; type: string }> };
 
     expect(snapshot.hooks.hooks[0]).toEqual(expect.objectContaining({
-      hookId: "h001--broken",
+      hookId: "h001-broken",
       type: "unspecified",
     }));
+    expect(persistedHooks.hooks[0]).toEqual(expect.objectContaining({
+      hookId: "h001-broken",
+      type: "unspecified",
+    }));
+    expect(snapshot.manifest.migrationWarnings.join("\n")).toContain("hook id normalized");
     expect(snapshot.manifest.migrationWarnings.join("\n")).toContain("empty hook type");
+  });
+
+  it("deduplicates persisted hook ids that collide after normalization", async () => {
+    root = await mkdtemp(join(tmpdir(), "inkos-runtime-state-hook-id-repair-"));
+    const bookDir = join(root, "book");
+    const storyDir = join(bookDir, "story");
+    const stateDir = join(storyDir, "state");
+    const chaptersDir = join(bookDir, "chapters");
+    await Promise.all([
+      mkdir(stateDir, { recursive: true }),
+      mkdir(chaptersDir, { recursive: true }),
+    ]);
+
+    await Promise.all([
+      writeFile(join(chaptersDir, "index.json"), "[]", "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n", "utf-8"),
+      writeFile(join(stateDir, "manifest.json"), JSON.stringify({
+        schemaVersion: 2,
+        language: "en",
+        lastAppliedChapter: 0,
+        projectionVersion: 1,
+        migrationWarnings: [],
+      }), "utf-8"),
+      writeFile(join(stateDir, "current_state.json"), JSON.stringify({ chapter: 0, facts: [] }), "utf-8"),
+      writeFile(join(stateDir, "hooks.json"), JSON.stringify({
+        hooks: [
+          {
+            hookId: "H027 (Old Li's note)",
+            startChapter: 15,
+            type: "clue",
+            status: "open",
+            lastAdvancedChapter: 15,
+            expectedPayoff: "16",
+            notes: "stale labeled record",
+          },
+          {
+            hookId: "H027",
+            startChapter: 15,
+            type: "clue",
+            status: "progressing",
+            lastAdvancedChapter: 16,
+            expectedPayoff: "17",
+            notes: "latest canonical record",
+          },
+        ],
+      }), "utf-8"),
+      writeFile(join(stateDir, "chapter_summaries.json"), JSON.stringify({ rows: [] }), "utf-8"),
+    ]);
+
+    const snapshot = await loadRuntimeStateSnapshot(bookDir);
+
+    expect(snapshot.hooks.hooks).toEqual([
+      expect.objectContaining({
+        hookId: "H027",
+        status: "progressing",
+        notes: "latest canonical record",
+      }),
+    ]);
+    expect(snapshot.manifest.migrationWarnings.join("\n")).toContain("duplicate hook id normalized");
   });
 
   it("arbitrates new hook candidates before applying structured state updates", async () => {

@@ -67,6 +67,8 @@ describe("llm-stub", () => {
     expect(response.content).toContain("| hook_id |");
     expect(response.content).toContain("## Volume 1 (Chapters 1-12)");
     expect(response.content).not.toContain("## Volume 2");
+    expect(response.content).toContain("### Compact Chapter Beat Contract");
+    expect(response.content).toContain("Chapter 12: Goal=");
     const volumeMap = response.content
       .split("=== SECTION: volume_map ===")[1]
       ?.split("=== SECTION: roles ===")[0] ?? "";

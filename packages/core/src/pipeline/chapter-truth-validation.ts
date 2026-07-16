@@ -11,6 +11,7 @@ import type { ContextPackage, RuleStack } from "../models/input-governance.js";
 import type { Logger } from "../utils/logger.js";
 import type { LengthLanguage } from "../utils/length-metrics.js";
 import {
+  buildStateDegradedIssues,
   buildStateDegradedPersistenceOutput,
   retrySettlementAfterValidationFailure,
 } from "./chapter-state-recovery.js";
@@ -37,6 +38,13 @@ export async function validateChapterTruthPersistence(params: {
     ruleStack: RuleStack;
   };
   readonly language: LengthLanguage;
+  readonly maxSettlementCalls?: number;
+  readonly recoverAfterSettlementLimit?: (
+    validation: ValidationResult,
+  ) => Promise<{
+    readonly output: WriteChapterOutput;
+    readonly validation: ValidationResult;
+  }>;
   readonly logWarn: (message: { zh: string; en: string }) => void;
   readonly logger?: Pick<Logger, "warn">;
 }): Promise<{
@@ -104,29 +112,58 @@ export async function validateChapterTruthPersistence(params: {
   }
 
   if (!validation.passed) {
-    const recovery = await retrySettlementAfterValidationFailure({
-      writer: params.writer,
-      validator: params.validator,
-      book: params.book,
-      bookDir: params.bookDir,
-      chapterNumber: params.chapterNumber,
-      title: params.title,
-      content: params.content,
-      reducedControlInput: params.reducedControlInput,
-      oldState: params.previousTruth.oldState,
-      oldHooks: params.previousTruth.oldHooks,
-      originalValidation: validation,
-      language: params.language,
-      logWarn: params.logWarn,
-      logger: params.logger,
-    });
-
-    if (recovery.kind === "recovered") {
-      persistenceOutput = recovery.output;
-      validation = recovery.validation;
+    const settlementRetryAllowed = params.maxSettlementCalls === undefined
+      || params.maxSettlementCalls > 1;
+    if (!settlementRetryAllowed && params.recoverAfterSettlementLimit) {
+      params.logWarn({
+        zh: `第${params.chapterNumber}章结算调用已达到上限，跳过 Settler 重试并改用章节分析器`,
+        en: `Chapter ${params.chapterNumber} reached its settlement call limit; skipping the Settler retry and using the chapter analyzer`,
+      });
+      try {
+        const recovered = await params.recoverAfterSettlementLimit(validation);
+        persistenceOutput = recovered.output;
+        validation = recovered.validation;
+      } catch (error) {
+        params.logger?.warn(
+          `Chapter analyzer recovery failed for chapter ${params.chapterNumber}: ${String(error)}`,
+        );
+      }
     } else {
+      const recovery = settlementRetryAllowed
+        ? await retrySettlementAfterValidationFailure({
+          writer: params.writer,
+          validator: params.validator,
+          book: params.book,
+          bookDir: params.bookDir,
+          chapterNumber: params.chapterNumber,
+          title: params.title,
+          content: params.content,
+          reducedControlInput: params.reducedControlInput,
+          oldState: params.previousTruth.oldState,
+          oldHooks: params.previousTruth.oldHooks,
+          originalValidation: validation,
+          language: params.language,
+          logWarn: params.logWarn,
+          logger: params.logger,
+        })
+        : {
+          kind: "degraded" as const,
+          issues: buildStateDegradedIssues(validation.warnings, params.language),
+        };
+
+      if (recovery.kind === "recovered") {
+        persistenceOutput = recovery.output;
+        validation = recovery.validation;
+      } else {
+        degradedIssues = recovery.issues;
+      }
+    }
+
+    if (!validation.passed) {
       chapterStatus = "state-degraded";
-      degradedIssues = recovery.issues;
+      if (degradedIssues.length === 0) {
+        degradedIssues = buildStateDegradedIssues(validation.warnings, params.language);
+      }
       persistenceOutput = buildStateDegradedPersistenceOutput({
         output: persistenceOutput,
         oldState: params.previousTruth.oldState,
@@ -135,7 +172,7 @@ export async function validateChapterTruthPersistence(params: {
       });
       auditResult = {
         ...auditResult,
-        issues: [...auditResult.issues, ...recovery.issues],
+        issues: [...auditResult.issues, ...degradedIssues],
       };
     }
   }

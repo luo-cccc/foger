@@ -26,6 +26,10 @@ const linkedCreateAttempts = Math.max(
   1,
   positiveInteger(consumeOption(rawArgs, "--linked-create-attempts"), linkedLive ? 2 : 1),
 );
+const linkedWriteAttempts = Math.max(
+  1,
+  positiveInteger(consumeOption(rawArgs, "--linked-write-attempts"), linkedLive ? 3 : 1),
+);
 const linkedRun = linkedLive || rawArgs.some((arg) => arg.includes("@linked"));
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
 const linkedSourceRoot = resolve(process.env.INKOS_LINKED_SOURCE_ROOT?.trim() || workspaceRoot);
@@ -44,6 +48,7 @@ const linkedFingerprint = linkedRun
       maxPromptTokensPerCall: linkedMaxPromptTokensPerCall,
       qualityPolicy: linkedQualityPolicy,
       createAttempts: linkedCreateAttempts,
+      writeAttempts: linkedWriteAttempts,
     })
   : "";
 
@@ -102,6 +107,7 @@ const child = spawn(process.execPath, [pnpmCli, "exec", "playwright", "test", ..
     INKOS_LINKED_MAX_PROMPT_TOKENS_PER_CALL: String(linkedMaxPromptTokensPerCall),
     INKOS_LINKED_QUALITY_POLICY: linkedQualityPolicy,
     INKOS_LINKED_CREATE_ATTEMPTS: String(linkedCreateAttempts),
+    INKOS_LINKED_WRITE_ATTEMPTS: String(linkedWriteAttempts),
     INKOS_MAX_PROMPT_ESTIMATED_TOKENS_PER_CALL: String(linkedMaxPromptTokensPerCall),
     INKOS_E2E_LAUNCHER_PID: String(process.pid),
     INKOS_STUDIO_PORT: String(apiPort),
@@ -252,6 +258,7 @@ async function buildLinkedFingerprint(options) {
     maxPromptTokensPerCall: options.maxPromptTokensPerCall,
     qualityPolicy: options.qualityPolicy,
     createAttempts: options.createAttempts,
+    writeAttempts: options.writeAttempts,
   }));
 
   const roots = [

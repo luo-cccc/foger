@@ -1,6 +1,9 @@
 import { BaseAgent } from "./base.js";
 import type { ArchitectOutput } from "./architect.js";
-import { validateFoundationVolumeScale } from "../utils/foundation-scale.js";
+import {
+  FOUNDATION_COMPACT_MAX_CHAPTERS,
+  validateFoundationVolumeScale,
+} from "../utils/foundation-scale.js";
 
 export interface FoundationReviewResult {
   readonly passed: boolean;
@@ -95,20 +98,25 @@ export class FoundationReviewerAgent extends BaseAgent {
       : 40;
     const openingWindow = Math.min(5, target);
     const repeatWindow = Math.min(10, Math.max(3, target));
+    const compact = target <= FOUNDATION_COMPACT_MAX_CHAPTERS;
     return language === "en"
       ? [
           `Core Conflict (Is there a clear, compelling central conflict that can sustain the requested ${target} chapters?)`,
           `Opening Momentum (Can the first ${openingWindow} chapters create a page-turning hook?)`,
           "World Coherence (Is the worldbuilding internally consistent and specific?)",
           "Character Differentiation (Are the main characters distinct in voice and motivation?)",
-          `Pacing Feasibility (Does the outline fit the requested ${target} chapters and avoid repeating the same beat for ${repeatWindow} chapters?)`,
+          compact
+            ? `Pacing Feasibility (Does the Compact Chapter Beat Contract cover all ${target} chapters with a distinct Goal, Obstacle, Turn, observable Delivery, and causal End Hook per chapter, while chapter ${target} closes the core conflict?)`
+            : `Pacing Feasibility (Does the outline fit the requested ${target} chapters and avoid repeating the same beat for ${repeatWindow} chapters?)`,
         ]
       : [
           `核心冲突（是否有清晰且有足够张力的核心冲突支撑用户要求的${target}章？）`,
           `开篇节奏（前${openingWindow}章能否形成翻页驱动力？）`,
           "世界一致性（世界观是否内洽且具体？）",
           "角色区分度（主要角色的声音和动机是否各不相同？）",
-          `节奏可行性（大纲是否适配用户要求的${target}章，并避免连续${repeatWindow}章同一种节拍？）`,
+          compact
+            ? `节奏可行性（紧凑篇逐章节拍合同是否覆盖全部${target}章，每章都有不同的目标、阻碍、转折、可观察交付和因果章末钩子，且第${target}章闭合核心冲突？）`
+            : `节奏可行性（大纲是否适配用户要求的${target}章，并避免连续${repeatWindow}章同一种节拍？）`,
         ];
   }
 

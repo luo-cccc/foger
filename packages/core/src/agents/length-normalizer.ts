@@ -49,6 +49,17 @@ export class LengthNormalizerAgent extends BaseAgent {
       };
     }
 
+    const nearHardBound = this.boundSmallOverrun(input, originalCount, mode);
+    if (nearHardBound) {
+      return {
+        normalizedContent: nearHardBound.normalizedContent,
+        finalCount: nearHardBound.finalCount,
+        applied: nearHardBound.normalizedContent !== input.chapterContent,
+        mode,
+        warning: this.buildWarning(nearHardBound.finalCount, input.lengthSpec),
+      };
+    }
+
     let totalUsage = this.zeroUsage();
     let bestAccepted: NormalizationAttempt | null = null;
     let lastWarning = this.buildWarning(originalCount, input.lengthSpec);
@@ -146,6 +157,21 @@ export class LengthNormalizerAgent extends BaseAgent {
       return undefined;
     }
     return { normalizedContent: candidate, finalCount };
+  }
+
+  private boundSmallOverrun(
+    input: NormalizeLengthInput,
+    originalCount: number,
+    mode: LengthNormalizeMode,
+  ): { readonly normalizedContent: string; readonly finalCount: number } | undefined {
+    if (mode !== "compress" || originalCount <= input.lengthSpec.hardMax) {
+      return undefined;
+    }
+    const maximumDeterministicOverrun = Math.max(1, Math.floor(input.lengthSpec.hardMax * 0.05));
+    if (originalCount - input.lengthSpec.hardMax > maximumDeterministicOverrun) {
+      return undefined;
+    }
+    return this.boundOverlongContent(input.chapterContent, input);
   }
 
   private collectRequiredMarkers(input: NormalizeLengthInput): string[] {

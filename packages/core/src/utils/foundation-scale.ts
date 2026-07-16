@@ -1,6 +1,6 @@
 import { extractVolumeContracts } from "./volume-contract.js";
 
-const SHORT_BOOK_MAX_CHAPTERS = 12;
+export const FOUNDATION_COMPACT_MAX_CHAPTERS = 12;
 const TARGET_CHAPTERS_PER_VOLUME = 40;
 
 export interface FoundationVolumeRange {
@@ -24,7 +24,9 @@ export interface FoundationScaleIssue {
     | "volume-contract-count-mismatch"
     | "volume-contract-range-mismatch"
     | "volume-contract-kr-count-mismatch"
-    | "compact-book-defers-resolution";
+    | "compact-book-defers-resolution"
+    | "compact-beat-count-mismatch"
+    | "compact-beat-fields-missing";
   readonly zh: string;
   readonly en: string;
 }
@@ -33,7 +35,7 @@ export function buildFoundationScalePlan(targetChapters: number): FoundationScal
   const target = Number.isFinite(targetChapters)
     ? Math.max(1, Math.round(targetChapters))
     : 1;
-  const volumeCount = target <= SHORT_BOOK_MAX_CHAPTERS
+  const volumeCount = target <= FOUNDATION_COMPACT_MAX_CHAPTERS
     ? 1
     : Math.max(1, Math.ceil(target / TARGET_CHAPTERS_PER_VOLUME));
   const baseSize = Math.floor(target / volumeCount);
@@ -53,7 +55,7 @@ export function buildFoundationScalePlan(targetChapters: number): FoundationScal
     volumeCount,
     ranges,
     chaptersPerKr: Math.max(1, Math.round((target / volumeCount) / 3)),
-    compact: target <= SHORT_BOOK_MAX_CHAPTERS,
+    compact: target <= FOUNDATION_COMPACT_MAX_CHAPTERS,
   };
 }
 
@@ -82,6 +84,12 @@ KR2: <可观察结果>
 KR3: <可观察结果>
 Irreversible Event: <卷尾必须发生的不可逆改变>`)
     .join("\n\n");
+  const compactBeatTemplate = plan.compact
+    ? Array.from({ length: plan.targetChapters }, (_, index) => language === "en"
+      ? `Chapter ${index + 1}: Goal=<active scene goal> | Obstacle=<concrete resistance> | Turn=<new decision or reversal> | Delivery=<observable result> | End Hook=<causal handoff or final aftermath>`
+      : `第${index + 1}章：目标=<本章主动行动> | 阻碍=<具体阻力> | 转折=<新决定或反转> | 交付=<可观察结果> | 章末钩子=<因果接力或终局后效>`)
+      .join("\n")
+    : "";
 
   if (language === "en") {
     return `## Whole-book scale contract (overrides generic volume advice)
@@ -92,7 +100,12 @@ Irreversible Event: <卷尾必须发生的不可逆改变>`)
 ${contractTemplate}
 - The assigned ranges are volume boundaries, not chapter-by-chapter tasks. Put the five prose planning dimensions after the execution blocks without creating extra volume headings.
 - Complete each volume's three KRs inside its assigned chapter range; place observable KR delivery points roughly every ${plan.chaptersPerKr} chapter(s), instead of blindly spending 3-5 chapters on every KR.
-- Chapter ${plan.targetChapters} is the book ending: it must complete the Book Objective and resolve the core conflict. Do not defer that work to a later volume or another "chapter ${plan.targetChapters}".${plan.compact ? "\n- This is a compact complete work. Volume 1 is the entire book, not the opening arc of a longer serialization. Volume 1's Objective must equal the complete Book Objective, and KR3 must deliver it. Phrases such as \"first clue\", \"tip of the iceberg\", \"left for a sequel/later work\", or \"still not fully revealed\" are contract violations." : ""}`;
+- Chapter ${plan.targetChapters} is the book ending: it must complete the Book Objective and resolve the core conflict. Do not defer that work to a later volume or another "chapter ${plan.targetChapters}".${plan.compact ? `
+- This is a compact complete work. Volume 1 is the entire book, not the opening arc of a longer serialization. Volume 1's Objective must equal the complete Book Objective, and KR3 must deliver it. Phrases such as "first clue", "tip of the iceberg", "left for a sequel/later work", or "still not fully revealed" are contract violations.
+- Compact works are the sole exception to the general ban on chapter-level planning. Immediately after the volume execution block, emit this exact parseable beat contract with one distinct line per chapter. Replace every placeholder and keep all five labels:
+### Compact Chapter Beat Contract
+${compactBeatTemplate}
+- Every turn must change the available choice or information, every delivery must be externally observable, and each End Hook must causally launch the next chapter. The final chapter's End Hook is aftermath/closure, not deferred core conflict.` : ""}`;
   }
 
   return `## 全书尺度合同（优先级高于通用分卷建议）
@@ -103,7 +116,12 @@ ${contractTemplate}
 ${contractTemplate}
 - 上述范围只是卷边界，不是逐章任务。执行合同之后再写五个散文规划维度，不得创建额外卷标题。
 - 每卷3个 KR 必须在该卷分配的章节内全部完成，约每${plan.chaptersPerKr}章出现一个可观察的 KR 交付点；不要机械套用“每个 KR 都花3-5章”。
-- 第${plan.targetChapters}章就是全书终章，必须完成全书 Objective 并解决核心冲突，不得把终局推迟到后续卷，也不得在第${plan.targetChapters}章里再写“留到第${plan.targetChapters}章大结局”。${plan.compact ? "\n- 这是紧凑完结作品，第1卷就是全书，不是更长连载的开篇卷。第1卷 Objective 必须等于完整的全书 Objective，KR3 必须交付它；“第一块线索”“冰山一角”“留待后续作品”“核心仍未完全揭示”等表述均属于合同违规。" : ""}`;
+- 第${plan.targetChapters}章就是全书终章，必须完成全书 Objective 并解决核心冲突，不得把终局推迟到后续卷，也不得在第${plan.targetChapters}章里再写“留到第${plan.targetChapters}章大结局”。${plan.compact ? `
+- 这是紧凑完结作品，第1卷就是全书，不是更长连载的开篇卷。第1卷 Objective 必须等于完整的全书 Objective，KR3 必须交付它；“第一块线索”“冰山一角”“留待后续作品”“核心仍未完全揭示”等表述均属于合同违规。
+- 紧凑完结作是“禁止章级规划”的唯一例外。紧接卷执行合同，严格输出以下可解析节拍合同：每章恰好一行、替换全部占位符、保留五个字段名。
+### 紧凑篇逐章节拍合同
+${compactBeatTemplate}
+- 每章转折必须改变选择或信息，交付必须可被外部观察；章末钩子必须因果启动下一章。终章钩子写后效/闭环，不得把核心冲突留到书外。` : ""}`;
 }
 
 export function validateFoundationVolumeScale(
@@ -162,6 +180,29 @@ export function validateFoundationVolumeScale(
   }
 
   if (plan.compact) {
+    const beatSection = extractCompactBeatSection(volumeMap);
+    const declaredBeatChapters = extractCompactBeatLineChapterNumbers(beatSection);
+    const expectedBeatChapters = Array.from({ length: plan.targetChapters }, (_, index) => index + 1);
+    if (
+      declaredBeatChapters.length !== expectedBeatChapters.length
+      || declaredBeatChapters.some((chapter, index) => chapter !== expectedBeatChapters[index])
+    ) {
+      issues.push({
+        code: "compact-beat-count-mismatch",
+        zh: `确定性节奏校验失败：紧凑完结作必须按顺序提供第1-${plan.targetChapters}章的逐章节拍合同，实际识别为${declaredBeatChapters.length > 0 ? declaredBeatChapters.join("、") : "无"}。`,
+        en: `Deterministic pacing check failed: the compact complete work must provide ordered chapter beats 1-${plan.targetChapters}, but detected ${declaredBeatChapters.length > 0 ? declaredBeatChapters.join(", ") : "none"}.`,
+      });
+    } else {
+      const completeBeats = extractCompleteCompactChapterBeats(beatSection);
+      if (completeBeats.length !== plan.targetChapters) {
+        issues.push({
+          code: "compact-beat-fields-missing",
+          zh: "确定性节奏校验失败：每章节拍必须同时填写目标、阻碍、转折、交付和章末钩子，且不能保留占位符。",
+          en: "Deterministic pacing check failed: every chapter beat must fill Goal, Obstacle, Turn, Delivery, and End Hook without placeholders.",
+        });
+      }
+    }
+
     const deferralSignals = extractCompactDeferralSignals(volumeMap);
     if (deferralSignals.length > 0) {
       issues.push({
@@ -173,6 +214,53 @@ export function validateFoundationVolumeScale(
   }
 
   return issues;
+}
+
+function extractCompactBeatSection(content: string): string {
+  const lines = content.split(/\r?\n/u);
+  const headingIndex = lines.findIndex((line) => (
+    /^#{2,6}\s*(?:紧凑篇逐章节拍合同|Compact Chapter Beat Contract)\s*$/iu.test(line.trim())
+  ));
+  const firstBeatLineIndex = lines.findIndex((line) => (
+    /^(?:第\s*\d+\s*章\s*[：:]\s*目标\s*[:=：]|Chapter\s+\d+\s*[：:]\s*Goal\s*[:=：])/iu.test(line.trim())
+  ));
+  const start = headingIndex >= 0 ? headingIndex + 1 : firstBeatLineIndex;
+  if (start < 0) return "";
+  const section: string[] = [];
+  for (const line of lines.slice(start)) {
+    if (/^#{1,6}\s+/u.test(line.trim())) break;
+    section.push(line);
+  }
+  return section.join("\n");
+}
+
+function extractCompactBeatLineChapterNumbers(section: string): number[] {
+  const values: number[] = [];
+  for (const rawLine of section.split(/\r?\n/u)) {
+    const match = rawLine.trim().match(/^(?:第\s*(\d+)\s*章|Chapter\s+(\d+))\s*[：:]/iu);
+    const value = Number.parseInt(match?.[1] ?? match?.[2] ?? "", 10);
+    if (Number.isInteger(value) && value > 0 && !values.includes(value)) values.push(value);
+  }
+  return values;
+}
+
+function extractCompleteCompactChapterBeats(section: string): number[] {
+  const complete: number[] = [];
+  const value = "([^|｜<>\\r\\n]{2,})";
+  const zhPattern = new RegExp(
+    `^第\\s*(\\d+)\\s*章\\s*[：:]\\s*目标\\s*[:=：]\\s*${value}\\s*[|｜]\\s*阻碍\\s*[:=：]\\s*${value}\\s*[|｜]\\s*转折\\s*[:=：]\\s*${value}\\s*[|｜]\\s*交付\\s*[:=：]\\s*${value}\\s*[|｜]\\s*章末钩子\\s*[:=：]\\s*${value}\\s*$`,
+    "iu",
+  );
+  const enPattern = new RegExp(
+    `^Chapter\\s+(\\d+)\\s*[：:]\\s*Goal\\s*[:=：]\\s*${value}\\s*[|｜]\\s*Obstacle\\s*[:=：]\\s*${value}\\s*[|｜]\\s*Turn\\s*[:=：]\\s*${value}\\s*[|｜]\\s*Delivery\\s*[:=：]\\s*${value}\\s*[|｜]\\s*End Hook\\s*[:=：]\\s*${value}\\s*$`,
+    "iu",
+  );
+  for (const rawLine of section.split(/\r?\n/u)) {
+    const match = rawLine.trim().match(zhPattern) ?? rawLine.trim().match(enPattern);
+    const chapter = Number.parseInt(match?.[1] ?? "", 10);
+    if (Number.isInteger(chapter) && chapter > 0 && !complete.includes(chapter)) complete.push(chapter);
+  }
+  return complete;
 }
 
 export function normalizeFoundationVolumeContracts(

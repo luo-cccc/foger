@@ -2539,6 +2539,16 @@ describe("createStudioServer daemon lifecycle", () => {
   });
 
   it("delegates Studio rewrite to PipelineRunner through the shared mutation command", async () => {
+    rewriteChapterMock.mockResolvedValueOnce({
+      chapterNumber: 2,
+      title: "Rewritten",
+      wordCount: 1200,
+      auditResult: { passed: true, issues: [], summary: "ok" },
+      revised: false,
+      status: "ready-for-review",
+      rolledBackTo: 1,
+      discarded: [2],
+    });
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
 
@@ -2549,7 +2559,8 @@ describe("createStudioServer daemon lifecycle", () => {
     });
 
     expect(response.status).toBe(202);
-    await expect(response.json()).resolves.toMatchObject({
+    const accepted = await response.json() as { requestId: string };
+    expect(accepted).toMatchObject({
       status: "rewriting",
       bookId: "demo-book",
       chapter: 2,
@@ -2562,6 +2573,20 @@ describe("createStudioServer daemon lifecycle", () => {
         undefined,
         "Keep the confrontation focused.",
       );
+    });
+    await vi.waitFor(async () => {
+      const operationResponse = await app.request(
+        `http://localhost/api/v1/books/demo-book/operations/${accepted.requestId}`,
+      );
+      expect(operationResponse.status).toBe(200);
+      await expect(operationResponse.json()).resolves.toMatchObject({
+        status: "complete",
+        kind: "rewrite",
+        terminalEvent: "rewrite:complete",
+        bookId: "demo-book",
+        requestId: accepted.requestId,
+        chapterNumber: 2,
+      });
     });
   });
 
@@ -2839,6 +2864,50 @@ describe("createStudioServer daemon lifecycle", () => {
     expect(json.error.message).toContain("Studio LLM API key not set");
     expect(json.error.message).not.toMatch(/kkaiapi/i);
     expect(processProjectInteractionRequestMock).not.toHaveBeenCalled();
+  });
+
+  it("injects a process-only API key into linked live E2E without changing Studio service selection", async () => {
+    const previousMode = process.env.INKOS_E2E_LLM_MODE;
+    const previousApiKey = process.env.INKOS_LLM_API_KEY;
+    process.env.INKOS_E2E_LLM_MODE = "live";
+    process.env.INKOS_LLM_API_KEY = "sk-linked-live";
+    loadProjectConfigMock.mockResolvedValueOnce({
+      ...cloneProjectConfig(),
+      llm: { ...cloneProjectConfig().llm, apiKey: "" },
+    });
+
+    try {
+      const { createStudioServer } = await import("./server.js");
+      const app = createStudioServer(cloneProjectConfig() as never, root);
+      const response = await app.request("http://localhost/api/v1/books/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: "Process Key Book",
+          genre: "urban",
+          platform: "qidian",
+          language: "zh",
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(loadProjectConfigMock).toHaveBeenCalledWith(root, {
+        consumer: "studio",
+        requireApiKey: false,
+      });
+      expect(pipelineConfigs[0]).toMatchObject({
+        defaultLLMConfig: {
+          baseUrl: "https://api.example.com/v1",
+          model: "gpt-5.4",
+          apiKey: "sk-linked-live",
+        },
+      });
+    } finally {
+      if (previousMode === undefined) delete process.env.INKOS_E2E_LLM_MODE;
+      else process.env.INKOS_E2E_LLM_MODE = previousMode;
+      if (previousApiKey === undefined) delete process.env.INKOS_LLM_API_KEY;
+      else process.env.INKOS_LLM_API_KEY = previousApiKey;
+    }
   });
 
   it("uses rollback semantics for chapter rejection instead of only flipping status", async () => {

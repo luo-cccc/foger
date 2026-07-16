@@ -74,6 +74,71 @@ describe("LengthNormalizerAgent", () => {
     expect(result.finalCount).toBeLessThan(countChapterLength(draft, "zh_chars"));
   });
 
+  it("deterministically bounds a small hard-max overrun without an LLM call", async () => {
+    const agent = createAgent();
+    const chatSpy = vi.spyOn(BaseAgent.prototype as never, "chat");
+    const lengthSpec = LengthSpecSchema.parse({
+      target: 1000,
+      softMin: 864,
+      softMax: 1136,
+      hardMin: 728,
+      hardMax: 1272,
+      countingMode: "zh_chars",
+      normalizeMode: "compress",
+    });
+    const opening = "开场因果：林澈确认磁带编号被改过。";
+    const ending = "章尾承诺：他锁定下一处档案并立即出发。";
+    const draft = [
+      opening,
+      ...Array.from({ length: 80 }, (_, index) => (
+        index === 38 ? "中段调查取得[[KEEP_ME]]这项关键证据。" : "中段调查继续推进但没有新增结论。"
+      )),
+      ending,
+    ].join("\n");
+    expect(countChapterLength(draft, "zh_chars") - lengthSpec.hardMax)
+      .toBeLessThanOrEqual(Math.floor(lengthSpec.hardMax * 0.05));
+
+    const result = await agent.normalizeChapter({
+      chapterContent: draft,
+      lengthSpec,
+      chapterIntent: "Preserve [[KEEP_ME]].",
+    });
+
+    expect(chatSpy).not.toHaveBeenCalled();
+    expect(result.applied).toBe(true);
+    expect(result.normalizedContent).toContain(opening);
+    expect(result.normalizedContent).toContain(ending);
+    expect(result.normalizedContent).toContain("[[KEEP_ME]]");
+    expect(result.finalCount).toBeGreaterThanOrEqual(lengthSpec.hardMin);
+    expect(result.finalCount).toBeLessThanOrEqual(lengthSpec.hardMax);
+    expect(result.tokenUsage).toBeUndefined();
+  });
+
+  it("keeps LLM normalization for overruns beyond the deterministic window", async () => {
+    const agent = createAgent();
+    const normalized = "模型压缩后的正文。".repeat(110);
+    const chatSpy = vi.spyOn(BaseAgent.prototype as never, "chat").mockResolvedValue({
+      content: normalized,
+      usage: ZERO_USAGE,
+    });
+    const lengthSpec = LengthSpecSchema.parse({
+      target: 1000,
+      softMin: 864,
+      softMax: 1136,
+      hardMin: 728,
+      hardMax: 1272,
+      countingMode: "zh_chars",
+      normalizeMode: "compress",
+    });
+    const draft = "明显超长的原始正文。".repeat(180);
+
+    await agent.normalizeChapter({ chapterContent: draft, lengthSpec });
+
+    expect(countChapterLength(draft, "zh_chars") - lengthSpec.hardMax)
+      .toBeGreaterThan(Math.floor(lengthSpec.hardMax * 0.05));
+    expect(chatSpy).toHaveBeenCalled();
+  });
+
   it("retries once with a stricter prompt when the first pass still misses the hard range", async () => {
     const agent = createAgent();
     const firstPass = "仍然过长。".repeat(60);

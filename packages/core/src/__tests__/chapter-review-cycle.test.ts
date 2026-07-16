@@ -462,6 +462,58 @@ describe("runChapterReviewCycle v9", () => {
     expect(result.finalContent).toBe("b".repeat(200));
   });
 
+  it("caps automatic repair passes before creating a second reviser", async () => {
+    const auditChapter = vi.fn()
+      .mockResolvedValueOnce(createAuditResult({
+        passed: false,
+        overallScore: 70,
+        issues: [{ severity: "critical", category: "continuity", description: "broken", suggestion: "fix" }],
+      }))
+      .mockResolvedValueOnce(createAuditResult({
+        passed: false,
+        overallScore: 80,
+        issues: [{ severity: "warning", category: "pacing", description: "slow", suggestion: "trim" }],
+      }));
+    const reviseChapter = vi.fn().mockResolvedValue({
+      revisedContent: "a".repeat(200),
+      wordCount: 200,
+      fixedIssues: ["fixed continuity"],
+      updatedState: "",
+      updatedLedger: "",
+      updatedHooks: "",
+      tokenUsage: ZERO_USAGE,
+    });
+
+    const result = await runChapterReviewCycle({
+      ...baseParams,
+      initialOutput: {
+        content: "c".repeat(200),
+        wordCount: 200,
+        postWriteErrors: [],
+        postWriteWarnings: [],
+      },
+      createReviser: () => ({ reviseChapter }),
+      evaluateChapter: createEvaluation(auditChapter),
+      normalizeDraftLengthIfNeeded: async (content) => ({
+        content,
+        wordCount: content.length,
+        applied: false,
+        tokenUsage: ZERO_USAGE,
+      }),
+      maxReviewIterations: 2,
+      maxRevisionCalls: 1,
+    });
+
+    expect(reviseChapter).toHaveBeenCalledTimes(1);
+    expect(auditChapter).toHaveBeenCalledTimes(2);
+    expect(result.reviewTelemetry).toMatchObject({
+      terminationReason: "max-review-iterations",
+      auditCalls: 2,
+      revisionCalls: 1,
+      configuredMaxRevisions: 1,
+    });
+  });
+
   it("continues when critical issues decrease without a score increase", async () => {
     const auditChapter = vi.fn()
       .mockResolvedValueOnce(createAuditResult({
@@ -844,5 +896,62 @@ describe("runChapterReviewCycle v9", () => {
       revisionCalls: 2,
       reviewedCandidates: 2,
     });
+  });
+
+  it("uses issue-focused verification after an applied local patch", async () => {
+    const issue: AuditIssue = {
+      severity: "critical",
+      category: "禁止句式",
+      description: "出现了禁用句式",
+      suggestion: "改用直述句",
+      repairScope: "local",
+    };
+    const evaluateChapter = vi.fn()
+      .mockResolvedValueOnce(createEvaluation(async () => createAuditResult({
+        passed: false,
+        overallScore: 78,
+        issues: [issue],
+      }))("a".repeat(200)))
+      .mockResolvedValueOnce(createEvaluation(async () => createAuditResult({
+        passed: true,
+        overallScore: 100,
+        issues: [],
+      }))("b".repeat(200)));
+    const reviseChapter = vi.fn().mockResolvedValue({
+      revisedContent: "b".repeat(200),
+      wordCount: 200,
+      fixedIssues: ["禁止句式"],
+      updatedState: "(状态卡未更新)",
+      updatedLedger: "",
+      updatedHooks: "(伏笔池未更新)",
+      changeKind: "patch" as const,
+      tokenUsage: ZERO_USAGE,
+    });
+
+    const result = await runChapterReviewCycle({
+      ...baseParams,
+      initialOutput: {
+        content: "a".repeat(200),
+        wordCount: 200,
+        postWriteErrors: [],
+        postWriteWarnings: [],
+      },
+      createReviser: () => ({ reviseChapter }),
+      evaluateChapter,
+      normalizeDraftLengthIfNeeded: async (content) => ({
+        content,
+        wordCount: content.length,
+        applied: false,
+        tokenUsage: ZERO_USAGE,
+      }),
+      maxReviewIterations: 1,
+    });
+
+    expect(evaluateChapter).toHaveBeenCalledTimes(2);
+    expect(evaluateChapter.mock.calls[1]?.[1]).toEqual({
+      temperature: 0,
+      verificationIssues: [issue],
+    });
+    expect(result.reviewTelemetry.terminationReason).toBe("passed-after-revision");
   });
 });

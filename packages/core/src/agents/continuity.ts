@@ -325,6 +325,7 @@ export class ContinuityAuditor extends BaseAgent {
         ledger?: string;
         hooks?: string;
       };
+      verificationIssues?: ReadonlyArray<AuditIssue>;
     },
   ): Promise<AuditResult> {
     const [diskCurrentState, diskLedger, diskHooks, styleGuideRaw, subplotBoard, emotionalArcs, characterMatrix, chapterSummaries, parentCanon, volumeOutline] =
@@ -372,6 +373,8 @@ export class ContinuityAuditor extends BaseAgent {
 
     const resolvedLanguage = bookLanguage ?? gp.language;
     const isEnglish = resolvedLanguage === "en";
+    const verificationIssues = options?.verificationIssues?.filter((issue) => issue.severity !== "info") ?? [];
+    const verificationMode = verificationIssues.length > 0;
     const dimensions = buildDimensionList(gp, bookRules, resolvedLanguage, hasParentCanon);
     const dimList = dimensions
       .map((d) => `${d.id}. ${d.name}${d.note ? (isEnglish ? ` (${d.note})` : `（${d.note}）`) : ""}`)
@@ -390,7 +393,36 @@ export class ContinuityAuditor extends BaseAgent {
         : "\n\n涉及真实年代、人物、事件、地理、政策时，优先用具体时代细节与内部一致性，避免套用模糊的现代假设。"
       : "";
 
-    const systemPromptBase = isEnglish
+    const verificationSystemPrompt = isEnglish
+      ? `You are a strict revision verifier. A full structural audit already ran before a local patch.
+
+Verify only that every supplied blocking issue is resolved and that the edited chapter introduces no new critical contradiction with the current state, hooks, chapter memo, rules, or previous chapter. Do not reopen unrelated stylistic preferences or repeat resolved issues. Return unresolved prior issues and new critical regressions only.
+
+For every issue, set repair_scope to "local", "structural", or "unknown". Output JSON only:
+{
+  "passed": true/false,
+  "overall_score": 0-100,
+  "issues": [{ "severity": "critical|warning|info", "repair_scope": "local|structural|unknown", "category": "name", "description": "evidence", "suggestion": "fix" }],
+  "summary": "one sentence"
+}
+
+Set passed=true and overall_score=100 when all supplied issues are resolved and there is no new critical regression. Set passed=false when any critical issue remains.`
+      : `你是一位严格的修订复核员。完整结构审计已经在局部补丁前执行。
+
+只验证两件事：列出的阻塞问题是否全部解决，以及补丁后的正文是否与当前状态、伏笔、章节备忘、规则或上一章产生新的 critical 矛盾。不要重开无关文风偏好，不要重复已经解决的问题。只报告未解决的原问题和新出现的 critical 回归。
+
+每条 issue 必须填写 repair_scope="local|structural|unknown"。只输出 JSON：
+{
+  "passed": true/false,
+  "overall_score": 0-100,
+  "issues": [{ "severity": "critical|warning|info", "repair_scope": "local|structural|unknown", "category": "名称", "description": "正文证据", "suggestion": "修复建议" }],
+  "summary": "一句话"
+}
+
+全部原问题已解决且没有新 critical 回归时，passed=true、overall_score=100；仍有 critical 问题时 passed=false。`;
+    const systemPromptBase = verificationMode
+      ? verificationSystemPrompt
+      : isEnglish
       ? `You are a strict ${genreLabel} web-fiction structural editor. Audit the chapter for completion and structure, not for prose craft. ALL OUTPUT MUST BE IN ENGLISH.${protagonistBlock}${searchNote}
 
 ## Reviewer Scope (hard constraints)
@@ -553,12 +585,28 @@ overall_score 评分校准：
         : `\n## 上一章全文（用于衔接检查）\n${previousChapter}\n`
       : "";
 
+    if (verificationMode) {
+      subplotBlock = "";
+      emotionalBlock = "";
+      matrixBlock = "";
+      summariesBlock = "";
+      volumeSummariesBlock = "";
+      canonBlock = "";
+      styleGuideBlock = "";
+    }
+
+    const verificationBlock = verificationMode
+      ? isEnglish
+        ? `\n## Blocking Issues From The Previous Audit\n${verificationIssues.map((issue) => `- [${issue.severity}] ${issue.category}: ${issue.description}\n  Required fix: ${issue.suggestion}`).join("\n")}\n`
+        : `\n## 上次审计的阻塞问题\n${verificationIssues.map((issue) => `- [${issue.severity}] ${issue.category}：${issue.description}\n  必须修复：${issue.suggestion}`).join("\n")}\n`
+      : "";
+
     const renderUserPrompt = (): string => isEnglish
       ? `Review chapter ${chapterNumber}.
 
 ## Current State Card
 ${currentState}
-${ledgerBlock}
+${verificationBlock}${ledgerBlock}
 ${hooksBlock}${volumeSummariesBlock}${subplotBlock}${emotionalBlock}${matrixBlock}${summariesBlock}${canonBlock}${reducedControlBlock}${memoBlock}${prevChapterBlock}${styleGuideBlock}
 
 ## Chapter Content Under Review
@@ -567,7 +615,7 @@ ${chapterContent}`
 
 ## 当前状态卡
 ${currentState}
-${ledgerBlock}
+${verificationBlock}${ledgerBlock}
 ${hooksBlock}${volumeSummariesBlock}${subplotBlock}${emotionalBlock}${matrixBlock}${summariesBlock}${canonBlock}${reducedControlBlock}${memoBlock}${prevChapterBlock}${styleGuideBlock}
 
 ## 待审章节内容

@@ -164,7 +164,7 @@ function copyLiveProjectConfig(projectRoot: string, sourceRoot: string): void {
 
   copyFileSync(sourceConfig, path.join(projectRoot, "inkos.json"));
   const sourceSecrets = path.join(sourceRoot, ".inkos", "secrets.json");
-  if (existsSync(sourceSecrets)) {
+  if (!process.env.INKOS_LLM_API_KEY?.trim() && existsSync(sourceSecrets)) {
     copyFileSync(sourceSecrets, path.join(projectRoot, ".inkos", "secrets.json"));
   }
 

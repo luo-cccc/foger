@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { renamePathWithRetry } from "./fs-retry.js";
 
 export async function atomicWriteFile(
   path: string,
@@ -20,7 +21,7 @@ export async function atomicWriteFile(
     } else {
       await writeFile(tempPath, data);
     }
-    await rename(tempPath, path);
+    await renamePathWithRetry(tempPath, path);
   } finally {
     await rm(tempPath, { force: true }).catch(() => undefined);
   }

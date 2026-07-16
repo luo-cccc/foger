@@ -12,6 +12,24 @@ const LINKED_EVENT_NAMES = [
   "write:error",
   "write:cancel-requested",
   "write:cancelled",
+  "revise:start",
+  "revise:complete",
+  "revise:error",
+  "rewrite:start",
+  "rewrite:complete",
+  "rewrite:error",
+  "rewrite:cancel-requested",
+  "rewrite:cancelled",
+  "repair-state:start",
+  "repair-state:complete",
+  "repair-state:error",
+  "repair-state:cancel-requested",
+  "repair-state:cancelled",
+  "resync:start",
+  "resync:complete",
+  "resync:error",
+  "resync:cancel-requested",
+  "resync:cancelled",
   "llm:telemetry",
 ] as const;
 
@@ -21,28 +39,59 @@ interface LinkedEvent {
   readonly timestamp: number;
 }
 
+interface LinkedChapterSnapshot {
+  readonly number: number;
+  readonly status: string;
+  readonly wordCount: number;
+  readonly operationId?: string;
+  readonly auditIssues?: ReadonlyArray<string>;
+  readonly lengthWarnings?: ReadonlyArray<string>;
+}
+
 interface BookDetailResponse {
   readonly book: { readonly id: string };
-  readonly chapters: ReadonlyArray<{
-    readonly number: number;
-    readonly status: string;
-    readonly wordCount: number;
-    readonly operationId?: string;
-    readonly auditIssues?: ReadonlyArray<string>;
-    readonly lengthWarnings?: ReadonlyArray<string>;
-  }>;
+  readonly chapters: ReadonlyArray<LinkedChapterSnapshot>;
+}
+
+type LinkedRecoveryKind = "revise" | "rewrite" | "repair-state" | "resync";
+
+interface LinkedRecoveryActionReport {
+  readonly kind: LinkedRecoveryKind;
+  readonly statusBefore: string;
+  readonly statusAfter: string;
+  readonly httpStatus: number;
+  readonly requestId?: string;
+  readonly operationId?: string;
+  readonly terminalEvent?: string;
+  readonly resultStatus?: string;
+  readonly error?: string;
+  readonly totalTokens: number;
+  readonly telemetry: ReadonlyArray<Record<string, unknown>>;
 }
 
 interface LinkedChapterReport {
   readonly chapterNumber: number;
   readonly requestId: string;
   readonly operationId: string;
-  readonly status: string;
-  readonly wordCount: number;
-  readonly auditIssues: ReadonlyArray<string>;
-  readonly lengthWarnings: ReadonlyArray<string>;
+  readonly writeAttempts: ReadonlyArray<LinkedWriteAttemptReport>;
+  persistedOperationId: string;
+  status: string;
+  wordCount: number;
+  auditIssues: ReadonlyArray<string>;
+  lengthWarnings: ReadonlyArray<string>;
   readonly telemetry: ReadonlyArray<Record<string, unknown>>;
+  readonly recoveryActions: LinkedRecoveryActionReport[];
   doctorVerified: boolean;
+}
+
+interface LinkedWriteAttemptReport {
+  readonly attempt: number;
+  readonly requestId: string;
+  readonly operationId?: string;
+  readonly terminalEvent: string;
+  readonly error?: string;
+  readonly totalTokens: number;
+  readonly telemetry: ReadonlyArray<Record<string, unknown>>;
 }
 
 interface LinkedCreationAttemptReport {
@@ -85,6 +134,7 @@ const maxTotalTokens = readPositiveInteger("INKOS_LINKED_MAX_TOTAL_TOKENS", 0);
 const maxPromptTokensPerCall = readPositiveInteger("INKOS_LINKED_MAX_PROMPT_TOKENS_PER_CALL", 0);
 const qualityPolicy = readQualityPolicy();
 const maxCreateAttempts = Math.max(1, readPositiveInteger("INKOS_LINKED_CREATE_ATTEMPTS", liveMode ? 2 : 1));
+const maxWriteAttempts = Math.max(1, readPositiveInteger("INKOS_LINKED_WRITE_ATTEMPTS", liveMode ? 3 : 1));
 const creationTimeoutMs = liveMode ? 30 * 60_000 : 180_000;
 const operationTimeoutMs = liveMode ? 30 * 60_000 : 180_000;
 
@@ -92,7 +142,7 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
   page,
   request,
 }, testInfo) => {
-  test.setTimeout(creationTimeoutMs + operationTimeoutMs * requestedChapters + 120_000);
+  test.setTimeout(creationTimeoutMs + operationTimeoutMs * requestedChapters * maxWriteAttempts + 120_000);
 
   const reportPath = resolve(
     process.env.INKOS_LINKED_REPORT_PATH?.trim() || testInfo.outputPath("linked-acceptance.json"),
@@ -110,6 +160,7 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
       maxPromptTokensPerCall: number;
       qualityPolicy: LinkedQualityPolicy;
       createAttempts: number;
+      writeAttempts: number;
     };
     bookId?: string;
     creationAttempts: LinkedCreationAttemptReport[];
@@ -133,6 +184,7 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
       maxPromptTokensPerCall,
       qualityPolicy,
       createAttempts: maxCreateAttempts,
+      writeAttempts: maxWriteAttempts,
     },
     creationAttempts: [],
     chapters: [],
@@ -158,10 +210,12 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
         targetChapters: Math.max(12, requestedChapters),
         blurb: "近未来港城中，一名账房追查导师失踪与伪造债务账本，证据必须通过行动、对话和可验证物件逐步推进。",
       });
-      expect(creation.status).toBe(200);
+      if (creation.status !== 200) {
+        throw new Error(`Book creation returned HTTP ${creation.status}: ${readBrowserApiError(creation)}`);
+      }
       expect(creation.body.status).toBe("creating");
       expect(creation.body.bookId).toEqual(expect.any(String));
-      const attemptedBookId = creation.body.bookId;
+      const attemptedBookId = String(creation.body.bookId);
       report.bookId = attemptedBookId;
 
       let creationError: string | undefined;
@@ -185,6 +239,7 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
         telemetry: attemptTelemetry,
       });
       report.totalTokens = sumTelemetryTokens(allCreationEvents);
+      await writeReportCheckpoint(reportPath, report);
       if (maxTotalTokens > 0 && report.totalTokens > maxTotalTokens) {
         throw new Error(
           `Book creation used ${report.totalTokens} tokens, exceeding the linked run budget of ${maxTotalTokens}.`,
@@ -214,26 +269,62 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
     await expect(page.getByTestId("write-next-button")).toBeVisible();
 
     for (let chapterNumber = 1; chapterNumber <= requestedChapters; chapterNumber += 1) {
-      stage = `chapter-${chapterNumber}-start`;
-      const responsePromise = page.waitForResponse((response) =>
-        response.request().method() === "POST"
-        && response.url().includes(`/api/v1/books/${encodeURIComponent(bookId)}/write-next`),
-      );
-      await page.getByTestId("write-next-button").click();
-      const response = await responsePromise;
-      expect(response.status()).toBe(202);
-      const startBody = await response.json() as { requestId?: unknown };
-      expect(startBody.requestId).toEqual(expect.any(String));
-      const requestId = String(startBody.requestId);
-
-      stage = `chapter-${chapterNumber}-pipeline`;
-      const terminal = await waitForOperationTerminal(page, bookId, requestId, operationTimeoutMs, maxTotalTokens);
-      if (terminal.event !== "write:complete") {
-        throw new Error(
-          terminal.event === "write:cancelled"
-            ? `Write operation ${requestId} was cancelled after reaching the linked token budget.`
-            : String(terminal.data?.error ?? `Write operation ended with ${terminal.event}.`),
+      let requestId = "";
+      let terminal: LinkedEvent | undefined;
+      const writeAttempts: LinkedWriteAttemptReport[] = [];
+      for (let attempt = 1; attempt <= maxWriteAttempts; attempt += 1) {
+        stage = `chapter-${chapterNumber}-start-attempt-${attempt}`;
+        const eventOffset = (await readLinkedEvents(page)).length;
+        const responsePromise = page.waitForResponse((response) =>
+          response.request().method() === "POST"
+          && response.url().includes(`/api/v1/books/${encodeURIComponent(bookId)}/write-next`),
         );
+        await page.getByTestId("write-next-button").click();
+        const response = await responsePromise;
+        expect(response.status()).toBe(202);
+        const startBody = await response.json() as { requestId?: unknown };
+        expect(startBody.requestId).toEqual(expect.any(String));
+        requestId = String(startBody.requestId);
+
+        stage = `chapter-${chapterNumber}-pipeline-attempt-${attempt}`;
+        terminal = await waitForAsyncOperationTerminal(
+          page,
+          bookId,
+          "write",
+          requestId,
+          operationTimeoutMs,
+          maxTotalTokens,
+        );
+        const attemptEvents = (await readLinkedEvents(page)).slice(eventOffset);
+        const attemptTelemetry = recoveryTelemetry(attemptEvents);
+        const attemptOperationId = typeof terminal.data?.operationId === "string"
+          ? terminal.data.operationId
+          : uniqueTelemetryOperationId(attemptTelemetry);
+        const terminalError = terminal.event === "write:complete"
+          ? undefined
+          : terminal.event === "write:cancelled"
+            ? `Write operation ${requestId} was cancelled after reaching the linked token budget.`
+            : String(terminal.data?.error ?? `Write operation ended with ${terminal.event}.`);
+        writeAttempts.push({
+          attempt,
+          requestId,
+          ...(attemptOperationId ? { operationId: attemptOperationId } : {}),
+          terminalEvent: terminal.event,
+          ...(terminalError ? { error: terminalError } : {}),
+          totalTokens: sumTelemetryTokens(attemptEvents),
+          telemetry: attemptTelemetry,
+        });
+        report.totalTokens = sumTelemetryTokens(await readLinkedEvents(page));
+
+        if (!terminalError) break;
+        if (attempt >= maxWriteAttempts || !isRetryableWriteError(terminalError)) {
+          throw new Error(terminalError);
+        }
+        await page.waitForTimeout(attempt * 10_000);
+        await expect(page.getByTestId("write-next-button")).toBeEnabled({ timeout: 60_000 });
+      }
+      if (!terminal || terminal.event !== "write:complete") {
+        throw new Error(`Chapter ${chapterNumber} did not complete after ${maxWriteAttempts} write attempt(s).`);
       }
 
       const operationId = typeof terminal.data?.operationId === "string" ? terminal.data.operationId : "";
@@ -253,35 +344,69 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
       expect(telemetry.every((entry) => entry.bookId === bookId)).toBe(true);
 
       const book = await waitForChapter(request, bookId, chapterNumber);
-      const chapter = book.chapters.find((entry) => entry.number === chapterNumber);
+      let chapter = book.chapters.find((entry) => entry.number === chapterNumber);
       const chapterReport: LinkedChapterReport = {
         chapterNumber,
         requestId,
         operationId,
+        writeAttempts,
+        persistedOperationId: chapter?.operationId ?? operationId,
         status: chapter?.status ?? "missing",
         wordCount: chapter?.wordCount ?? 0,
         auditIssues: chapter?.auditIssues ?? [],
         lengthWarnings: chapter?.lengthWarnings ?? [],
         telemetry: telemetry.map(sanitizeTelemetry),
+        recoveryActions: [],
         doctorVerified: false,
       };
       report.chapters.push(chapterReport);
       report.totalTokens = sumTelemetryTokens(await readLinkedEvents(page));
+      await writeReportCheckpoint(reportPath, report);
       assertPromptBudget(events, maxPromptTokensPerCall, `Chapter ${chapterNumber}`);
 
       expect(chapter?.operationId).toBe(operationId);
+      expect(new Set(chapter?.auditIssues ?? []).size).toBe(chapter?.auditIssues?.length ?? 0);
+      expect(new Set(chapter?.lengthWarnings ?? []).size).toBe(chapter?.lengthWarnings?.length ?? 0);
+
+      if (qualityPolicy === "report-only" && chapter) {
+        stage = `chapter-${chapterNumber}-recovery`;
+        chapter = await recoverReportOnlyChapter({
+          page,
+          request,
+          bookId,
+          chapter,
+          operationTimeoutMs,
+          tokenBudget: maxTotalTokens,
+          onAction: async (action, recoveredChapter) => {
+            chapterReport.recoveryActions.push(action);
+            updateChapterReport(chapterReport, recoveredChapter);
+            report.totalTokens = sumTelemetryTokens(await readLinkedEvents(page));
+            await writeReportCheckpoint(reportPath, report);
+          },
+        });
+        updateChapterReport(chapterReport, chapter);
+        report.totalTokens = sumTelemetryTokens(await readLinkedEvents(page));
+        assertPromptBudget(
+          await readLinkedEvents(page),
+          maxPromptTokensPerCall,
+          `Chapter ${chapterNumber} recovery`,
+        );
+      }
+
       expect(chapter?.status).not.toBe("state-degraded");
       expect(new Set(chapter?.auditIssues ?? []).size).toBe(chapter?.auditIssues?.length ?? 0);
       expect(new Set(chapter?.lengthWarnings ?? []).size).toBe(chapter?.lengthWarnings?.length ?? 0);
 
       stage = `chapter-${chapterNumber}-doctor`;
       await expect(page.getByTestId(`chapter-row-${chapterNumber}`)).toBeVisible();
-      await page.getByTestId(`chapter-operation-${chapterNumber}`).click();
-      await expect(page).toHaveURL(`/#/doctor?operationId=${encodeURIComponent(operationId)}`);
-      await expect(page.getByTestId("operation-trace-filter")).toContainText(operationId);
+      const persistedOperationId = chapter?.operationId ?? operationId;
+      chapterReport.persistedOperationId = persistedOperationId;
+      await navigateHash(page, `#/doctor?operationId=${encodeURIComponent(persistedOperationId)}`);
+      await expect(page.getByTestId("operation-trace-filter")).toContainText(persistedOperationId);
       await expect(page.getByTestId("operation-telemetry-call-count")).not.toContainText("还没有最近调用");
       await expect(page.getByTestId("operation-telemetry-call-count")).not.toContainText("No recent calls yet");
       chapterReport.doctorVerified = true;
+      await writeReportCheckpoint(reportPath, report);
 
       stage = `chapter-${chapterNumber}-quality`;
       const chapterQuality = buildChapterQualityReport(chapterReport, wordsPerChapter);
@@ -291,8 +416,11 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
         );
       }
 
-      if (chapterReport.status === "audit-failed" && chapterNumber < requestedChapters) {
-        break;
+      if (chapterReport.status !== "ready-for-review" && chapterNumber < requestedChapters) {
+        throw new Error(
+          `Chapter ${chapterNumber} remained ${chapterReport.status} after report-only recovery; `
+          + "the production continuation guard would block the next chapter.",
+        );
       }
 
       if (chapterNumber < requestedChapters) {
@@ -352,6 +480,11 @@ function readQualityPolicy(): LinkedQualityPolicy {
 
 function isRetryableFoundationError(message: string): boolean {
   return /基础设定没有生成完整|story foundation came back incomplete|architect foundation incomplete|missing sections/i.test(message);
+}
+
+function isRetryableWriteError(message: string): boolean {
+  return /无法连接到 API 服务|could not connect|connection error|fetch failed|econnreset|econnrefused|etimedout|socket hang up|network socket disconnected|service unavailable|bad gateway|gateway timeout|upstream connect|connect timeout|rate limit|too many requests|\b429\b|\b502\b|\b503\b|\b504\b/i
+    .test(message);
 }
 
 function buildLinkedGate(
@@ -426,6 +559,263 @@ function buildQualityGate(
   };
 }
 
+async function recoverReportOnlyChapter(params: {
+  readonly page: Page;
+  readonly request: APIRequestContext;
+  readonly bookId: string;
+  readonly chapter: LinkedChapterSnapshot;
+  readonly operationTimeoutMs: number;
+  readonly tokenBudget: number;
+  readonly onAction: (
+    action: LinkedRecoveryActionReport,
+    chapter: LinkedChapterSnapshot,
+  ) => Promise<void>;
+}): Promise<LinkedChapterSnapshot> {
+  let chapter = params.chapter;
+
+  const recoverState = async (): Promise<void> => {
+    if (chapter.status !== "state-degraded") return;
+    chapter = await runAsyncRecoveryAction({ ...params, chapter, kind: "repair-state" });
+    if (chapter.status === "state-degraded") {
+      chapter = await runAsyncRecoveryAction({ ...params, chapter, kind: "resync" });
+    }
+  };
+
+  await recoverState();
+  if (chapter.status === "audit-failed") {
+    chapter = await runRevisionRecoveryAction(params, chapter);
+    if (chapter.status === "audit-failed") {
+      chapter = await runAsyncRecoveryAction({ ...params, chapter, kind: "rewrite" });
+      await recoverState();
+    }
+  }
+
+  return chapter;
+}
+
+async function runRevisionRecoveryAction(
+  params: {
+    readonly page: Page;
+    readonly request: APIRequestContext;
+    readonly bookId: string;
+    readonly operationTimeoutMs: number;
+    readonly onAction: (
+      action: LinkedRecoveryActionReport,
+      chapter: LinkedChapterSnapshot,
+    ) => Promise<void>;
+  },
+  chapter: LinkedChapterSnapshot,
+): Promise<LinkedChapterSnapshot> {
+  const eventOffset = (await readLinkedEvents(params.page)).length;
+  const endpoint = `/api/v1/books/${encodeURIComponent(params.bookId)}/revise/${chapter.number}`;
+  let response: BrowserPostResult;
+  try {
+    response = await postJsonFromBrowser(params.page, endpoint, {
+      mode: "auto",
+      brief: "Resolve all persisted critical audit issues without changing established facts.",
+    });
+  } catch (cause) {
+    const action = await buildFailedRecoveryAction(params.page, eventOffset, "revise", chapter, cause);
+    await params.onAction(action, chapter);
+    throw cause;
+  }
+
+  if (response.status < 200 || response.status >= 300) {
+    const error = readBrowserApiError(response);
+    const action = await buildFailedRecoveryAction(params.page, eventOffset, "revise", chapter, error, response.status);
+    await params.onAction(action, chapter);
+    throw new Error(error);
+  }
+
+  const terminal = await waitForEvent(params.page, eventOffset, params.operationTimeoutMs, (event) =>
+    ["revise:complete", "revise:error"].includes(event.event)
+    && event.data?.bookId === params.bookId
+    && event.data?.chapter === chapter.number
+  );
+  const recovered = terminal.event === "revise:complete"
+    ? await loadChapter(params.request, params.bookId, chapter.number)
+    : chapter;
+  const actionEvents = (await readLinkedEvents(params.page)).slice(eventOffset);
+  const telemetry = recoveryTelemetry(actionEvents);
+  const error = terminal.event === "revise:error"
+    ? String(terminal.data?.error ?? "Revision recovery failed.")
+    : undefined;
+  await params.onAction({
+    kind: "revise",
+    statusBefore: chapter.status,
+    statusAfter: recovered.status,
+    httpStatus: response.status,
+    terminalEvent: terminal.event,
+    resultStatus: typeof response.body.status === "string" ? response.body.status : undefined,
+    ...(error ? { error } : {}),
+    totalTokens: sumTelemetryTokens(actionEvents),
+    telemetry,
+  }, recovered);
+  if (error) throw new Error(error);
+  return recovered;
+}
+
+async function runAsyncRecoveryAction(params: {
+  readonly page: Page;
+  readonly request: APIRequestContext;
+  readonly bookId: string;
+  readonly chapter: LinkedChapterSnapshot;
+  readonly kind: Exclude<LinkedRecoveryKind, "revise">;
+  readonly operationTimeoutMs: number;
+  readonly tokenBudget: number;
+  readonly onAction: (
+    action: LinkedRecoveryActionReport,
+    chapter: LinkedChapterSnapshot,
+  ) => Promise<void>;
+}): Promise<LinkedChapterSnapshot> {
+  const eventOffset = (await readLinkedEvents(params.page)).length;
+  const endpoint = `/api/v1/books/${encodeURIComponent(params.bookId)}/${params.kind}/${params.chapter.number}`;
+  const requestBody = params.kind === "rewrite"
+    ? { brief: "Rewrite this chapter to resolve all persisted critical audit issues without changing established facts." }
+    : {};
+  let response: BrowserPostResult;
+  try {
+    response = await postJsonFromBrowser(params.page, endpoint, requestBody);
+  } catch (cause) {
+    const action = await buildFailedRecoveryAction(params.page, eventOffset, params.kind, params.chapter, cause);
+    await params.onAction(action, params.chapter);
+    throw cause;
+  }
+
+  const requestId = typeof response.body.requestId === "string" ? response.body.requestId : "";
+  if (response.status !== 202 || !requestId) {
+    const error = readBrowserApiError(response);
+    const action = await buildFailedRecoveryAction(
+      params.page,
+      eventOffset,
+      params.kind,
+      params.chapter,
+      error,
+      response.status,
+    );
+    await params.onAction(action, params.chapter);
+    throw new Error(error);
+  }
+
+  const terminal = await waitForAsyncOperationTerminal(
+    params.page,
+    params.bookId,
+    params.kind,
+    requestId,
+    params.operationTimeoutMs,
+    params.tokenBudget,
+  );
+  const recovered = terminal.event === `${params.kind}:complete`
+    ? await loadChapter(params.request, params.bookId, params.chapter.number)
+    : params.chapter;
+  const actionEvents = (await readLinkedEvents(params.page)).slice(eventOffset);
+  const telemetry = recoveryTelemetry(actionEvents);
+  const operationId = typeof terminal.data?.operationId === "string"
+    ? terminal.data.operationId
+    : uniqueTelemetryOperationId(telemetry);
+  const error = terminal.event === `${params.kind}:complete`
+    ? undefined
+    : String(terminal.data?.error ?? `${params.kind} recovery ended with ${terminal.event}.`);
+  await params.onAction({
+    kind: params.kind,
+    statusBefore: params.chapter.status,
+    statusAfter: recovered.status,
+    httpStatus: response.status,
+    requestId,
+    ...(operationId ? { operationId } : {}),
+    terminalEvent: terminal.event,
+    resultStatus: typeof terminal.data?.status === "string" ? terminal.data.status : undefined,
+    ...(error ? { error } : {}),
+    totalTokens: sumTelemetryTokens(actionEvents),
+    telemetry,
+  }, recovered);
+  if (error) throw new Error(error);
+  return recovered;
+}
+
+interface BrowserPostResult {
+  readonly status: number;
+  readonly body: Record<string, unknown>;
+}
+
+async function postJsonFromBrowser(
+  page: Page,
+  endpoint: string,
+  body: Record<string, unknown>,
+): Promise<BrowserPostResult> {
+  return await page.evaluate(async ({ target, payload }) => {
+    const response = await fetch(target, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const text = await response.text();
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = text ? JSON.parse(text) as Record<string, unknown> : {};
+    } catch {
+      parsed = { error: text || `HTTP ${response.status}` };
+    }
+    return { status: response.status, body: parsed };
+  }, { target: endpoint, payload: body });
+}
+
+function readBrowserApiError(response: BrowserPostResult): string {
+  if (typeof response.body.error === "string") return response.body.error;
+  if (response.body.error && typeof response.body.error === "object") {
+    const structured = response.body.error as Record<string, unknown>;
+    if (typeof structured.message === "string") {
+      return typeof structured.code === "string"
+        ? `${structured.code}: ${structured.message}`
+        : structured.message;
+    }
+  }
+  return `Request failed with HTTP ${response.status}.`;
+}
+
+async function buildFailedRecoveryAction(
+  page: Page,
+  eventOffset: number,
+  kind: LinkedRecoveryKind,
+  chapter: LinkedChapterSnapshot,
+  cause: unknown,
+  httpStatus = 0,
+): Promise<LinkedRecoveryActionReport> {
+  const actionEvents = (await readLinkedEvents(page)).slice(eventOffset);
+  return {
+    kind,
+    statusBefore: chapter.status,
+    statusAfter: chapter.status,
+    httpStatus,
+    error: cause instanceof Error ? cause.message : String(cause),
+    totalTokens: sumTelemetryTokens(actionEvents),
+    telemetry: recoveryTelemetry(actionEvents),
+  };
+}
+
+function recoveryTelemetry(events: ReadonlyArray<LinkedEvent>): ReadonlyArray<Record<string, unknown>> {
+  return events
+    .filter((event) => event.event === "llm:telemetry")
+    .map((event) => sanitizeTelemetry(event.data ?? {}));
+}
+
+function uniqueTelemetryOperationId(telemetry: ReadonlyArray<Record<string, unknown>>): string | undefined {
+  const ids = new Set(
+    telemetry
+      .map((entry) => entry.operationId)
+      .filter((value): value is string => typeof value === "string" && value.length > 0),
+  );
+  return ids.size === 1 ? [...ids][0] : undefined;
+}
+
+function updateChapterReport(report: LinkedChapterReport, chapter: LinkedChapterSnapshot): void {
+  report.persistedOperationId = chapter.operationId ?? report.persistedOperationId;
+  report.status = chapter.status;
+  report.wordCount = chapter.wordCount;
+  report.auditIssues = chapter.auditIssues ?? [];
+  report.lengthWarnings = chapter.lengthWarnings ?? [];
+}
+
 async function startLinkedEventCollector(page: Page): Promise<void> {
   await page.evaluate((eventNames) => {
     const linkedWindow = window as typeof window & {
@@ -482,7 +872,7 @@ async function readLinkedEvents(page: Page): Promise<LinkedEvent[]> {
 async function createBookFromBrowser(
   page: Page,
   payload: Record<string, unknown>,
-): Promise<{ status: number; body: { status?: string; bookId: string } }> {
+): Promise<BrowserPostResult> {
   return await page.evaluate(async (body) => {
     const response = await fetch("/api/v1/books/create", {
       method: "POST",
@@ -491,7 +881,7 @@ async function createBookFromBrowser(
     });
     return {
       status: response.status,
-      body: await response.json() as { status?: string; bookId: string },
+      body: await response.json() as Record<string, unknown>,
     };
   }, payload);
 }
@@ -534,9 +924,40 @@ async function waitForChapter(
   throw new Error(`Chapter ${chapterNumber} did not become visible for ${bookId}.`);
 }
 
-async function waitForOperationTerminal(
+async function loadChapter(
+  request: APIRequestContext,
+  bookId: string,
+  chapterNumber: number,
+): Promise<LinkedChapterSnapshot> {
+  const response = await request.get(`/api/v1/books/${encodeURIComponent(bookId)}`);
+  if (!response.ok()) {
+    throw new Error(`Could not refresh chapter ${chapterNumber}; Studio returned HTTP ${response.status()}.`);
+  }
+  const body = await response.json() as BookDetailResponse;
+  const chapter = body.chapters.find((entry) => entry.number === chapterNumber);
+  if (!chapter) throw new Error(`Chapter ${chapterNumber} disappeared while applying linked recovery.`);
+  return chapter;
+}
+
+async function waitForEvent(
+  page: Page,
+  eventOffset: number,
+  timeoutMs: number,
+  predicate: (event: LinkedEvent) => boolean,
+): Promise<LinkedEvent> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const event = (await readLinkedEvents(page)).slice(eventOffset).find(predicate);
+    if (event) return event;
+    await page.waitForTimeout(250);
+  }
+  throw new Error("Timed out waiting for a linked recovery event.");
+}
+
+async function waitForAsyncOperationTerminal(
   page: Page,
   bookId: string,
+  kind: "write" | Exclude<LinkedRecoveryKind, "revise">,
   requestId: string,
   timeoutMs: number,
   tokenBudget: number,
@@ -546,10 +967,13 @@ async function waitForOperationTerminal(
   while (Date.now() < deadline) {
     const events = await readLinkedEvents(page);
     const terminal = [...events].reverse().find((event) =>
-      ["write:complete", "write:error", "write:cancelled"].includes(event.event)
+      [`${kind}:complete`, `${kind}:error`, `${kind}:cancelled`].includes(event.event)
       && event.data?.requestId === requestId,
     );
     if (terminal) return terminal;
+
+    const durableTerminal = await readAsyncOperationTerminal(page, bookId, requestId, kind);
+    if (durableTerminal) return durableTerminal;
 
     if (!cancellationRequested && tokenBudget > 0 && sumTelemetryTokens(events) > tokenBudget) {
       cancellationRequested = true;
@@ -562,7 +986,30 @@ async function waitForOperationTerminal(
     }
     await page.waitForTimeout(500);
   }
-  throw new Error(`Timed out waiting for write operation ${requestId}.`);
+  throw new Error(`Timed out waiting for ${kind} operation ${requestId}.`);
+}
+
+async function readAsyncOperationTerminal(
+  page: Page,
+  bookId: string,
+  requestId: string,
+  kind: "write" | Exclude<LinkedRecoveryKind, "revise">,
+): Promise<LinkedEvent | null> {
+  const result = await page.evaluate(async ({ targetBookId, targetRequestId }) => {
+    try {
+      const response = await fetch(
+        `/api/v1/books/${encodeURIComponent(targetBookId)}/operations/${encodeURIComponent(targetRequestId)}`,
+      );
+      if (!response.ok) return null;
+      return await response.json() as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }, { targetBookId: bookId, targetRequestId: requestId });
+  if (!result) return null;
+  const terminalEvent = typeof result.terminalEvent === "string" ? result.terminalEvent : "";
+  if (![`${kind}:complete`, `${kind}:error`, `${kind}:cancelled`].includes(terminalEvent)) return null;
+  return { event: terminalEvent, data: result, timestamp: Date.now() };
 }
 
 function sanitizeTelemetry(entry: Record<string, unknown>): Record<string, unknown> {
@@ -634,7 +1081,11 @@ function buildFailureSignature(
 }
 
 async function persistReport(path: string, report: unknown, testInfo: TestInfo): Promise<void> {
+  await writeReportCheckpoint(path, report);
+  await testInfo.attach("linked-acceptance-report", { path, contentType: "application/json" });
+}
+
+async function writeReportCheckpoint(path: string, report: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify(report, null, 2)}\n`, "utf-8");
-  await testInfo.attach("linked-acceptance-report", { path, contentType: "application/json" });
 }

@@ -172,6 +172,56 @@ describe("validateChapterTruthPersistence", () => {
     expect(logger.warn).toHaveBeenCalledWith("  [unsupported_change] 正文写铜牌在怀里，但 state 说未携带。");
   });
 
+  it("uses analyzer recovery instead of a second settlement call when the limit is one", async () => {
+    const initialValidation = createValidationResult({
+      passed: false,
+      warnings: [{
+        category: "missing_state_change",
+        description: "The settlement removed the current chapter state.",
+      }],
+    });
+    const validator = { validate: vi.fn().mockResolvedValue(initialValidation) };
+    const writer = { settleChapterState: vi.fn() };
+    const recoverAfterSettlementLimit = vi.fn().mockResolvedValue({
+      output: createWriterOutput({
+        updatedState: "analyzer state",
+        updatedHooks: "analyzer hooks",
+      }),
+      validation: createValidationResult(),
+    });
+
+    const result = await validateChapterTruthPersistence({
+      writer,
+      validator,
+      book: BOOK,
+      bookDir: "/tmp/book",
+      chapterNumber: 2,
+      title: "Test Chapter",
+      content: "Chapter 2 changes the protagonist state.",
+      persistenceOutput: createWriterOutput({
+        updatedState: "broken state",
+        updatedHooks: "broken hooks",
+      }),
+      auditResult: createAuditResult(),
+      previousTruth: {
+        oldState: "old state",
+        oldHooks: "old hooks",
+        oldLedger: "old ledger",
+      },
+      language: "en",
+      maxSettlementCalls: 1,
+      recoverAfterSettlementLimit,
+      logWarn: vi.fn(),
+      logger: { warn: vi.fn() },
+    });
+
+    expect(writer.settleChapterState).not.toHaveBeenCalled();
+    expect(recoverAfterSettlementLimit).toHaveBeenCalledWith(initialValidation);
+    expect(result.chapterStatus).toBeNull();
+    expect(result.persistenceOutput.updatedState).toBe("analyzer state");
+    expect(result.persistenceOutput.updatedHooks).toBe("analyzer hooks");
+  });
+
   it("degrades gracefully when validator throws (e.g. LLM returned empty response)", async () => {
     const validator = {
       validate: vi.fn().mockRejectedValue(new Error("LLM returned empty response")),

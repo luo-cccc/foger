@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { Scheduler, type SchedulerConfig } from "../pipeline/scheduler.js";
 import type { BookConfig } from "../models/book.js";
 import { StateManager } from "../state/manager.js";
-import { UnattendedStateStore } from "../pipeline/unattended-state.js";
+import {
+  UnattendedStateStore,
+  type UnattendedBookState,
+} from "../pipeline/unattended-state.js";
 import type { LLMCallTelemetry } from "../llm/provider.js";
 import type { PipelineDiagnostic } from "../pipeline/diagnostics.js";
 
@@ -148,6 +151,58 @@ describe("Scheduler", () => {
         { kind: "state-degraded", action: "repair-state" },
       );
       expect(onChapterComplete).toHaveBeenCalledWith("book-1", 3, "state-degraded");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("pauses a degraded chapter before recovery when its current metrics exceed hard gates", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-unattended-degraded-budget-"));
+    const onChapterComplete = vi.fn();
+    const scheduler = new Scheduler({
+      ...createConfig(),
+      projectRoot: root,
+      onChapterComplete,
+      qualityGates: {
+        maxAuditRetries: 2,
+        pauseAfterConsecutiveFailures: 3,
+        retryTemperatureStep: 0.1,
+        maxChapterTokens: 100,
+        maxPromptTokensPerCall: 100,
+        maxRetryRate: 0.2,
+        maxTimeoutRate: 0,
+        maxFallbacksPerChapter: 0,
+        minHardRangeRate: 0.8,
+      },
+    });
+    const book = createBook("book-1");
+    (scheduler as unknown as { telemetryByBook: Map<string, LLMCallTelemetry[]> }).telemetryByBook.set(
+      book.id,
+      [createTelemetry()],
+    );
+    vi.spyOn(
+      (scheduler as unknown as {
+        pipeline: { writeNextChapter: () => Promise<unknown> };
+      }).pipeline,
+      "writeNextChapter",
+    ).mockResolvedValue(createPipelineResult("state-degraded"));
+
+    try {
+      const success = await (scheduler as unknown as {
+        writeOneChapter: (bookId: string, config: BookConfig) => Promise<boolean>;
+      }).writeOneChapter(book.id, book);
+
+      expect(success).toBe(false);
+      expect(scheduler.isBookPaused(book.id)).toBe(true);
+      expect(onChapterComplete).toHaveBeenCalledWith(book.id, 1, "state-degraded");
+      const persisted = await new UnattendedStateStore(root).load();
+      expect(persisted.books[book.id]).toMatchObject({
+        status: "paused",
+        action: "pause",
+        lastChapterNumber: 1,
+        lastFailureKind: "budget",
+      });
+      expect(persisted.books[book.id]?.lastError).toContain("chapter tokens 150 > 100");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -296,6 +351,125 @@ describe("Scheduler", () => {
       expect(repair).toHaveBeenCalledWith(book.id, 1);
       expect(resync).toHaveBeenCalledWith(book.id, 1);
       expect(writeNext).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("pauses before state recovery when the persisted settlement budget is exhausted", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-unattended-settlement-budget-"));
+    const state = new StateManager(root);
+    const book = createBook("book-1");
+    await state.saveBookConfig(book.id, book);
+    await state.saveChapterIndex(book.id, [createChapterMeta("state-degraded")]);
+    const onChapterComplete = vi.fn();
+    const scheduler = new Scheduler({
+      ...createConfig(),
+      projectRoot: root,
+      onChapterComplete,
+      governanceCallLimits: { maxSettlementCallsPerChapter: 1 },
+    });
+    const internal = scheduler as unknown as {
+      unattendedBooks: Map<string, UnattendedBookState>;
+      pipeline: { repairChapterState: (...args: unknown[]) => Promise<unknown> };
+    };
+    internal.unattendedBooks.set(book.id, {
+      status: "retry-wait",
+      action: "repair-state",
+      consecutiveFailures: 1,
+      failureDimensions: { "state-validation": 1 },
+      attemptsByAction: {},
+      lastChapterNumber: 1,
+      currentMetrics: {
+        calls: 8,
+        retries: 0,
+        timeouts: 0,
+        errors: 0,
+        totalTokens: 80_000,
+        maxPromptEstimatedTokens: 12_000,
+        fallbacks: 0,
+        revisionCalls: 1,
+        settlementCalls: 1,
+        withinHardRange: true,
+      },
+      updatedAt: "2026-04-01T00:00:00.000Z",
+    });
+    const repair = vi.spyOn(internal.pipeline, "repairChapterState");
+
+    try {
+      const success = await (scheduler as unknown as {
+        writeOneChapter: (bookId: string, config: BookConfig) => Promise<boolean>;
+      }).writeOneChapter(book.id, book);
+
+      expect(success).toBe(false);
+      expect(repair).not.toHaveBeenCalled();
+      expect(scheduler.isBookPaused(book.id)).toBe(true);
+      expect(onChapterComplete).toHaveBeenCalledWith(book.id, 1, "state-degraded");
+      const persisted = await new UnattendedStateStore(root).load();
+      expect(persisted.books[book.id]).toMatchObject({
+        status: "paused",
+        action: "pause",
+        lastChapterNumber: 1,
+        lastFailureKind: "budget",
+      });
+      expect(persisted.books[book.id]?.lastError).toContain(
+        "settlement calls 1 reached 1 before state recovery",
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("attributes recovery errors to the pending chapter and applies its accumulated budget", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-unattended-recovery-budget-"));
+    const state = new StateManager(root);
+    const book = createBook("book-1");
+    await state.saveBookConfig(book.id, book);
+    await state.saveChapterIndex(book.id, [createChapterMeta("state-degraded")]);
+    const onChapterComplete = vi.fn();
+    const scheduler = new Scheduler({
+      ...createConfig(),
+      projectRoot: root,
+      onChapterComplete,
+      qualityGates: {
+        maxAuditRetries: 2,
+        pauseAfterConsecutiveFailures: 3,
+        retryTemperatureStep: 0.1,
+        maxChapterTokens: 100,
+        maxPromptTokensPerCall: 100,
+        maxRetryRate: 0.2,
+        maxTimeoutRate: 0,
+        maxFallbacksPerChapter: 0,
+        minHardRangeRate: 0.8,
+      },
+    });
+    (scheduler as unknown as { telemetryByBook: Map<string, LLMCallTelemetry[]> }).telemetryByBook.set(
+      book.id,
+      [createTelemetry()],
+    );
+    vi.spyOn(
+      (scheduler as unknown as {
+        pipeline: { repairChapterState: () => Promise<unknown> };
+      }).pipeline,
+      "repairChapterState",
+    ).mockRejectedValue(new Error("state repair failed"));
+
+    try {
+      const success = await (scheduler as unknown as {
+        writeOneChapter: (bookId: string, config: BookConfig) => Promise<boolean>;
+      }).writeOneChapter(book.id, book);
+
+      expect(success).toBe(false);
+      expect(scheduler.isBookPaused(book.id)).toBe(true);
+      expect(onChapterComplete).toHaveBeenCalledWith(book.id, 1, "state-degraded");
+      const persisted = await new UnattendedStateStore(root).load();
+      expect(persisted.books[book.id]).toMatchObject({
+        status: "paused",
+        action: "pause",
+        lastChapterNumber: 1,
+        lastFailureKind: "budget",
+      });
+      expect(persisted.books[book.id]?.lastError).toContain("chapter tokens 150 > 100");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

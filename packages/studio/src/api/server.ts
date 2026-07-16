@@ -1884,7 +1884,18 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
     readonly kind: StudioOperationKind;
     readonly controller: AbortController;
   }
+  interface TerminalStudioOperation {
+    readonly requestId: string;
+    readonly bookId: string;
+    readonly kind: StudioOperationKind;
+    readonly status: "complete" | "error" | "cancelled";
+    readonly terminalEvent: string;
+    readonly data: Record<string, unknown>;
+    readonly completedAt: string;
+  }
   const activeBookOperations = new Map<string, ActiveStudioOperation>();
+  const terminalStudioOperations = new Map<string, TerminalStudioOperation>();
+  const maxTerminalStudioOperations = 256;
 
   // Structured error handler — ApiError returns typed JSON, others return 500
   app.onError((error, c) => {
@@ -1946,7 +1957,15 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
   async function loadCurrentProjectConfig(
     options?: { readonly requireApiKey?: boolean },
   ): Promise<ProjectConfig> {
-    const freshConfig = await loadProjectConfig(root, { ...options, consumer: "studio" });
+    const linkedLiveApiKey = process.env.INKOS_E2E_LLM_MODE === "live"
+      ? process.env.INKOS_LLM_API_KEY?.trim()
+      : undefined;
+    const freshConfig = await loadProjectConfig(root, {
+      ...options,
+      consumer: "studio",
+      ...(linkedLiveApiKey ? { requireApiKey: false } : {}),
+    });
+    if (linkedLiveApiKey) freshConfig.llm.apiKey = linkedLiveApiKey;
     cachedConfig = freshConfig;
     return freshConfig;
   }
@@ -2060,6 +2079,39 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
     return operation;
   }
 
+  function studioOperationKey(bookId: string, requestId: string): string {
+    return `${bookId}\u0000${requestId}`;
+  }
+
+  function recordStudioOperationTerminal(
+    operation: ActiveStudioOperation,
+    status: TerminalStudioOperation["status"],
+    data: Record<string, unknown> = {},
+  ): void {
+    const terminalEvent = `${operation.kind}:${status}`;
+    const payload = {
+      bookId: operation.bookId,
+      requestId: operation.requestId,
+      ...data,
+    };
+    const key = studioOperationKey(operation.bookId, operation.requestId);
+    terminalStudioOperations.set(key, {
+      requestId: operation.requestId,
+      bookId: operation.bookId,
+      kind: operation.kind,
+      status,
+      terminalEvent,
+      data: payload,
+      completedAt: new Date().toISOString(),
+    });
+    while (terminalStudioOperations.size > maxTerminalStudioOperations) {
+      const oldestKey = terminalStudioOperations.keys().next().value as string | undefined;
+      if (!oldestKey) break;
+      terminalStudioOperations.delete(oldestKey);
+    }
+    broadcast(terminalEvent, payload);
+  }
+
   function launchStudioOperation<T>(params: {
     readonly operation: ActiveStudioOperation;
     readonly run: () => Promise<T>;
@@ -2068,29 +2120,17 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
     void params.run().then(
       (result) => {
         if (params.operation.controller.signal.aborted) {
-          broadcast(`${params.operation.kind}:cancelled`, {
-            bookId: params.operation.bookId,
-            requestId: params.operation.requestId,
-          });
+          recordStudioOperationTerminal(params.operation, "cancelled");
           return;
         }
-        broadcast(`${params.operation.kind}:complete`, {
-          bookId: params.operation.bookId,
-          requestId: params.operation.requestId,
-          ...params.completeData(result),
-        });
+        recordStudioOperationTerminal(params.operation, "complete", params.completeData(result));
       },
       (error) => {
         if (params.operation.controller.signal.aborted) {
-          broadcast(`${params.operation.kind}:cancelled`, {
-            bookId: params.operation.bookId,
-            requestId: params.operation.requestId,
-          });
+          recordStudioOperationTerminal(params.operation, "cancelled");
           return;
         }
-        broadcast(`${params.operation.kind}:error`, {
-          bookId: params.operation.bookId,
-          requestId: params.operation.requestId,
+        recordStudioOperationTerminal(params.operation, "error", {
           error: error instanceof Error ? error.message : String(error),
         });
       },
@@ -2419,6 +2459,32 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
   });
 
   // --- Actions ---
+
+  app.get("/api/v1/books/:id/operations/:requestId", async (c) => {
+    const id = c.req.param("id");
+    const requestId = c.req.param("requestId");
+    const terminal = terminalStudioOperations.get(studioOperationKey(id, requestId));
+    if (terminal) {
+      return c.json({
+        status: terminal.status,
+        kind: terminal.kind,
+        terminalEvent: terminal.terminalEvent,
+        completedAt: terminal.completedAt,
+        ...terminal.data,
+      });
+    }
+
+    const operation = activeBookOperations.get(id);
+    if (operation?.requestId === requestId) {
+      return c.json({
+        status: operation.controller.signal.aborted ? "cancelling" : "running",
+        kind: operation.kind,
+        bookId: id,
+        requestId,
+      });
+    }
+    return c.json({ error: "Operation not found." }, 404);
+  });
 
   app.post("/api/v1/books/:id/operations/:requestId/cancel", async (c) => {
     const id = c.req.param("id");

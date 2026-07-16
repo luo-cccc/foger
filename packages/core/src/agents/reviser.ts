@@ -44,6 +44,7 @@ export interface ReviseOutput {
   readonly updatedState: string;
   readonly updatedLedger: string;
   readonly updatedHooks: string;
+  readonly changeKind?: "patch" | "rewrite";
   readonly tokenUsage?: {
     readonly promptTokens: number;
     readonly completionTokens: number;
@@ -193,8 +194,11 @@ export class ReviserAgent extends BaseAgent {
           ? "\n8. Keep the chapter word count within the target range; only allow minor deviation when fixing critical issues truly requires it"
           : "\n8. 保持章节字数在目标区间内；只有在修复关键问题确实需要时才允许轻微偏离")
       : "";
+    const autoOutputMode = mode === "auto" ? resolveAutoOutputMode(issues) : "allow-full";
     const langPrefix = isEnglish
-      ? `【LANGUAGE OVERRIDE】ALL output (FIXED_ISSUES, PATCHES, REVISED_CONTENT, UPDATED_STATE, UPDATED_HOOKS) MUST be in English.\n\n`
+      ? autoOutputMode === "patch-only"
+        ? `【LANGUAGE OVERRIDE】ALL output (FIXED_ISSUES and PATCHES) MUST be in English.\n\n`
+        : `【LANGUAGE OVERRIDE】ALL output (FIXED_ISSUES, PATCHES, REVISED_CONTENT, UPDATED_STATE, UPDATED_HOOKS) MUST be in English.\n\n`
       : "";
     const governedMode = Boolean(options?.chapterIntent && options?.contextPackage && options?.ruleStack);
     const hooksWorkingSet = governedMode && options?.contextPackage
@@ -217,7 +221,6 @@ export class ReviserAgent extends BaseAgent {
         })
       : characterMatrix;
 
-    const autoOutputMode = mode === "auto" ? resolveAutoOutputMode(issues) : "allow-full";
     const systemPromptBase = mode === "auto"
       ? this.buildAutoSystemPrompt({ langPrefix, gp, protagonistBlock, numericalRule, lengthGuardrail, resolvedLanguage, lengthSpec: options?.lengthSpec, autoOutputMode })
       : this.buildLegacySystemPrompt({ langPrefix, gp, protagonistBlock, numericalRule, lengthGuardrail, mode, resolvedLanguage });
@@ -271,6 +274,18 @@ export class ReviserAgent extends BaseAgent {
     let styleGuideBlock = reducedControlBlock.length === 0
       ? `\n## 文风指南\n${styleGuide}`
       : "";
+
+    if (autoOutputMode === "patch-only") {
+      ledgerBlock = "";
+      hookDebtBlock = "";
+      hooksBlock = "";
+      outlineBlock = "";
+      bibleBlock = "";
+      matrixBlock = "";
+      summariesBlock = "";
+      volumeSummariesBlock = "";
+      canonBlock = "";
+    }
 
     const renderUserPrompt = (): string => `请修正第${chapterNumber}章。
 
@@ -347,7 +362,7 @@ ${chapterContent}`;
       chapterContent,
       autoOutputMode,
     );
-    const mergedOutput = governedMode
+    const mergedOutput = governedMode && output.updatedHooks !== "(伏笔池未更新)"
       ? {
           ...output,
           updatedHooks: mergeTableMarkdownByKey(hooks, output.updatedHooks, [0]),
@@ -380,7 +395,11 @@ ${chapterContent}`;
       .map((l) => l.trim())
       .filter((l) => l.length > 0);
 
-    const makeResult = (revisedContent: string, applied: boolean): ReviseOutput => ({
+    const makeResult = (
+      revisedContent: string,
+      applied: boolean,
+      changeKind?: "patch" | "rewrite",
+    ): ReviseOutput => ({
       revisedContent,
       wordCount: revisedContent.length,
       fixedIssues: applied ? fixedIssues : [],
@@ -389,6 +408,7 @@ ${chapterContent}`;
         ? (extract("UPDATED_LEDGER") || "(账本未更新)")
         : "",
       updatedHooks: extract("UPDATED_HOOKS") || "(伏笔池未更新)",
+      ...(applied && changeKind ? { changeKind } : {}),
     });
 
     // Auto mode: route by issue type — structural issues require REVISED_CONTENT,
@@ -401,7 +421,7 @@ ${chapterContent}`;
           if (patches.length > 0) {
             const patchResult = applySpotFixPatches(originalChapter, patches);
             if (patchResult.applied && patchResult.appliedPatchCount / patches.length >= 0.5) {
-              return makeResult(patchResult.revisedContent, true);
+              return makeResult(patchResult.revisedContent, true, "patch");
             }
           }
         }
@@ -411,7 +431,7 @@ ${chapterContent}`;
       if (autoOutputMode === "rewrite-only") {
         const revisedContent = extract("REVISED_CONTENT");
         if (revisedContent) {
-          return makeResult(revisedContent, true);
+          return makeResult(revisedContent, true, "rewrite");
         }
         // No rewrite produced — don't fall back to patches; structural issues
         // cannot be safely patched. Return original unchanged.
@@ -420,7 +440,7 @@ ${chapterContent}`;
 
       const revisedContent = extract("REVISED_CONTENT");
       if (revisedContent) {
-        return makeResult(revisedContent, true);
+        return makeResult(revisedContent, true, "rewrite");
       }
       const patchesRaw = extract("PATCHES");
       if (patchesRaw) {
@@ -428,7 +448,7 @@ ${chapterContent}`;
         if (patches.length > 0) {
           const patchResult = applySpotFixPatches(originalChapter, patches);
           if (patchResult.applied && patchResult.appliedPatchCount / patches.length >= 0.5) {
-            return makeResult(patchResult.revisedContent, true);
+            return makeResult(patchResult.revisedContent, true, "patch");
           }
         }
       }
@@ -440,12 +460,20 @@ ${chapterContent}`;
     if (mode === "spot-fix") {
       const patches = parseSpotFixPatches(extract("PATCHES"));
       const patchResult = applySpotFixPatches(originalChapter, patches);
-      return makeResult(patchResult.revisedContent, patchResult.applied);
+      return makeResult(
+        patchResult.revisedContent,
+        patchResult.applied,
+        patchResult.applied ? "patch" : undefined,
+      );
     }
 
     // Legacy rewrite/polish/rework/anti-detect: full content
     const revisedContent = extract("REVISED_CONTENT");
-    return makeResult(revisedContent || originalChapter, revisedContent.length > 0);
+    return makeResult(
+      revisedContent || originalChapter,
+      revisedContent.length > 0,
+      revisedContent.length > 0 ? "rewrite" : undefined,
+    );
   }
 
   private buildAutoSystemPrompt(params: {
@@ -461,6 +489,49 @@ ${chapterContent}`;
     const { langPrefix, gp, protagonistBlock, numericalRule, resolvedLanguage, lengthSpec, autoOutputMode } = params;
     // lengthGuardrail intentionally not used in auto mode — length constraint is embedded in REVISED_CONTENT description
     const en = resolvedLanguage === "en";
+    if (autoOutputMode === "patch-only") {
+      return en
+        ? `${langPrefix}You are a precise ${gp.name} line editor. Fix only the listed local issues with exact patches.${protagonistBlock}
+
+Hard constraints:
+1. Do not rewrite the full chapter or change plot facts, chronology, character intent, hook state, or outcomes.
+2. Each TARGET_TEXT must quote one unique passage from the supplied chapter exactly.
+3. Keep replacements as small as possible and preserve all unrelated text verbatim.
+4. If an issue cannot be fixed locally, explain why and leave PATCHES empty.
+
+Output only:
+
+=== FIXED_ISSUES ===
+(One line per local fix)
+
+=== PATCHES ===
+--- PATCH 1 ---
+TARGET_TEXT:
+(Exact unique quote)
+REPLACEMENT_TEXT:
+(Minimal replacement)
+--- END PATCH ---`
+        : `${langPrefix}你是一位精确的${gp.name}局部修稿编辑。只用定点补丁修复列出的问题。${protagonistBlock}
+
+硬约束：
+1. 禁止整章重写，不得改变剧情事实、时间线、角色意图、伏笔状态或事件结果。
+2. 每个 TARGET_TEXT 必须逐字引用待修章节中唯一命中的原文。
+3. 替换范围保持最小，未涉及文字必须原样保留。
+4. 无法局部安全修复时，在 FIXED_ISSUES 说明并留空 PATCHES。
+
+只输出：
+
+=== FIXED_ISSUES ===
+(逐条说明局部修复)
+
+=== PATCHES ===
+--- PATCH 1 ---
+TARGET_TEXT:
+(唯一命中的原文)
+REPLACEMENT_TEXT:
+(最小替换文本)
+--- END PATCH ---`;
+    }
     const ledgerSection = gp.numericalSystem
       ? (en ? "\n=== UPDATED_LEDGER ===\n(Full updated resource ledger)" : "\n=== UPDATED_LEDGER ===\n(更新后的完整资源账本)")
       : "";
@@ -472,14 +543,10 @@ ${chapterContent}`;
 
     const routingDirectiveEn = autoOutputMode === "rewrite-only"
       ? "\n\nROUTING: The reviewer's blocking issues are structural / semantic (character collapse, mainline drift, missing payoff, timeline break, unpaid hook, memo drift, etc.). You MUST output REVISED_CONTENT — do not emit PATCHES, they cannot fix this class of problem. If you cannot safely rewrite, say so in FIXED_ISSUES and leave REVISED_CONTENT empty."
-      : autoOutputMode === "patch-only"
-        ? "\n\nROUTING: The reviewer's blocking issues are local (wording, paragraph shape, fatigue word, information boundary, knowledge pollution). You MUST output PATCHES only — do not rewrite the whole chapter. If patches are not possible, leave PATCHES empty."
-        : "";
+      : "";
     const routingDirectiveZh = autoOutputMode === "rewrite-only"
       ? "\n\n分流指令：reviewer 报告的阻塞问题属于结构/语义错（人设崩、主线偏、爽点缺、时间线错、伏笔未收、memo 偏离等）。你必须输出 REVISED_CONTENT——禁止输出 PATCHES，这类问题不能靠补丁修复。如果无法安全重写，在 FIXED_ISSUES 里说明并留空 REVISED_CONTENT。"
-      : autoOutputMode === "patch-only"
-        ? "\n\n分流指令：reviewer 报告的阻塞问题属于局部错（措辞、段落形状、疲劳词、信息越界、知识污染）。你必须只输出 PATCHES——不要整章改写。如果做不出补丁，留空 PATCHES。"
-        : "";
+      : "";
 
     return en
       ? `${langPrefix}You are a professional ${gp.name} web-fiction revision editor. Fix the chapter according to the review notes.${protagonistBlock}${routingDirectiveEn}

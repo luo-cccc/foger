@@ -17,6 +17,21 @@ export interface PostWriteViolation {
   readonly repairScope?: "local" | "structural" | "unknown";
 }
 
+function assignPostWriteRepairScopes(
+  violations: ReadonlyArray<PostWriteViolation>,
+): ReadonlyArray<PostWriteViolation> {
+  return violations.map((violation) => {
+    if (violation.repairScope) return violation;
+    if (violation.rule === "叙事人称") {
+      return { ...violation, repairScope: "structural" as const };
+    }
+    if (violation.rule === "本书禁忌" || violation.rule === "Book prohibition") {
+      return { ...violation, repairScope: "unknown" as const };
+    }
+    return { ...violation, repairScope: "local" as const };
+  });
+}
+
 export function normalizePostWriteSurface(
   content: string,
   languageOverride?: "zh" | "en",
@@ -205,7 +220,7 @@ export function detectChapterBoundaryQuality(
         });
   }
 
-  return violations;
+  return assignPostWriteRepairScopes(violations);
 }
 
 // --- Validator ---
@@ -432,7 +447,7 @@ export function validatePostWrite(
 
   violations.push(...detectChapterBoundaryQuality(content, "zh"));
 
-  return violations;
+  return assignPostWriteRepairScopes(violations);
 }
 
 function detectNarrativePersonDrift(
@@ -673,7 +688,7 @@ function validatePostWriteEnglish(
 
   violations.push(...detectChapterBoundaryQuality(content, "en"));
 
-  return violations;
+  return assignPostWriteRepairScopes(violations);
 }
 
 function appendParagraphShapeWarnings(

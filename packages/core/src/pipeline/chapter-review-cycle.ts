@@ -59,6 +59,11 @@ export interface ChapterReviewEvaluation {
   readonly revisionBlockingIssues: ReadonlyArray<AuditIssue>;
 }
 
+export interface ChapterReviewEvaluationOptions {
+  readonly temperature?: number;
+  readonly verificationIssues?: ReadonlyArray<AuditIssue>;
+}
+
 const DEFAULT_MAX_REVIEW_ITERATIONS = 2;
 const PASS_SCORE_THRESHOLD = 85;
 const NET_IMPROVEMENT_EPSILON = 3;
@@ -113,7 +118,7 @@ export async function runChapterReviewCycle(params: {
   };
   readonly evaluateChapter: (
     content: string,
-    options?: { readonly temperature?: number },
+    options?: ChapterReviewEvaluationOptions,
   ) => Promise<ChapterReviewEvaluation>;
   readonly normalizeDraftLengthIfNeeded: (chapterContent: string) => Promise<{
     content: string;
@@ -128,6 +133,7 @@ export async function runChapterReviewCycle(params: {
     right?: ChapterReviewCycleUsage,
   ) => ChapterReviewCycleUsage;
   readonly maxReviewIterations?: number;
+  readonly maxRevisionCalls?: number;
   readonly logWarn: (message: { zh: string; en: string }) => void;
   readonly logStage: (message: { zh: string; en: string }) => void;
 }): Promise<ChapterReviewCycleResult> {
@@ -170,7 +176,7 @@ export async function runChapterReviewCycle(params: {
   // ---------------------------------------------------------------------------
   const assess = async (
     content: string,
-    options?: { temperature?: number },
+    options?: ChapterReviewEvaluationOptions,
   ): Promise<ReviewAssessment> => {
     auditCalls += 1;
     const evaluation = await params.evaluateChapter(content, options);
@@ -269,7 +275,14 @@ export async function runChapterReviewCycle(params: {
   // Scoring loop: assess → revise → assess. Default is two automatic repair
   // passes so structural issues can converge without making retries unbounded.
   // ---------------------------------------------------------------------------
-  const maxReviewIterations = Math.max(0, Math.floor(params.maxReviewIterations ?? DEFAULT_MAX_REVIEW_ITERATIONS));
+  const configuredReviewIterations = Math.max(
+    0,
+    Math.floor(params.maxReviewIterations ?? DEFAULT_MAX_REVIEW_ITERATIONS),
+  );
+  const configuredRevisionCalls = params.maxRevisionCalls === undefined
+    ? configuredReviewIterations
+    : Math.max(0, Math.floor(params.maxRevisionCalls));
+  const maxReviewIterations = Math.min(configuredReviewIterations, configuredRevisionCalls);
   params.logStage({ zh: "审计草稿", en: "auditing draft" });
   const initial = addInitialPostWriteIssues(await assess(finalContent));
 
@@ -402,7 +415,10 @@ export async function runChapterReviewCycle(params: {
 
       // Every repair is normalized before re-audit so a structural fix is not
       // discarded solely because the reviser drifted outside hard bounds.
-      let nextAssessment = await assess(revisedContent, { temperature: 0 });
+      let nextAssessment = await assess(revisedContent, {
+        temperature: 0,
+        ...(reviseOutput.changeKind === "patch" ? { verificationIssues: actionableIssues } : {}),
+      });
       if (
         !nextAssessment.auditResult.passed
         && nextAssessment.auditResult.issues.length === 0

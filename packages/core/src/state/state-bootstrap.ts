@@ -289,11 +289,14 @@ function parsePendingHooksStateMarkdown(markdown: string, warnings: string[]) {
   const parsedHooks = parsePendingHooksMarkdown(markdown);
   if (parsedHooks.length > 0) {
     return HooksStateSchema.parse({
-      hooks: parsedHooks.map((hook) => ({
-        ...hook,
-        type: normalizeHookType(hook.type, warnings, hook.hookId),
-        status: normalizeHookStatus(hook.status, warnings, hook.hookId),
-      })),
+      hooks: deduplicateHooksById(
+        parsedHooks.map((hook) => ({
+          ...hook,
+          type: normalizeHookType(hook.type, warnings, hook.hookId),
+          status: normalizeHookStatus(hook.status, warnings, hook.hookId),
+        })),
+        warnings,
+      ),
     });
   }
 
@@ -422,9 +425,13 @@ async function loadHooksStateIfValid(
   try {
     const raw = await readFile(path, "utf-8");
     const repaired = repairHooksStateInput(JSON.parse(raw), warnings);
+    const parsed = HooksStateSchema.parse(repaired.value);
+    const hooks = deduplicateHooksById(parsed.hooks, warnings);
     return {
-      state: HooksStateSchema.parse(repaired.value),
-      repaired: repaired.changed,
+      state: hooks.length === parsed.hooks.length
+        ? parsed
+        : HooksStateSchema.parse({ hooks }),
+      repaired: repaired.changed || hooks.length !== parsed.hooks.length,
     };
   } catch (error) {
     const message = String(error);
@@ -443,21 +450,29 @@ function repairHooksStateInput(value: unknown, warnings: string[]): { readonly v
   let changed = false;
   const hooks = value.hooks.map((hook, index) => {
     if (!isRecord(hook)) return hook;
-    const hookId = typeof hook.hookId === "string" && hook.hookId.trim()
+    const rawHookId = typeof hook.hookId === "string" && hook.hookId.trim()
       ? hook.hookId.trim()
       : `hooks[${index}]`;
-    if (typeof hook.type === "string" && hook.type.trim().length > 0) {
-      if (hook.type === hook.type.trim()) {
-        return hook;
-      }
+    const normalizedHookId = normalizeHookId(rawHookId) || rawHookId;
+    let repairedHook = hook;
+    if (normalizedHookId !== rawHookId) {
       changed = true;
-      return { ...hook, type: hook.type.trim() };
+      appendWarning(warnings, `${rawHookId}: hook id normalized to "${normalizedHookId}"`);
+      repairedHook = { ...repairedHook, hookId: normalizedHookId };
+    }
+
+    if (typeof hook.type === "string" && hook.type.trim().length > 0) {
+      if (hook.type !== hook.type.trim()) {
+        changed = true;
+        repairedHook = { ...repairedHook, type: hook.type.trim() };
+      }
+      return repairedHook;
     }
 
     changed = true;
-    appendWarning(warnings, `${hookId}: empty hook type normalized to "unspecified"`);
+    appendWarning(warnings, `${normalizedHookId}: empty hook type normalized to "unspecified"`);
     return {
-      ...hook,
+      ...repairedHook,
       type: "unspecified",
     };
   });
@@ -489,11 +504,14 @@ async function loadMarkdownBootstrapState(params: {
   const authoritativeProgress = params.authoritativeChapter === undefined
     ? Math.max(explicitFallback, durableArtifactProgress)
     : normalizeExplicitChapter(params.authoritativeChapter);
-  const currentState = await loadMarkdownCurrentState({
+  const parsedCurrentState = await loadMarkdownCurrentState({
     storyDir: params.storyDir,
     fallbackChapter: authoritativeProgress,
     warnings: params.warnings,
   });
+  const currentState = params.authoritativeChapter === undefined
+    ? parsedCurrentState
+    : normalizeCurrentStateChapter(parsedCurrentState, authoritativeProgress, params.warnings);
 
   return {
     summariesState,
@@ -501,6 +519,27 @@ async function loadMarkdownBootstrapState(params: {
     currentState,
     durableStoryProgress: authoritativeProgress,
   };
+}
+
+function normalizeCurrentStateChapter(
+  currentState: CurrentStateState,
+  authoritativeChapter: number,
+  warnings: string[],
+): CurrentStateState {
+  if (currentState.chapter === authoritativeChapter) return currentState;
+  appendWarning(
+    warnings,
+    `current_state chapter normalized from ${currentState.chapter} to ${authoritativeChapter}`,
+  );
+  return CurrentStateStateSchema.parse({
+    ...currentState,
+    chapter: authoritativeChapter,
+    facts: currentState.facts.map((fact) => ({
+      ...fact,
+      validFromChapter: authoritativeChapter,
+      sourceChapter: authoritativeChapter,
+    })),
+  });
 }
 
 async function loadMarkdownSummariesState(storyDir: string): Promise<ChapterSummariesState> {
@@ -582,6 +621,17 @@ function deduplicateSummaryRows<T extends { chapter: number }>(rows: ReadonlyArr
     byChapter.set(row.chapter, row);
   }
   return [...byChapter.values()].sort((a, b) => a.chapter - b.chapter);
+}
+
+function deduplicateHooksById<T extends { hookId: string }>(hooks: ReadonlyArray<T>, warnings: string[]): T[] {
+  const byHookId = new Map<string, T>();
+  for (const hook of hooks) {
+    if (byHookId.has(hook.hookId)) {
+      appendWarning(warnings, `${hook.hookId}: duplicate hook id normalized; kept last occurrence`);
+    }
+    byHookId.set(hook.hookId, hook);
+  }
+  return [...byHookId.values()];
 }
 
 export function resolveContiguousChapterPrefix(chapterNumbers: ReadonlyArray<number>): number {

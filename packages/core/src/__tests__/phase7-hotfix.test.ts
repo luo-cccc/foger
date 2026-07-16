@@ -19,6 +19,7 @@ import { join } from "node:path";
 import type { StoredHook } from "../state/memory-db.js";
 import {
   normalizeHookId,
+  normalizePendingHookIdsMarkdown,
   parsePendingHooksMarkdown,
   renderHookSnapshot,
 } from "../utils/story-markdown.js";
@@ -41,6 +42,27 @@ describe("Phase 7 hotfix 1 — half_life roundtrip", () => {
   it("drops punctuation-only hook ids instead of preserving generated dashes", () => {
     expect(normalizeHookId("--")).toBe("");
     expect(normalizeHookId("**H--07**")).toBe("H-07");
+  });
+
+  it("normalizes generated labels attached to standard hook ids", () => {
+    expect(normalizeHookId("H027 (Old Li's note)")).toBe("H027");
+    expect(normalizeHookId("H028（陈三的旧调查）")).toBe("H028");
+    expect(normalizeHookId("D-003 (derived clue)")).toBe("D-003");
+    expect(normalizeHookId("mentor-debt (legacy)")).toBe("mentor-debt (legacy)");
+  });
+
+  it("normalizes only the hook id column in generated markdown", () => {
+    const markdown = [
+      "| hook_id | start_chapter | type | status | last_advanced | expected_payoff | notes |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| H027 (Old Li's note) | 15 | clue | open | 15 | 16 | Old Li's note remains actionable |",
+      "| mentor-debt (legacy) | 3 | clue | open | 8 | 20 | Semantic id stays intact |",
+    ].join("\n");
+
+    const normalized = normalizePendingHookIdsMarkdown(markdown);
+
+    expect(normalized).toContain("| H027 | 15 | clue | open | 15 | 16 | Old Li's note remains actionable |");
+    expect(normalized).toContain("| mentor-debt (legacy) | 3 | clue | open | 8 | 20 | Semantic id stays intact |");
   });
 
   it("renders the 半衰期 column and parses it back with the original value", () => {

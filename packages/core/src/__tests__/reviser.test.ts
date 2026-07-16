@@ -244,7 +244,7 @@ describe("ReviserAgent", () => {
       projectRoot: root,
     });
 
-    vi.spyOn(ReviserAgent.prototype as never, "chat" as never).mockResolvedValue({
+    const chatSpy = vi.spyOn(ReviserAgent.prototype as never, "chat" as never).mockResolvedValue({
       content: [
         "=== FIXED_ISSUES ===",
         "- 收紧了开头动作句。",
@@ -937,12 +937,105 @@ describe("ReviserAgent", () => {
         | ReadonlyArray<{ content: string }>
         | undefined;
       const systemPrompt = messages?.[0]?.content ?? "";
+      const userPrompt = messages?.[1]?.content ?? "";
 
-      expect(systemPrompt).toContain("分流指令");
-      expect(systemPrompt).toContain("必须只输出 PATCHES");
+      expect(systemPrompt).toContain("局部修稿编辑");
+      expect(systemPrompt).toContain("只用定点补丁");
+      expect(systemPrompt).not.toContain("REVISED_CONTENT");
+      expect(systemPrompt).not.toContain("UPDATED_STATE");
+      expect(userPrompt).not.toContain("## 伏笔池");
       // Parser rejects REVISED_CONTENT in patch-only mode.
       expect(out.revisedContent).toBe("原文。");
       expect(out.fixedIssues).toEqual([]);
+      expect(out.changeKind).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("records an applied local patch without asking for truth-file output", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-reviser-local-patch-"));
+    const bookDir = join(root, "book");
+    await mkdir(join(bookDir, "story"), { recursive: true });
+
+    const agent = new ReviserAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0, maxTokensCap: null,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: root,
+    });
+
+    const chatSpy = vi.spyOn(ReviserAgent.prototype as never, "chat" as never).mockResolvedValue({
+      content: [
+        "=== FIXED_ISSUES ===",
+        "- 删除禁止句式",
+        "",
+        "=== PATCHES ===",
+        "--- PATCH 1 ---",
+        "TARGET_TEXT:",
+        "这不是勇气，而是愚蠢。",
+        "REPLACEMENT_TEXT:",
+        "这只是愚蠢。",
+        "--- END PATCH ---",
+      ].join("\n"),
+      usage: ZERO_USAGE,
+    });
+
+    try {
+      await agent.reviseChapter(
+        bookDir,
+        "这不是勇气，而是愚蠢。",
+        1,
+        [{
+          severity: "critical",
+          category: "章节备忘偏离",
+          description: "核心场景缺失",
+          suggestion: "重写场景",
+          repairScope: "structural",
+        }],
+        "auto",
+        "xuanhuan",
+      );
+      const out = await agent.reviseChapter(
+        bookDir,
+        "这不是勇气，而是愚蠢。",
+        1,
+        [{
+          severity: "critical",
+          category: "禁止句式",
+          description: "出现了禁用句式",
+          suggestion: "改用直述句",
+          repairScope: "local",
+        }],
+        "auto",
+        "xuanhuan",
+      );
+
+      const rewriteMessages = chatSpy.mock.calls[0]?.[0] as ReadonlyArray<{ content: string }>;
+      const patchMessages = chatSpy.mock.calls[1]?.[0] as ReadonlyArray<{ content: string }>;
+      const rewritePromptTokens = rewriteMessages.reduce(
+        (sum, message) => sum + estimateTextTokens(message.content),
+        0,
+      );
+      const patchPromptTokens = patchMessages.reduce(
+        (sum, message) => sum + estimateTextTokens(message.content),
+        0,
+      );
+
+      expect(out.revisedContent).toBe("这只是愚蠢。");
+      expect(out.changeKind).toBe("patch");
+      expect(out.updatedState).toBe("(状态卡未更新)");
+      expect(out.updatedHooks).toBe("(伏笔池未更新)");
+      expect(patchPromptTokens).toBeLessThan(rewritePromptTokens * 0.7);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -39,6 +39,7 @@ import {
   readVolumeMap,
 } from "../utils/outline-paths.js";
 import { loadNarrativeMemorySeed, loadSnapshotCurrentStateFacts } from "../state/runtime-state-store.js";
+import { renderChapterSummariesProjection } from "../state/state-projections.js";
 import { recordReaderClaimReveals } from "../state/claim-visibility.js";
 import { saveCanonBundle } from "../state/canon-store.js";
 import type { CompiledChapterClaims } from "../utils/chapter-claim-compiler.js";
@@ -53,10 +54,11 @@ import {
 } from "../utils/volume-contract.js";
 import type { VolumeContract, VolumeProgressFile } from "../models/volume-contract.js";
 import { rewriteStructuredStateFromMarkdown } from "../state/state-bootstrap.js";
-import { appendFile, readFile, readdir, writeFile, mkdir, rename, rm, stat } from "node:fs/promises";
+import { appendFile, readFile, readdir, writeFile, mkdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  buildStateDegradedIssues,
   buildStateDegradedReviewNote,
   parseStateDegradedReviewNote,
   resolveStateDegradedBaseStatus,
@@ -82,6 +84,11 @@ import {
   type ContextCompilationCache,
   type ContextCompilationCacheStats,
 } from "../utils/context-compilation-cache.js";
+import { renamePathWithRetry } from "../utils/fs-retry.js";
+import {
+  normalizePendingHookIdsMarkdown,
+  parseChapterSummariesMarkdown,
+} from "../utils/story-markdown.js";
 
 const SEQUENCE_LEVEL_CATEGORIES = new Set([
   "Pacing Monotony", "节奏单调",
@@ -311,6 +318,10 @@ export interface PipelineConfig {
   readonly defaultLLMConfig?: LLMConfig;
   readonly foundationReviewRetries?: number;
   readonly writingReviewRetries?: number;
+  readonly governanceCallLimits?: {
+    readonly maxRevisionCallsPerChapter?: number;
+    readonly maxSettlementCallsPerChapter?: number;
+  };
   /**
    * "auto" (default): writeNextChapter runs the audit→revise loop inline.
    * "manual": stop right after the draft (no auto audit/revise) so review/revise
@@ -619,6 +630,9 @@ export class PipelineRunner {
     this.config.logger?.info(
       `Foundation final review: ${finalReview.totalScore}/100 ${finalReview.passed ? "PASSED" : "ACCEPTED (max retries)"}`,
     );
+    for (const dim of finalReview.dimensions) {
+      this.config.logger?.info(`  [${dim.score}] ${dim.name.slice(0, 40)}`);
+    }
     if (!finalReview.passed) {
       this.emitDiagnostic({
         kind: "foundation-fallback",
@@ -654,6 +668,7 @@ export class PipelineRunner {
         readonly feedback: string;
       }>;
       readonly overallFeedback: string;
+      readonly blockingIssues?: ReadonlyArray<string>;
     },
     language: "zh" | "en",
   ): string {
@@ -664,11 +679,15 @@ export class PipelineRunner {
           : `- ${dimension.name}（${dimension.score}分）：${dimension.feedback}`
       ))
       .join("\n");
+    const blockingLines = review.blockingIssues?.map((issue) => `- ${issue}`).join("\n");
 
     return language === "en"
       ? [
           "## Overall Feedback",
           review.overallFeedback,
+          "",
+          "## Hard Blocking Issues",
+          blockingLines || "- none",
           "",
           "## Dimension Notes",
           dimensionLines || "- none",
@@ -676,6 +695,9 @@ export class PipelineRunner {
       : [
           "## 总评",
           review.overallFeedback,
+          "",
+          "## 硬性阻断项",
+          blockingLines || "- 无",
           "",
           "## 分项问题",
           dimensionLines || "- 无",
@@ -982,7 +1004,7 @@ export class PipelineRunner {
         await rm(bookDir, { recursive: true, force: true });
       }
 
-      await rename(stagingBookDir, bookDir);
+      await renamePathWithRetry(stagingBookDir, bookDir);
     } catch (error) {
       await rm(stagingBookDir, { recursive: true, force: true }).catch(() => undefined);
       throw error;
@@ -1818,6 +1840,14 @@ export class PipelineRunner {
         if (reviseOutput.updatedHooks !== "(伏笔池未更新)") {
           await writeFile(join(storyDir, "pending_hooks.md"), reviseOutput.updatedHooks, "utf-8");
         }
+        await this.upsertAcceptedRevisionSummary({
+          storyDir,
+          chapterNumber: targetChapter,
+          title: chapterMeta.title,
+          content: normalizedRevision.content,
+          language,
+          changeKind: reviseOutput.changeKind,
+        });
         await this.syncLegacyStructuredStateFromMarkdown(bookDir, targetChapter);
       }
 
@@ -2162,6 +2192,7 @@ export class PipelineRunner {
           this.assertChapterContentNotEmpty(content, chapterNumber, stage),
         addUsage: PipelineRunner.addUsage,
         maxReviewIterations: this.config.writingReviewRetries,
+        maxRevisionCalls: this.config.governanceCallLimits?.maxRevisionCallsPerChapter,
         logWarn: (message) => this.logWarn(pipelineLang, message),
         logStage: (message) => this.logStage(stageLanguage, message),
       });
@@ -2345,6 +2376,22 @@ export class PipelineRunner {
       },
       reducedControlInput,
       language: pipelineLang,
+      maxSettlementCalls: this.config.governanceCallLimits?.maxSettlementCallsPerChapter,
+      recoverAfterSettlementLimit: (previousValidation) => this.recoverResyncWithChapterAnalyzer({
+        bookId,
+        book,
+        bookDir,
+        chapterNumber,
+        title: persistenceOutput.title,
+        content: finalContent,
+        reducedControlInput,
+        validator,
+        oldState,
+        oldHooks,
+        language: pipelineLang,
+        previousValidation,
+        settlementAttempts: 1,
+      }),
       logWarn: (message) => this.logWarn(pipelineLang, message),
       logger: this.config.logger,
     });
@@ -2559,7 +2606,10 @@ export class PipelineRunner {
       pipelineLang,
     );
 
-    if (!validation.passed) {
+    let degradedIssues: ReadonlyArray<AuditIssue> | undefined;
+    const settlementRetryAllowed = this.config.governanceCallLimits?.maxSettlementCallsPerChapter === undefined
+      || this.config.governanceCallLimits.maxSettlementCallsPerChapter > 1;
+    if (!validation.passed && settlementRetryAllowed) {
       const recovery = await retrySettlementAfterValidationFailure({
         writer,
         validator,
@@ -2576,17 +2626,32 @@ export class PipelineRunner {
         logger: this.config.logger,
       });
       if (recovery.kind !== "recovered") {
-        throw new Error(
-          recovery.issues[0]?.description
-            ?? `State repair still failed for chapter ${targetChapter}.`,
-        );
+        degradedIssues = recovery.issues;
+      } else {
+        repairedOutput = recovery.output;
+        validation = recovery.validation;
       }
-      repairedOutput = recovery.output;
-      validation = recovery.validation;
     }
 
     if (!validation.passed) {
-      throw new Error(`State repair still failed for chapter ${targetChapter}.`);
+      const issues = degradedIssues ?? buildStateDegradedIssues(validation.warnings, pipelineLang);
+      return {
+        chapterNumber: targetChapter,
+        title: targetMeta.title,
+        wordCount: targetMeta.wordCount,
+        auditResult: {
+          passed: false,
+          issues,
+          summary: pipelineLang === "en"
+            ? "State repair remained degraded within the settlement call budget."
+            : "状态修复在结算调用预算内仍处于降级状态。",
+        },
+        revised: false,
+        status: "state-degraded",
+        lengthWarnings: targetMeta.lengthWarnings,
+        lengthTelemetry: targetMeta.lengthTelemetry,
+        tokenUsage: targetMeta.tokenUsage,
+      };
     }
 
     this.throwIfAborted();
@@ -2723,7 +2788,9 @@ export class PipelineRunner {
         pipelineLang,
       );
 
-      if (!validation.passed) {
+      const settlementRetryAllowed = this.config.governanceCallLimits?.maxSettlementCallsPerChapter === undefined
+        || this.config.governanceCallLimits.maxSettlementCallsPerChapter > 1;
+      if (!validation.passed && settlementRetryAllowed) {
         const recovery = await retrySettlementAfterValidationFailure({
         writer,
         validator,
@@ -2784,6 +2851,7 @@ export class PipelineRunner {
           oldHooks,
           language: pipelineLang,
           previousValidation: incompleteRetry ?? validation,
+          settlementAttempts: settlementRetryAllowed ? 2 : 1,
         });
         syncedOutput = analyzerRecovery.output;
         validation = analyzerRecovery.validation;
@@ -3616,7 +3684,52 @@ ${matrix}`,
     await rewriteStructuredStateFromMarkdown({
       bookDir,
       fallbackChapter: chapterNumber,
+      authoritativeChapter: chapterNumber,
     });
+  }
+
+  private async upsertAcceptedRevisionSummary(params: {
+    readonly storyDir: string;
+    readonly chapterNumber: number;
+    readonly title: string;
+    readonly content: string;
+    readonly language: "zh" | "en";
+    readonly changeKind?: "patch" | "rewrite";
+  }): Promise<void> {
+    const summaryPath = join(params.storyDir, "chapter_summaries.md");
+    const markdown = await readFile(summaryPath, "utf-8").catch(() => "");
+    const summaries = parseChapterSummariesMarkdown(markdown);
+    const existing = summaries.find((row) => row.chapter === params.chapterNumber);
+    const shouldRefreshEvents = !existing || params.changeKind === "rewrite";
+    const contentExcerpt = params.content
+      .replace(/^#{1,6}\s+.*$/gmu, " ")
+      .replace(/\s+/gu, " ")
+      .trim()
+      .slice(0, params.language === "en" ? 360 : 240)
+      .trim();
+    const fallbackEvent = contentExcerpt || (params.language === "en"
+      ? "Accepted revised chapter."
+      : "已接受修订后的章节正文。");
+    const revisedSummary = {
+      chapter: params.chapterNumber,
+      title: params.title,
+      characters: existing?.characters ?? "",
+      events: shouldRefreshEvents ? fallbackEvent : existing.events,
+      stateChanges: existing?.stateChanges ?? "",
+      hookActivity: existing?.hookActivity ?? "",
+      mood: existing?.mood ?? "",
+      chapterType: existing?.chapterType ?? "",
+    };
+    const nextRows = [
+      ...summaries.filter((row) => row.chapter !== params.chapterNumber),
+      revisedSummary,
+    ];
+
+    await writeFile(
+      summaryPath,
+      renderChapterSummariesProjection({ rows: nextRows }, params.language),
+      "utf-8",
+    );
   }
 
   private async syncNarrativeMemoryIndex(bookId: string): Promise<void> {
@@ -3986,6 +4099,7 @@ ${matrix}`,
         ledger?: string;
         hooks?: string;
       };
+      verificationIssues?: ReadonlyArray<AuditIssue>;
     };
     runPostWriteChecks?: (content: string) => ReadonlyArray<AuditIssue>;
   }): Promise<MergedAuditEvaluation> {
@@ -4052,10 +4166,12 @@ ${matrix}`,
     readonly oldHooks: string;
     readonly language: LengthLanguage;
     readonly previousValidation: ValidationResult;
+    readonly settlementAttempts?: number;
   }): Promise<{ readonly output: WriteChapterOutput; readonly validation: ValidationResult }> {
+    const settlementAttempts = params.settlementAttempts ?? 2;
     this.logWarn(params.language, {
-      zh: `第${params.chapterNumber}章连续两次状态结算不完整，改用章节分析器重建真相文件`,
-      en: `Chapter ${params.chapterNumber} settlement was incomplete twice; rebuilding truth through the chapter analyzer`,
+      zh: `第${params.chapterNumber}章在 ${settlementAttempts} 次状态结算后仍不完整，改用章节分析器重建真相文件`,
+      en: `Chapter ${params.chapterNumber} settlement remained incomplete after ${settlementAttempts} attempt(s); rebuilding truth through the chapter analyzer`,
     });
     this.emitDiagnostic({
       kind: "resync-analyzer-fallback",
@@ -4064,8 +4180,8 @@ ${matrix}`,
       phase: "resync",
       bookId: params.bookId,
       chapterNumber: params.chapterNumber,
-      message: "Two settlement attempts were incomplete; rebuilding truth with the chapter analyzer.",
-      details: { settlementAttempts: 2 },
+      message: `${settlementAttempts} settlement attempt(s) were incomplete; rebuilding truth with the chapter analyzer.`,
+      details: { settlementAttempts },
     });
     for (const warning of params.previousValidation.warnings) {
       this.config.logger?.warn(`  [resync-fallback:${warning.category}] ${warning.description}`);
@@ -4090,6 +4206,7 @@ ${matrix}`,
       wordCount: countChapterLength(params.content, resolveLengthCountingMode(params.language)),
       postWriteErrors: [],
       postWriteWarnings: [],
+      updatedHooks: normalizePendingHookIdsMarkdown(analyzed.updatedHooks),
     };
     const incomplete = this.validateResyncSettlementCompleteness(output, params.language);
     if (incomplete) {

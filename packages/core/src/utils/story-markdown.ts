@@ -252,7 +252,22 @@ export function normalizeHookId(value: string | undefined): string {
     .replace(/-{2,}/g, "-")
     .replace(/^-+|-+$/g, "")
     .trim();
+  const labeledId = normalized.match(/^((?:H|D|L)-?\d+)\s*(?:\([^)]*\)|（[^）]*）)$/iu);
+  if (labeledId?.[1]) {
+    normalized = labeledId[1];
+  }
   return /[a-z0-9\u4e00-\u9fff]/iu.test(normalized) ? normalized : "";
+}
+
+export function normalizePendingHookIdsMarkdown(markdown: string): string {
+  return markdown.replace(
+    /^(\s*\|\s*)([^|\r\n]+?)(\s*\|)/gmu,
+    (line, prefix: string, rawHookId: string, suffix: string) => {
+      const hookId = normalizeHookId(rawHookId);
+      if (!hookId || hookId === rawHookId.trim()) return line;
+      return `${prefix}${hookId}${suffix}`;
+    },
+  );
 }
 
 function parsePendingHookRow(row: ReadonlyArray<string | undefined>): StoredHook {

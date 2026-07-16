@@ -255,6 +255,8 @@ export class Scheduler {
       totalTokens: 0,
       maxPromptEstimatedTokens: 0,
       fallbacks: 0,
+      revisionCalls: 0,
+      settlementCalls: 0,
     };
   }
 
@@ -292,6 +294,10 @@ export class Scheduler {
         ...telemetry.map((record) => record.promptAssembly.estimatedTokens),
       ),
       fallbacks: current.fallbacks + diagnostics.filter((diagnostic) => diagnostic.kind.endsWith("fallback")).length,
+      revisionCalls: current.revisionCalls
+        + telemetry.filter((record) => record.phase === "revise").length,
+      settlementCalls: current.settlementCalls
+        + telemetry.filter((record) => record.phase === "settle").length,
       withinHardRange: withinHardRange ?? current.withinHardRange,
     };
     await this.updateUnattendedBook(bookId, { currentMetrics: metrics });
@@ -315,9 +321,31 @@ export class Scheduler {
       totalTokens: previousTotals.totalTokens + metrics.totalTokens,
       fallbacks: previousTotals.fallbacks + metrics.fallbacks,
     };
+    const hardRangeRate = totals.chapters > 0 ? totals.hardRangeChapters / totals.chapters : 0;
+    const violations = this.chapterRuntimeViolations(metrics, hardRangeRate);
+
+    await this.updateUnattendedBook(bookId, {
+      currentMetrics: undefined,
+      lastMetrics: metrics,
+      totals,
+      lastChapterNumber: chapterNumber,
+    });
+    if (violations.length === 0) return true;
+
+    await this.handleAuditFailure(bookId, chapterNumber, ["unattended-runtime-budget"], {
+      kind: "budget",
+      action: "pause",
+      error: `Unattended runtime gate failed: ${violations.join("; ")}`,
+    });
+    return false;
+  }
+
+  private chapterRuntimeViolations(
+    metrics: UnattendedChapterMetrics,
+    hardRangeRate?: number,
+  ): string[] {
     const retryRate = metrics.calls > 0 ? metrics.retries / metrics.calls : 0;
     const timeoutRate = metrics.calls > 0 ? metrics.timeouts / metrics.calls : 0;
-    const hardRangeRate = totals.chapters > 0 ? totals.hardRangeChapters / totals.chapters : 0;
     const gates = this.gates;
     const violations: string[] = [];
     if (metrics.totalTokens > gates.maxChapterTokens) {
@@ -335,24 +363,95 @@ export class Scheduler {
     if (metrics.fallbacks > gates.maxFallbacksPerChapter) {
       violations.push(`fallbacks ${metrics.fallbacks} > ${gates.maxFallbacksPerChapter}`);
     }
-    if (hardRangeRate < gates.minHardRangeRate) {
+    const governanceLimits = this.config.governanceCallLimits;
+    if (
+      governanceLimits?.maxRevisionCallsPerChapter !== undefined
+      && metrics.revisionCalls > governanceLimits.maxRevisionCallsPerChapter
+    ) {
+      violations.push(
+        `revision calls ${metrics.revisionCalls} > ${governanceLimits.maxRevisionCallsPerChapter}`,
+      );
+    }
+    if (
+      governanceLimits?.maxSettlementCallsPerChapter !== undefined
+      && metrics.settlementCalls > governanceLimits.maxSettlementCallsPerChapter
+    ) {
+      violations.push(
+        `settlement calls ${metrics.settlementCalls} > ${governanceLimits.maxSettlementCallsPerChapter}`,
+      );
+    }
+    if (hardRangeRate !== undefined && hardRangeRate < gates.minHardRangeRate) {
       violations.push(`hard-range rate ${hardRangeRate.toFixed(3)} < ${gates.minHardRangeRate}`);
     }
+    return violations;
+  }
 
-    await this.updateUnattendedBook(bookId, {
-      currentMetrics: undefined,
-      lastMetrics: metrics,
-      totals,
-      lastChapterNumber: chapterNumber,
-    });
-    if (violations.length === 0) return true;
-
-    await this.handleAuditFailure(bookId, chapterNumber, ["unattended-runtime-budget"], {
+  private async pauseForCurrentRuntimeViolations(
+    bookId: string,
+    chapterNumber: number,
+    metrics: UnattendedChapterMetrics,
+    issueCategories: ReadonlyArray<string> = [],
+  ): Promise<boolean> {
+    const violations = this.chapterRuntimeViolations(metrics);
+    if (violations.length === 0) return false;
+    await this.handleAuditFailure(bookId, chapterNumber, [
+      ...issueCategories,
+      "unattended-runtime-budget",
+    ], {
       kind: "budget",
       action: "pause",
       error: `Unattended runtime gate failed: ${violations.join("; ")}`,
     });
-    return false;
+    return true;
+  }
+
+  private async pauseBeforePendingGovernanceCall(
+    bookId: string,
+    chapter: ChapterMeta,
+  ): Promise<boolean> {
+    const metrics = this.unattendedBooks.get(bookId)?.currentMetrics;
+    const limits = this.config.governanceCallLimits;
+    if (!metrics || !limits) return false;
+
+    const persistedAction = this.unattendedBooks.get(bookId)?.action;
+    const violations: string[] = [];
+    if (
+      chapter.status === "state-degraded"
+      && limits.maxSettlementCallsPerChapter !== undefined
+      && metrics.settlementCalls >= limits.maxSettlementCallsPerChapter
+    ) {
+      violations.push(
+        `settlement calls ${metrics.settlementCalls} reached ${limits.maxSettlementCallsPerChapter} before state recovery`,
+      );
+    }
+    if (
+      chapter.status === "audit-failed"
+      && persistedAction !== "rewrite"
+      && limits.maxRevisionCallsPerChapter !== undefined
+      && metrics.revisionCalls >= limits.maxRevisionCallsPerChapter
+    ) {
+      violations.push(
+        `revision calls ${metrics.revisionCalls} reached ${limits.maxRevisionCallsPerChapter} before revision recovery`,
+      );
+    }
+    if (
+      chapter.status === "audit-failed"
+      && persistedAction === "rewrite"
+      && limits.maxSettlementCallsPerChapter !== undefined
+      && metrics.settlementCalls >= limits.maxSettlementCallsPerChapter
+    ) {
+      violations.push(
+        `settlement calls ${metrics.settlementCalls} reached ${limits.maxSettlementCallsPerChapter} before rewrite recovery`,
+      );
+    }
+    if (violations.length === 0) return false;
+
+    await this.handleAuditFailure(bookId, chapter.number, ["unattended-governance-budget"], {
+      kind: "budget",
+      action: "pause",
+      error: `Unattended governance call gate failed: ${violations.join("; ")}`,
+    });
+    return true;
   }
 
   private get gates(): QualityGates {
@@ -452,9 +551,15 @@ export class Scheduler {
 
   /** Write one chapter for a book. Returns true if approved. */
   private async writeOneChapter(bookId: string, bookConfig: BookConfig): Promise<boolean> {
+    let attemptedChapter: ChapterMeta | undefined;
     try {
       const pendingChapter = await this.findLatestPendingChapter(bookId);
       if (pendingChapter) {
+        attemptedChapter = pendingChapter;
+        if (await this.pauseBeforePendingGovernanceCall(bookId, pendingChapter)) {
+          this.config.onChapterComplete?.(bookId, pendingChapter.number, pendingChapter.status);
+          return false;
+        }
         return await this.recoverPendingChapter(bookId, bookConfig, pendingChapter);
       }
 
@@ -476,8 +581,17 @@ export class Scheduler {
         );
       }
 
-      await this.captureBookMetrics(bookId, (result.lengthWarnings?.length ?? 0) === 0);
       const issueCategories = result.auditResult.issues.map((i) => i.category);
+      const metrics = await this.captureBookMetrics(bookId, (result.lengthWarnings?.length ?? 0) === 0);
+      if (await this.pauseForCurrentRuntimeViolations(
+        bookId,
+        result.chapterNumber,
+        metrics,
+        issueCategories,
+      )) {
+        this.config.onChapterComplete?.(bookId, result.chapterNumber, result.status);
+        return false;
+      }
       const classification = result.status === "state-degraded"
         ? { kind: "state-degraded" as const, action: "repair-state" as const }
         : this.classifyAuditIssues(result.auditResult.issues);
@@ -486,13 +600,22 @@ export class Scheduler {
       return false;
     } catch (e) {
       this.config.onError?.(bookId, e as Error);
-      await this.captureBookMetrics(bookId).catch(() => undefined);
-      const kind = classifyUnattendedError(e);
-      await this.handleAuditFailure(bookId, 0, [], {
-        kind,
-        action: kind === "provider-auth" || kind === "budget" ? "pause" : "retry-provider",
-        error: e instanceof Error ? e.message : String(e),
-      });
+      const chapterNumber = attemptedChapter?.number ?? 0;
+      const metrics = await this.captureBookMetrics(bookId).catch(() => undefined);
+      const pausedForRuntime = metrics
+        ? await this.pauseForCurrentRuntimeViolations(bookId, chapterNumber, metrics)
+        : false;
+      if (!pausedForRuntime) {
+        const kind = classifyUnattendedError(e);
+        await this.handleAuditFailure(bookId, chapterNumber, [], {
+          kind,
+          action: kind === "provider-auth" || kind === "budget" ? "pause" : "retry-provider",
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+      if (attemptedChapter) {
+        this.config.onChapterComplete?.(bookId, attemptedChapter.number, attemptedChapter.status);
+      }
       return false;
     }
   }

@@ -24,6 +24,7 @@ import type { ChapterMeta } from "../models/chapter.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import { MemoryDB } from "../state/memory-db.js";
 import * as memoryDbModule from "../state/memory-db.js";
+import { loadRuntimeStateSnapshot } from "../state/runtime-state-store.js";
 import { countChapterLength } from "../utils/length-metrics.js";
 
 const require = createRequire(import.meta.url);
@@ -977,6 +978,8 @@ describe("PipelineRunner", () => {
 
       expect(generate).toHaveBeenCalledTimes(2);
       expect(reviewMock).toHaveBeenCalledTimes(2);
+      expect(generate.mock.calls[1]?.[0]).toContain("## 硬性阻断项");
+      expect(generate.mock.calls[1]?.[0]).toContain("目标5章只能规划1卷");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -3536,6 +3539,91 @@ describe("PipelineRunner", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it("replays state through the chapter analyzer without a second settlement call", async () => {
+    const diagnostics: Array<{ kind: string; chapterNumber?: number; details?: Record<string, unknown> }> = [];
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "legacy",
+      governanceCallLimits: { maxSettlementCallsPerChapter: 1 },
+      onPipelineDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+    const storyDir = join(state.bookDir(bookId), "story");
+
+    await Promise.all([
+      writeFile(join(storyDir, "current_state.md"), "stable state", "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "stable hooks", "utf-8"),
+      writeFile(join(storyDir, "particle_ledger.md"), "stable ledger", "utf-8"),
+    ]);
+
+    vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(
+      createWriterOutput({
+        content: "Healthy chapter body with the copper token in his coat.",
+        wordCount: "Healthy chapter body with the copper token in his coat.".length,
+        updatedState: "broken state",
+        updatedHooks: "broken hooks",
+        updatedLedger: "broken ledger",
+      }),
+    );
+    const settleChapterState = vi.spyOn(
+      WriterAgent.prototype as unknown as {
+        settleChapterState: (input: Record<string, unknown>) => Promise<WriteChapterOutput>;
+      },
+      "settleChapterState",
+    );
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(
+      createAuditResult({ passed: true, issues: [], summary: "clean" }),
+    );
+    const analyzeChapter = vi.spyOn(ChapterAnalyzerAgent.prototype, "analyzeChapter").mockResolvedValue(
+      createAnalyzedOutput({
+        chapterNumber: 1,
+        title: "Test Chapter",
+        content: "Healthy chapter body with the copper token in his coat.",
+        updatedState: "analyzer rebuilt state",
+        updatedHooks: [
+          "| hook_id | start_chapter | type | status | last_advanced | expected_payoff | notes |",
+          "| --- | --- | --- | --- | --- | --- | --- |",
+          "| H027 (Old Li's note) | 1 | clue | open | 1 | 2 | Old Li's note remains actionable |",
+        ].join("\n"),
+        chapterSummary: "| 1 | Test Chapter | Lin Yue | Copper token retained | State rebuilt | none | tense | investigation |",
+      }),
+    );
+    vi.spyOn(StateValidatorAgent.prototype, "validate")
+      .mockResolvedValueOnce({
+        passed: false,
+        warnings: [{
+          category: "missing_state_change",
+          description: "The settlement removed the current chapter state.",
+        }],
+      })
+      .mockResolvedValueOnce({ passed: true, warnings: [] });
+
+    const result = await runner.writeNextChapter(
+      bookId,
+      "Healthy chapter body with the copper token in his coat.".length,
+    );
+
+    expect(result.status).toBe("ready-for-review");
+    expect(settleChapterState).not.toHaveBeenCalled();
+    expect(analyzeChapter).toHaveBeenCalledTimes(1);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      kind: "resync-analyzer-fallback",
+      chapterNumber: 1,
+      details: { settlementAttempts: 1 },
+    }));
+    await expect(readFile(join(storyDir, "current_state.md"), "utf-8")).resolves.toBe("analyzer rebuilt state");
+    await expect(readFile(join(storyDir, "pending_hooks.md"), "utf-8")).resolves.toContain(
+      "| H027 | 1 | clue | open | 1 | 2 | Old Li's note remains actionable |",
+    );
+    const structuredHooks = JSON.parse(
+      await readFile(join(storyDir, "state", "hooks.json"), "utf-8"),
+    ) as { hooks: Array<{ hookId: string; notes: string }> };
+    expect(structuredHooks.hooks).toContainEqual(expect.objectContaining({
+      hookId: "H027",
+      notes: "Old Li's note remains actionable",
+    }));
+
+    await rm(root, { recursive: true, force: true });
+  });
+
   it("persists a state-degraded chapter without advancing truth files when settlement retry still contradicts the body", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture({
       inputGovernanceMode: "legacy",
@@ -3799,6 +3887,87 @@ describe("PipelineRunner", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it("returns a degraded repair result so unattended recovery can continue to resync", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "legacy",
+    });
+    const now = "2026-03-19T00:00:00.000Z";
+    const bookDir = state.bookDir(bookId);
+    const storyDir = join(bookDir, "story");
+
+    await Promise.all([
+      writeFile(join(storyDir, "current_state.md"), "stable state", "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "stable hooks", "utf-8"),
+      writeFile(join(storyDir, "particle_ledger.md"), "stable ledger", "utf-8"),
+      writeFile(
+        join(bookDir, "chapters", "0001_Broken_Persistence.md"),
+        "# 第1章 Broken Persistence\n\nHealthy chapter body with the copper token in his coat.",
+        "utf-8",
+      ),
+      state.saveChapterIndex(bookId, [{
+        number: 1,
+        title: "Broken Persistence",
+        status: "state-degraded" as ChapterMeta["status"],
+        wordCount: 55,
+        createdAt: now,
+        updatedAt: now,
+        auditIssues: ["[warning] state validation degraded"],
+        lengthWarnings: [],
+      }]),
+    ]);
+
+    const settleSpy = vi.spyOn(
+      WriterAgent.prototype as unknown as {
+        settleChapterState: (input: Record<string, unknown>) => Promise<WriteChapterOutput>;
+      },
+      "settleChapterState",
+    ).mockResolvedValue(
+      createWriterOutput({
+        chapterNumber: 1,
+        title: "Broken Persistence",
+        content: "Healthy chapter body with the copper token in his coat.",
+        wordCount: 55,
+        updatedState: "empty replacement state",
+        updatedHooks: "empty replacement hooks",
+        updatedLedger: "empty replacement ledger",
+      }),
+    );
+    vi.spyOn(StateValidatorAgent.prototype, "validate")
+      .mockResolvedValueOnce({
+        passed: false,
+        warnings: [{
+          category: "missing_state_change",
+          description: "The repair removed the current chapter state.",
+        }],
+      })
+      .mockResolvedValueOnce({
+        passed: false,
+        warnings: [{
+          category: "missing_state_change",
+          description: "The settlement retry still removed the current chapter state.",
+        }],
+      });
+
+    const result = await runner.repairChapterState(bookId, 1);
+    const savedIndex = await state.loadChapterIndex(bookId);
+
+    expect(result.status).toBe("state-degraded");
+    expect(result.auditResult.passed).toBe(false);
+    expect(result.auditResult.issues).toEqual([
+      expect.objectContaining({
+        category: "state-validation",
+        description: "The settlement retry still removed the current chapter state.",
+      }),
+    ]);
+    expect(settleSpy).toHaveBeenCalledTimes(2);
+    expect(savedIndex[0]?.status).toBe("state-degraded");
+    await expect(readFile(join(storyDir, "current_state.md"), "utf-8")).resolves.toBe("stable state");
+    await expect(readFile(join(storyDir, "pending_hooks.md"), "utf-8")).resolves.toBe("stable hooks");
+    await expect(readFile(join(storyDir, "particle_ledger.md"), "utf-8")).resolves.toBe("stable ledger");
+
+    await rm(root, { recursive: true, force: true });
+  });
+
   sqliteIt("normalizes snapshot-only repair output before rebuilding narrative memory", async () => {
     const capture = createCaptureLogger();
     const { root, runner, state, bookId } = await createRunnerFixture({
@@ -4053,11 +4222,21 @@ describe("PipelineRunner", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it("rebuilds resync truth with the chapter analyzer after two incomplete settlements", async () => {
+  it.each([
+    { maxSettlementCalls: undefined, expectedSettlementCalls: 2, expectedValidationCalls: 2 },
+    { maxSettlementCalls: 1, expectedSettlementCalls: 1, expectedValidationCalls: 1 },
+  ])("rebuilds resync truth after $expectedSettlementCalls incomplete settlement attempt(s)", async ({
+    maxSettlementCalls,
+    expectedSettlementCalls,
+    expectedValidationCalls,
+  }) => {
     const diagnostics: Array<{ kind: string; chapterNumber?: number; details?: Record<string, unknown> }> = [];
     const { root, runner, state, bookId } = await createRunnerFixture({
       inputGovernanceMode: "legacy",
       onPipelineDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+      ...(maxSettlementCalls === undefined
+        ? {}
+        : { governanceCallLimits: { maxSettlementCallsPerChapter: maxSettlementCalls } }),
     });
     const now = "2026-03-19T00:00:00.000Z";
     const bookDir = state.bookDir(bookId);
@@ -4117,13 +4296,13 @@ describe("PipelineRunner", () => {
     const savedIndex = await state.loadChapterIndex(bookId);
 
     expect(result.status).toBe("ready-for-review");
-    expect(settleChapterState).toHaveBeenCalledTimes(2);
+    expect(settleChapterState).toHaveBeenCalledTimes(expectedSettlementCalls);
     expect(analyzeChapter).toHaveBeenCalledTimes(1);
-    expect(validate).toHaveBeenCalledTimes(2);
+    expect(validate).toHaveBeenCalledTimes(expectedValidationCalls);
     expect(diagnostics).toContainEqual(expect.objectContaining({
       kind: "resync-analyzer-fallback",
       chapterNumber: 1,
-      details: { settlementAttempts: 2 },
+      details: { settlementAttempts: expectedSettlementCalls },
     }));
     await expect(readFile(join(storyDir, "current_state.md"), "utf-8")).resolves.toBe("analyzer rebuilt state");
     await expect(readFile(join(storyDir, "pending_hooks.md"), "utf-8")).resolves.toBe("analyzer rebuilt hooks");
@@ -6348,6 +6527,14 @@ describe("PipelineRunner", () => {
         conflict: "The archive is already compromised.",
       }), "utf-8"),
       writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n", "utf-8"),
+      writeFile(join(storyDir, "chapter_summaries.md"), [
+        "# Chapter Summaries",
+        "",
+        "| Chapter | Title | Characters | Key Events | State Changes | Hook Activity | Mood | Chapter Type |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| 1 | First | Taryn | Taryn reaches the archive lower hall. | The archive is compromised. | none | tense | investigation |",
+        "",
+      ].join("\n"), "utf-8"),
     ]);
     await state.saveChapterIndex(bookId, [
       {
@@ -6427,12 +6614,19 @@ describe("PipelineRunner", () => {
     try {
       const result = await runner.reviseDraft(bookId, 2);
       const savedIndex = await state.loadChapterIndex(bookId);
+      const savedSummaries = await readFile(join(storyDir, "chapter_summaries.md"), "utf-8");
+      const runtimeState = await loadRuntimeStateSnapshot(state.bookDir(bookId));
 
       expect(auditChapter).toHaveBeenCalledTimes(2);
       expect(result.applied).toBe(true);
       expect(result.status).toBe("ready-for-review");
       expect(savedIndex[1]?.status).toBe("ready-for-review");
       expect(savedIndex[1]?.auditIssues).toEqual([]);
+      expect(savedSummaries).toContain("| 2 | Test Chapter |");
+      expect(savedSummaries).toContain("He checked the seal again before he moved.");
+      expect(runtimeState.manifest.lastAppliedChapter).toBe(2);
+      expect(runtimeState.currentState.chapter).toBe(2);
+      expect(runtimeState.chapterSummaries.rows.map((row) => row.chapter)).toEqual([1, 2]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

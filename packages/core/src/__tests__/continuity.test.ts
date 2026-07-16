@@ -415,6 +415,81 @@ describe("ContinuityAuditor", () => {
     }
   });
 
+  it("uses a focused prompt when verifying a local revision", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-auditor-revision-verify-"));
+    const bookDir = join(root, "book");
+    const storyDir = join(bookDir, "story");
+    await mkdir(storyDir, { recursive: true });
+
+    await Promise.all([
+      writeFile(join(storyDir, "current_state.md"), "# 当前状态\n\n- 林澈仍持有编号被改过的磁带。\n", "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "# 伏笔池\n\n- tape-id: 磁带编号来源未明。\n", "utf-8"),
+      writeFile(join(storyDir, "chapter_summaries.md"), "# 章节摘要\n\nSHOULD_DROP_OLD_SUMMARIES\n", "utf-8"),
+      writeFile(join(storyDir, "subplot_board.md"), "# 支线\n\nSHOULD_DROP_SUBPLOTS\n", "utf-8"),
+      writeFile(join(storyDir, "emotional_arcs.md"), "# 情感\n\nSHOULD_DROP_EMOTIONAL_ARCS\n", "utf-8"),
+      writeFile(join(storyDir, "character_matrix.md"), "# 矩阵\n\nSHOULD_DROP_CHARACTER_MATRIX\n", "utf-8"),
+      writeFile(join(storyDir, "style_guide.md"), "# 文风\n\nSHOULD_DROP_STYLE_GUIDE\n", "utf-8"),
+    ]);
+
+    const auditor = new ContinuityAuditor({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: root,
+    });
+    const chatSpy = vi.spyOn(ContinuityAuditor.prototype as never, "chat" as never).mockResolvedValue({
+      content: JSON.stringify({ passed: true, overall_score: 100, issues: [], summary: "fixed" }),
+      usage: ZERO_USAGE,
+    });
+
+    try {
+      const chapterBody = "林澈把磁带装进证物袋，删掉了含混的判断。";
+      await auditor.auditChapter(bookDir, chapterBody, 1, "urban");
+      await auditor.auditChapter(bookDir, chapterBody, 1, "urban", {
+        verificationIssues: [{
+          severity: "critical",
+          category: "禁止句式",
+          description: "出现了禁用句式",
+          suggestion: "改用直述句",
+          repairScope: "local",
+        }],
+      });
+
+      const fullMessages = chatSpy.mock.calls[0]?.[0] as ReadonlyArray<{ content: string }>;
+      const messages = chatSpy.mock.calls[1]?.[0] as ReadonlyArray<{ content: string }>;
+      const systemPrompt = messages[0]?.content ?? "";
+      const userPrompt = messages[1]?.content ?? "";
+      const fullPromptTokens = fullMessages.reduce(
+        (sum, message) => sum + estimateTextTokens(message.content),
+        0,
+      );
+      const verificationPromptTokens = messages.reduce(
+        (sum, message) => sum + estimateTextTokens(message.content),
+        0,
+      );
+
+      expect(systemPrompt).toContain("修订复核员");
+      expect(systemPrompt).not.toContain("审查维度");
+      expect(verificationPromptTokens).toBeLessThan(fullPromptTokens * 0.6);
+      expect(userPrompt).toContain("## 上次审计的阻塞问题");
+      expect(userPrompt).toContain("出现了禁用句式");
+      expect(userPrompt).toContain("林澈仍持有编号被改过的磁带");
+      expect(userPrompt).toContain("tape-id");
+      expect(userPrompt).toContain(chapterBody);
+      expect(userPrompt).not.toContain("SHOULD_DROP_OLD_SUMMARIES");
+      expect(userPrompt).not.toContain("SHOULD_DROP_SUBPLOTS");
+      expect(userPrompt).not.toContain("SHOULD_DROP_EMOTIONAL_ARCS");
+      expect(userPrompt).not.toContain("SHOULD_DROP_CHARACTER_MATRIX");
+      expect(userPrompt).not.toContain("SHOULD_DROP_STYLE_GUIDE");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("injects the chapter memo into the audit prompt for memo-drift checking", async () => {
     const root = await mkdtemp(join(tmpdir(), "inkos-auditor-memo-drift-"));
     const bookDir = join(root, "book");

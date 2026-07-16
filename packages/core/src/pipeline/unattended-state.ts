@@ -37,6 +37,8 @@ export const UnattendedChapterMetricsSchema = z.object({
   totalTokens: z.number().int().min(0),
   maxPromptEstimatedTokens: z.number().int().min(0),
   fallbacks: z.number().int().min(0),
+  revisionCalls: z.number().int().min(0).default(0),
+  settlementCalls: z.number().int().min(0).default(0),
   withinHardRange: z.boolean().optional(),
 });
 
