@@ -3080,7 +3080,7 @@ describe("createStudioServer daemon lifecycle", () => {
     });
   });
 
-  it("passes one-off brief into revise requests through pipeline config", async () => {
+  it("starts revisions as cancellable operations and preserves the one-off brief", async () => {
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
 
@@ -3090,9 +3090,34 @@ describe("createStudioServer daemon lifecycle", () => {
       body: JSON.stringify({ mode: "rewrite", brief: "把注意力拉回师债主线。" }),
     });
 
-    expect(response.status).toBe(200);
-    expect(pipelineConfigs.at(-1)).toMatchObject({ externalContext: "把注意力拉回师债主线。" });
-    expect(reviseDraftMock).toHaveBeenCalledWith("demo-book", 3, "rewrite");
+    expect(response.status).toBe(202);
+    const accepted = await response.json() as { requestId: string };
+    expect(accepted).toMatchObject({
+      status: "revising",
+      bookId: "demo-book",
+      chapter: 3,
+      requestId: expect.any(String),
+    });
+    await vi.waitFor(() => {
+      expect(pipelineConfigs.at(-1)).toMatchObject({ externalContext: "把注意力拉回师债主线。" });
+      expect(reviseDraftMock).toHaveBeenCalledWith("demo-book", 3, "rewrite");
+    });
+    await vi.waitFor(async () => {
+      const operationResponse = await app.request(
+        `http://localhost/api/v1/books/demo-book/operations/${accepted.requestId}`,
+      );
+      expect(operationResponse.status).toBe(200);
+      await expect(operationResponse.json()).resolves.toMatchObject({
+        status: "complete",
+        resultStatus: "ready-for-review",
+        kind: "revise",
+        terminalEvent: "revise:complete",
+        requestId: accepted.requestId,
+        chapter: 3,
+        wordCount: 1800,
+        applied: true,
+      });
+    });
   });
 
   it("rejects unknown revise modes before invoking the pipeline", async () => {
@@ -4528,8 +4553,10 @@ describe("createStudioServer daemon lifecycle", () => {
       body: JSON.stringify({ mode: "spot-fix" }),
     });
 
-    expect(response.status).toBe(200);
-    expect(pipelineConfigs.at(-1)).toMatchObject({ revisionGate: "strict" });
+    expect(response.status).toBe(202);
+    await vi.waitFor(() => {
+      expect(pipelineConfigs.at(-1)).toMatchObject({ revisionGate: "strict" });
+    });
   });
 
   it("exposes a global default model endpoint backed by llm.defaultModel", async () => {

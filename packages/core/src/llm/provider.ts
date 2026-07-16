@@ -626,6 +626,18 @@ function wrapLLMError(error: unknown, context?: { readonly baseUrl?: string; rea
         else if (b.reason) detail = b.reason;
       }
     }
+    if (!detail) {
+      // Native custom transports already reduce the response body to a string
+      // such as "400 invalid parameter: ...". Preserve that actionable detail
+      // instead of replacing it with the generic 400 checklist.
+      const inline = msg
+        .replace(/^Error:\s*/iu, "")
+        .replace(/^.*?\b400\b\s*/u, "")
+        .trim();
+      if (inline && !/^bad request$/iu.test(inline)) {
+        detail = inline.slice(0, 1_000);
+      }
+    }
     return new Error(
       `API 返回 400（请求参数错误）。${detail ? `上游详情：${detail}。\n` : ""}` +
       `常见原因：\n` +

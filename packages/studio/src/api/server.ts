@@ -1877,7 +1877,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
   const app = new Hono();
   const state = new StateManager(root);
   let cachedConfig = initialConfig;
-  type StudioOperationKind = "write" | "draft" | "rewrite" | "repair-state" | "resync";
+  type StudioOperationKind = "write" | "draft" | "revise" | "rewrite" | "repair-state" | "resync";
   interface ActiveStudioOperation {
     readonly requestId: string;
     readonly bookId: string;
@@ -2466,11 +2466,11 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
     const terminal = terminalStudioOperations.get(studioOperationKey(id, requestId));
     if (terminal) {
       return c.json({
+        ...terminal.data,
         status: terminal.status,
         kind: terminal.kind,
         terminalEvent: terminal.terminalEvent,
         completedAt: terminal.completedAt,
-        ...terminal.data,
       });
     }
 
@@ -2517,6 +2517,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
       completeData: (result) => ({
         chapterNumber: result.chapterNumber,
         status: result.status,
+        resultStatus: result.status,
         title: result.title,
         wordCount: result.wordCount,
         ...(result.operationId ? { operationId: result.operationId } : {}),
@@ -2632,7 +2633,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
         }));
         return pipeline.repairChapterState(id, chapterNum);
       },
-      completeData: (result) => ({ chapter: chapterNum, status: result.status }),
+      completeData: (result) => ({ chapter: chapterNum, status: result.status, resultStatus: result.status }),
     });
     return c.json({ status: "repairing", bookId: id, chapter: chapterNum, requestId: operation.requestId }, 202);
   });
@@ -4210,37 +4211,41 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
     const body = await c.req
       .json<{ mode?: string; brief?: string }>()
       .catch(() => ({ mode: "spot-fix", brief: undefined }));
-
-    broadcast("revise:start", { bookId: id, chapter: chapterNum });
-    try {
-      const book = await state.loadBookConfig(id);
-      const chaptersDir = join(bookDir, "chapters");
-      const files = await readdir(chaptersDir);
-      const paddedNum = String(chapterNum).padStart(4, "0");
-      const match = files.find((f) => f.startsWith(paddedNum) && f.endsWith(".md"));
-      if (!match) return c.json({ error: "Chapter not found" }, 404);
-
-      const pipeline = new PipelineRunner(await buildPipelineConfig({
-        externalContext: body.brief,
-        bookIdForSettings: id,
-        bookIdForTelemetry: id,
-      }));
-      const normalizedMode = ReviseModeSchema.safeParse(body.mode ?? "spot-fix");
-      if (!normalizedMode.success) {
-        throw new ApiError(400, "INVALID_REVISE_MODE", normalizedMode.error.issues[0]?.message ?? "Invalid revise mode");
-      }
-      const result = await pipeline.reviseDraft(
-        id,
-        chapterNum,
-        normalizedMode.data,
-      );
-      broadcast("revise:complete", { bookId: id, chapter: chapterNum });
-      return c.json(result);
-    } catch (e) {
-      rethrowApiError(e);
-      broadcast("revise:error", { bookId: id, error: String(e) });
-      return c.json({ error: String(e) }, 500);
+    const normalizedMode = ReviseModeSchema.safeParse(body.mode ?? "spot-fix");
+    if (!normalizedMode.success) {
+      throw new ApiError(400, "INVALID_REVISE_MODE", normalizedMode.error.issues[0]?.message ?? "Invalid revise mode");
     }
+
+    // Keep cheap request validation synchronous, but run the LLM-backed
+    // revision through the same cancellable operation contract as rewrites.
+    const chaptersDir = join(bookDir, "chapters");
+    const files = await readdir(chaptersDir);
+    const paddedNum = String(chapterNum).padStart(4, "0");
+    const match = files.find((f) => f.startsWith(paddedNum) && f.endsWith(".md"));
+    if (!match) return c.json({ error: "Chapter not found" }, 404);
+
+    const operation = beginStudioOperation(id, "revise");
+    launchStudioOperation({
+      operation,
+      run: async () => {
+        const pipeline = new PipelineRunner(await buildPipelineConfig({
+          externalContext: body.brief,
+          bookIdForSettings: id,
+          bookIdForTelemetry: id,
+          signal: operation.controller.signal,
+        }));
+        return pipeline.reviseDraft(id, chapterNum, normalizedMode.data);
+      },
+      completeData: (result) => ({
+        chapter: result.chapterNumber,
+        resultStatus: result.status,
+        wordCount: result.wordCount,
+        applied: result.applied,
+        fixedIssues: result.fixedIssues,
+        ...(result.skippedReason ? { skippedReason: result.skippedReason } : {}),
+      }),
+    });
+    return c.json({ status: "revising", bookId: id, chapter: chapterNum, requestId: operation.requestId }, 202);
   });
 
   // --- Export ---
@@ -4638,7 +4643,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
         }));
         return pipeline.resyncChapterArtifacts(id, chapterNum);
       },
-      completeData: (result) => ({ chapter: chapterNum, status: result.status }),
+      completeData: (result) => ({ chapter: chapterNum, status: result.status, resultStatus: result.status }),
     });
     return c.json({ status: "resyncing", bookId: id, chapter: chapterNum, requestId: operation.requestId }, 202);
   });

@@ -1,7 +1,7 @@
 import { execSync, spawn } from "child_process";
 import { fileURLToPath } from "url";
 import path from "path";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createWriteStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -163,9 +163,25 @@ function copyLiveProjectConfig(projectRoot: string, sourceRoot: string): void {
   }
 
   copyFileSync(sourceConfig, path.join(projectRoot, "inkos.json"));
-  const sourceSecrets = path.join(sourceRoot, ".inkos", "secrets.json");
-  if (!process.env.INKOS_LLM_API_KEY?.trim() && existsSync(sourceSecrets)) {
-    copyFileSync(sourceSecrets, path.join(projectRoot, ".inkos", "secrets.json"));
+  const injectedApiKey = process.env.INKOS_LINKED_LIVE_API_KEY?.trim();
+  if (injectedApiKey) {
+    const parsed = JSON.parse(readFileSync(sourceConfig, "utf-8")) as {
+      llm?: { service?: unknown };
+    };
+    const service = typeof parsed.llm?.service === "string" ? parsed.llm.service.trim() : "";
+    if (!service) {
+      throw new Error("INKOS_LINKED_LIVE_API_KEY requires inkos.json to select an LLM service.");
+    }
+    writeFileSync(
+      path.join(projectRoot, ".inkos", "secrets.json"),
+      `${JSON.stringify({ services: { [service]: { apiKey: injectedApiKey } } }, null, 2)}\n`,
+      "utf-8",
+    );
+  } else {
+    const sourceSecrets = path.join(sourceRoot, ".inkos", "secrets.json");
+    if (existsSync(sourceSecrets)) {
+      copyFileSync(sourceSecrets, path.join(projectRoot, ".inkos", "secrets.json"));
+    }
   }
 
   writeFileSync(

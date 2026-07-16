@@ -26,7 +26,7 @@
     "build:client": "vite build",
     "build:server": "tsc -p tsconfig.server.json",
     "preview": "vite preview",
-    "test": "vitest run",
+    "test": "vitest run && node --test scripts/linked-report.test.mjs",
     "test:e2e": "node scripts/run-e2e.mjs",
     "test:linked": "node scripts/run-e2e.mjs --grep @linked",
     "test:linked:live": "node scripts/run-e2e.mjs --linked-live --grep @linked",

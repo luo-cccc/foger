@@ -141,6 +141,25 @@ describe("foundation scale contract", () => {
     expect(validateFoundationVolumeScale(normalized, 5)).toEqual([]);
   });
 
+  it("normalizes bold Chinese single-volume prose contracts outside the compact range", () => {
+    const normalized = normalizeFoundationVolumeContracts([
+      "## 段 1：各卷主题与情绪曲线",
+      "第1卷《玻璃档案》覆盖第1-20章，主角在追查中逐步失去安全位置。",
+      "## 段 3：各卷 OKR",
+      "**本卷目标：** 林澈公开完整档案链并终止清除行动。",
+      "1. **关键成果1：** 找到未被篡改的原始档案。",
+      "2. **关键成果2：** 让关键证人公开指认证词。",
+      "3. **关键成果3：** 在第20章公开证据并解决核心冲突。",
+      "## 段 4：卷尾必须发生的改变",
+      "**卷尾改变：** 林澈实名作证，永久失去匿名身份。",
+    ].join("\n"), 20, "zh");
+
+    expect(normalized).toContain("## 第1卷《玻璃档案》（第1-20章）");
+    expect(normalized).toContain("KR1: 找到未被篡改的原始档案。");
+    expect(normalized).toContain("Irreversible Event: 林澈实名作证");
+    expect(validateFoundationVolumeScale(normalized, 20)).toEqual([]);
+  });
+
   it("rejects a compact volume contract without ordered chapter beats", () => {
     const issues = validateFoundationVolumeScale([
       "## 第1卷《磁带回声》（第1-5章）",

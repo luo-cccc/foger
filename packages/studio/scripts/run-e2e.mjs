@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, extname, join, relative, resolve } from "node:path";
+import { finalizeInterruptedLinkedReport } from "./linked-report.mjs";
 
 const rawArgs = process.argv.slice(2);
 const linkedLive = consumeFlag(rawArgs, "--linked-live");
@@ -54,6 +55,23 @@ const linkedFingerprint = linkedRun
 
 if (linkedRun) {
   mkdirSync(resolve(linkedReportPath, ".."), { recursive: true });
+  const activeRun = await findActiveLinkedRun(linkedReportPath);
+  if (activeRun) {
+    console.error([
+      "Linked acceptance was not started because this report belongs to a live launcher.",
+      `Report: ${linkedReportPath}`,
+      `Launcher PID: ${activeRun.launcherPid}`,
+      "Wait for it to finish, or choose a different --linked-report path for an independent run.",
+    ].join("\n"));
+    process.exit(2);
+  }
+  const finalized = await finalizeInterruptedLinkedReport(linkedReportPath);
+  if (finalized.finalized) {
+    console.warn([
+      "Recovered an interrupted linked acceptance report before starting this run.",
+      `Archived terminal report: ${finalized.archivePath}`,
+    ].join("\n"));
+  }
 }
 
 if (linkedLive && !repeatKnownFailure && existsSync(linkedReportPath)) {
@@ -180,6 +198,21 @@ function readJsonFile(path) {
   } catch {
     return null;
   }
+}
+
+async function findActiveLinkedRun(reportPath) {
+  const report = readJsonFile(reportPath);
+  if (report?.status !== "running" || typeof report.projectRoot !== "string") return null;
+
+  const tempRoot = resolve(tmpdir());
+  const entries = await readdir(tempRoot, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith("inkos-studio-e2e-runtime-")) continue;
+    const runtime = readJsonFile(join(tempRoot, entry.name, "runtime.json"));
+    if (runtime?.projectRoot !== report.projectRoot) continue;
+    if (isProcessAlive(runtime.launcherPid)) return runtime;
+  }
+  return null;
 }
 
 function cleanupStaleE2ERuntimes() {

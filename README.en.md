@@ -436,6 +436,7 @@ inkos up --service moonshot --model kimi-k2.5 --api-key-env MOONSHOT_API_KEY
 
 - [Development documentation index](docs/README.md)
 - [Current architecture and development priorities](docs/current-architecture-and-priorities.md)
+- [Writing capability improvement plan (Chinese)](docs/writing-capability-improvement-plan.md)
 - [Canon governance and volume closure design](docs/canon-governance-volume-closure-design.md)
 - [Live LLM testing and stage records](docs/live-llm-testing-and-next-goals.md)
 

@@ -2,11 +2,12 @@ import type { SSEMessage } from "./use-sse";
 import type { PipelineFailureStage } from "../lib/pipeline-failure-advice";
 import type { BookSummary } from "../shared/contracts";
 
-export type BookOperationKind = "write" | "draft" | "rewrite" | "repair-state" | "resync";
+export type BookOperationKind = "write" | "draft" | "revise" | "rewrite" | "repair-state" | "resync";
 
 const OPERATION_STARTS: Readonly<Record<string, BookOperationKind>> = {
   "write:start": "write",
   "draft:start": "draft",
+  "revise:start": "revise",
   "rewrite:start": "rewrite",
   "repair-state:start": "repair-state",
   "resync:start": "resync",

@@ -436,6 +436,7 @@ inkos up --service moonshot --model kimi-k2.5 --api-key-env MOONSHOT_API_KEY
 
 - [开发文档索引](docs/README.md)
 - [当前架构与开发优先级](docs/current-architecture-and-priorities.md)
+- [写作能力提升开发方案](docs/writing-capability-improvement-plan.md)
 - [设定治理与卷级闭环设计](docs/canon-governance-volume-closure-design.md)
 - [真实 LLM 测试方法与阶段记录](docs/live-llm-testing-and-next-goals.md)
 

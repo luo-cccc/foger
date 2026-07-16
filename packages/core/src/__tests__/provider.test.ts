@@ -511,6 +511,35 @@ describe("chatCompletion via pi-ai", () => {
     vi.unstubAllGlobals();
   });
 
+  it("preserves an upstream 400 detail from native custom transport", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      statusText: "Bad Request",
+      text: async () => JSON.stringify({
+        error: { message: "invalid parameter: cache scope is unavailable" },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = makeClient(0.7, {
+      service: "custom",
+      stream: false,
+      _piModel: {
+        ...MOCK_PI_MODEL,
+        provider: "openai",
+        baseUrl: "https://gateway.example/v1",
+      },
+    });
+    const error = await captureError(
+      chatCompletion(client, "gpt-5.4", [{ role: "user", content: "ping" }]),
+    );
+
+    expect(error.message).toContain("API 返回 400");
+    expect(error.message).toContain("上游详情：invalid parameter: cache scope is unavailable");
+    vi.unstubAllGlobals();
+  });
+
   it("merges per-call provider extras without allowing reserved field overrides", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

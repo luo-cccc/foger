@@ -269,14 +269,30 @@ export function normalizeFoundationVolumeContracts(
   language: "zh" | "en",
 ): string {
   const plan = buildFoundationScalePlan(targetChapters);
-  if (!plan.compact || extractVolumeContracts(volumeMap).length > 0) return volumeMap;
+  // A single-volume book still needs an executable volume contract even when
+  // it is longer than the compact chapter-beat range. Models often place the
+  // required fields in prose sections instead of a standalone volume heading.
+  if (plan.volumeCount !== 1 || extractVolumeContracts(volumeMap).length > 0) return volumeMap;
 
   const plain = volumeMap.replace(/\*\*/g, "");
-  const objective = extractLooseContractField(plain, "Objective");
+  const objective = extractLooseContractField(plain, [
+    "Objective",
+    "卷级 Objective",
+    "本卷 Objective",
+    "本卷目标",
+    "卷级目标",
+    "目标",
+  ]);
   const keyResults = [1, 2, 3].map((index) => (
-    extractLooseContractField(plain, `KR${index}`)
+    extractLooseKeyResult(plain, index)
   ));
-  const irreversibleEvent = extractLooseContractField(plain, "Irreversible Event")
+  const irreversibleEvent = extractLooseContractField(plain, [
+    "Irreversible Event",
+    "卷尾不可逆事件",
+    "不可逆事件",
+    "不可逆改变",
+    "卷尾改变",
+  ])
     ?? extractCompactIrreversibleEvent(plain, language);
   if (!objective || keyResults.some((value) => !value) || !irreversibleEvent) return volumeMap;
 
@@ -293,16 +309,41 @@ export function normalizeFoundationVolumeContracts(
   return `${contract}\n\n---\n\n${volumeMap.trim()}`;
 }
 
-function extractLooseContractField(content: string, label: string): string | undefined {
+function extractLooseContractField(
+  content: string,
+  labels: ReadonlyArray<string>,
+): string | undefined {
   for (const rawLine of content.split(/\r?\n/)) {
     const line = rawLine.trim().replace(/^[-*]\s*/u, "");
-    if (line.slice(0, label.length).toLowerCase() !== label.toLowerCase()) continue;
-    const remainder = line
-      .slice(label.length)
-      .replace(/^\s*[（(][^）)\r\n]*[）)]/u, "")
-      .replace(/^\s*[：:]\s*/u, "");
-    if (remainder === line.slice(label.length)) continue;
-    const value = cleanLooseContractValue(remainder);
+    for (const label of labels) {
+      if (line.slice(0, label.length).toLowerCase() !== label.toLowerCase()) continue;
+      const source = line.slice(label.length);
+      const remainder = source
+        .replace(/^\s*[（(][^）)\r\n]*[）)]/u, "")
+        .replace(/^\s*[：:]\s*/u, "");
+      if (remainder === source) continue;
+      const value = cleanLooseContractValue(remainder);
+      if (value) return value;
+    }
+  }
+  return undefined;
+}
+
+function extractLooseKeyResult(content: string, index: number): string | undefined {
+  const label = [
+    `KR\\s*${index}`,
+    `关键(?:结果|成果)\\s*${index}`,
+    `关键(?:结果|成果)\\s*[（(]\\s*${index}\\s*[）)]`,
+  ].join("|");
+  const pattern = new RegExp(`^(?:${label})(?:\\s*[（(][^）)\\r\\n]*[）)])?\\s*[：:]\\s*(.+)$`, "iu");
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine
+      .trim()
+      .replace(/^\s*(?:[-*]|\d+[.)、])\s*/u, "");
+    const match = line.match(pattern);
+    if (!match?.[1]) continue;
+    const value = cleanLooseContractValue(match[1]);
     if (value) return value;
   }
   return undefined;

@@ -34,6 +34,8 @@ export const STUDIO_SSE_EVENTS = [
   "revise:start",
   "revise:complete",
   "revise:error",
+  "revise:cancel-requested",
+  "revise:cancelled",
   "rewrite:start",
   "rewrite:complete",
   "rewrite:error",

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { expect, test, type APIRequestContext, type Page, type TestInfo } from "@playwright/test";
+import { writeLinkedReportCheckpoint } from "../scripts/linked-report.mjs";
 
 const LINKED_EVENT_NAMES = [
   "book:creating",
@@ -15,6 +15,8 @@ const LINKED_EVENT_NAMES = [
   "revise:start",
   "revise:complete",
   "revise:error",
+  "revise:cancel-requested",
+  "revise:cancelled",
   "rewrite:start",
   "rewrite:complete",
   "rewrite:error",
@@ -125,6 +127,36 @@ interface LinkedQualityGateReport {
   readonly reasons: ReadonlyArray<string>;
 }
 
+interface LinkedRunReport {
+  status: "running" | "passed" | "failed" | "interrupted";
+  mode: "stub" | "live";
+  runFingerprint: string;
+  startedAt: string;
+  updatedAt?: string;
+  finishedAt?: string;
+  lastStage?: string;
+  projectRoot?: string;
+  scenario: {
+    chapters: number;
+    wordsPerChapter: number;
+    maxTotalTokens: number;
+    maxPromptTokensPerCall: number;
+    qualityPolicy: LinkedQualityPolicy;
+    createAttempts: number;
+    writeAttempts: number;
+  };
+  bookId?: string;
+  creationAttempts: LinkedCreationAttemptReport[];
+  chapters: LinkedChapterReport[];
+  totalTokens: number;
+  failureStage?: string;
+  failureMessage?: string;
+  failureSignature?: string;
+  failureTelemetry?: ReadonlyArray<Record<string, unknown>>;
+  linkedGate?: LinkedGateReport;
+  qualityGate?: LinkedQualityGateReport;
+}
+
 class LinkedQualityGateError extends Error {}
 
 const liveMode = process.env.INKOS_E2E_LLM_MODE === "live";
@@ -147,36 +179,13 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
   const reportPath = resolve(
     process.env.INKOS_LINKED_REPORT_PATH?.trim() || testInfo.outputPath("linked-acceptance.json"),
   );
-  const report: {
-    status: "running" | "passed" | "failed";
-    mode: "stub" | "live";
-    runFingerprint: string;
-    startedAt: string;
-    finishedAt?: string;
-    scenario: {
-      chapters: number;
-      wordsPerChapter: number;
-      maxTotalTokens: number;
-      maxPromptTokensPerCall: number;
-      qualityPolicy: LinkedQualityPolicy;
-      createAttempts: number;
-      writeAttempts: number;
-    };
-    bookId?: string;
-    creationAttempts: LinkedCreationAttemptReport[];
-    chapters: LinkedChapterReport[];
-    totalTokens: number;
-    failureStage?: string;
-    failureMessage?: string;
-    failureSignature?: string;
-    failureTelemetry?: ReadonlyArray<Record<string, unknown>>;
-    linkedGate?: LinkedGateReport;
-    qualityGate?: LinkedQualityGateReport;
-  } = {
+  const projectRoot = process.env.INKOS_E2E_PROJECT_ROOT?.trim();
+  const report: LinkedRunReport = {
     status: "running",
     mode: liveMode ? "live" : "stub",
     runFingerprint: process.env.INKOS_LINKED_RUN_FINGERPRINT?.trim() || "untracked",
     startedAt: new Date().toISOString(),
+    ...(projectRoot ? { projectRoot } : {}),
     scenario: {
       chapters: requestedChapters,
       wordsPerChapter,
@@ -193,6 +202,7 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
   let stage = "browser-start";
 
   try {
+    await writeReportCheckpoint(reportPath, report, stage);
     await page.goto("/");
     await startLinkedEventCollector(page);
 
@@ -239,7 +249,7 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
         telemetry: attemptTelemetry,
       });
       report.totalTokens = sumTelemetryTokens(allCreationEvents);
-      await writeReportCheckpoint(reportPath, report);
+      await writeReportCheckpoint(reportPath, report, stage);
       if (maxTotalTokens > 0 && report.totalTokens > maxTotalTokens) {
         throw new Error(
           `Book creation used ${report.totalTokens} tokens, exceeding the linked run budget of ${maxTotalTokens}.`,
@@ -340,29 +350,34 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
       const telemetry = events
         .filter((event) => event.event === "llm:telemetry" && event.data?.operationId === operationId)
         .map((event) => event.data ?? {});
-      expect(telemetry.length).toBeGreaterThan(0);
-      expect(telemetry.every((entry) => entry.bookId === bookId)).toBe(true);
-
-      const book = await waitForChapter(request, bookId, chapterNumber);
-      let chapter = book.chapters.find((entry) => entry.number === chapterNumber);
       const chapterReport: LinkedChapterReport = {
         chapterNumber,
         requestId,
         operationId,
         writeAttempts,
-        persistedOperationId: chapter?.operationId ?? operationId,
-        status: chapter?.status ?? "missing",
-        wordCount: chapter?.wordCount ?? 0,
-        auditIssues: chapter?.auditIssues ?? [],
-        lengthWarnings: chapter?.lengthWarnings ?? [],
+        persistedOperationId: operationId,
+        status: "awaiting-persistence-verification",
+        wordCount: 0,
+        auditIssues: [],
+        lengthWarnings: [],
         telemetry: telemetry.map(sanitizeTelemetry),
         recoveryActions: [],
         doctorVerified: false,
       };
       report.chapters.push(chapterReport);
       report.totalTokens = sumTelemetryTokens(await readLinkedEvents(page));
-      await writeReportCheckpoint(reportPath, report);
+      await writeReportCheckpoint(reportPath, report, stage);
+
+      expect(telemetry.length).toBeGreaterThan(0);
+      expect(
+        telemetry.every((entry) => entry.bookId === bookId),
+        `Operation ${operationId} telemetry book IDs: ${JSON.stringify(telemetry.map((entry) => entry.bookId ?? null))}`,
+      ).toBe(true);
       assertPromptBudget(events, maxPromptTokensPerCall, `Chapter ${chapterNumber}`);
+
+      const book = await waitForChapter(request, bookId, chapterNumber);
+      let chapter = book.chapters.find((entry) => entry.number === chapterNumber);
+      updateChapterReport(chapterReport, chapter);
 
       expect(chapter?.operationId).toBe(operationId);
       expect(new Set(chapter?.auditIssues ?? []).size).toBe(chapter?.auditIssues?.length ?? 0);
@@ -381,7 +396,7 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
             chapterReport.recoveryActions.push(action);
             updateChapterReport(chapterReport, recoveredChapter);
             report.totalTokens = sumTelemetryTokens(await readLinkedEvents(page));
-            await writeReportCheckpoint(reportPath, report);
+            await writeReportCheckpoint(reportPath, report, stage);
           },
         });
         updateChapterReport(chapterReport, chapter);
@@ -406,7 +421,7 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
       await expect(page.getByTestId("operation-telemetry-call-count")).not.toContainText("还没有最近调用");
       await expect(page.getByTestId("operation-telemetry-call-count")).not.toContainText("No recent calls yet");
       chapterReport.doctorVerified = true;
-      await writeReportCheckpoint(reportPath, report);
+      await writeReportCheckpoint(reportPath, report, stage);
 
       stage = `chapter-${chapterNumber}-quality`;
       const chapterQuality = buildChapterQualityReport(chapterReport, wordsPerChapter);
@@ -437,7 +452,7 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
     }
     report.status = "passed";
     report.finishedAt = new Date().toISOString();
-    await persistReport(reportPath, report, testInfo);
+    await persistReport(reportPath, report, testInfo, stage);
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause);
     report.status = "failed";
@@ -456,7 +471,7 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
     report.qualityGate = buildQualityGate(report.chapters, wordsPerChapter, qualityPolicy);
     report.failureSignature = buildFailureSignature(stage, message, report);
     report.finishedAt = new Date().toISOString();
-    await persistReport(reportPath, report, testInfo).catch(() => undefined);
+    await persistReport(reportPath, report, testInfo, stage).catch(() => undefined);
     throw cause;
   } finally {
     await stopLinkedEventCollector(page).catch(() => undefined);
@@ -599,6 +614,7 @@ async function runRevisionRecoveryAction(
     readonly request: APIRequestContext;
     readonly bookId: string;
     readonly operationTimeoutMs: number;
+    readonly tokenBudget: number;
     readonly onAction: (
       action: LinkedRecoveryActionReport,
       chapter: LinkedChapterSnapshot,
@@ -620,17 +636,21 @@ async function runRevisionRecoveryAction(
     throw cause;
   }
 
-  if (response.status < 200 || response.status >= 300) {
+  const requestId = typeof response.body.requestId === "string" ? response.body.requestId : "";
+  if (response.status !== 202 || !requestId) {
     const error = readBrowserApiError(response);
     const action = await buildFailedRecoveryAction(params.page, eventOffset, "revise", chapter, error, response.status);
     await params.onAction(action, chapter);
     throw new Error(error);
   }
 
-  const terminal = await waitForEvent(params.page, eventOffset, params.operationTimeoutMs, (event) =>
-    ["revise:complete", "revise:error"].includes(event.event)
-    && event.data?.bookId === params.bookId
-    && event.data?.chapter === chapter.number
+  const terminal = await waitForAsyncOperationTerminal(
+    params.page,
+    params.bookId,
+    "revise",
+    requestId,
+    params.operationTimeoutMs,
+    params.tokenBudget,
   );
   const recovered = terminal.event === "revise:complete"
     ? await loadChapter(params.request, params.bookId, chapter.number)
@@ -645,8 +665,14 @@ async function runRevisionRecoveryAction(
     statusBefore: chapter.status,
     statusAfter: recovered.status,
     httpStatus: response.status,
+    requestId,
+    ...(typeof terminal.data?.operationId === "string" ? { operationId: terminal.data.operationId } : {}),
     terminalEvent: terminal.event,
-    resultStatus: typeof response.body.status === "string" ? response.body.status : undefined,
+    resultStatus: typeof terminal.data?.resultStatus === "string"
+      ? terminal.data.resultStatus
+      : typeof terminal.data?.status === "string"
+        ? terminal.data.status
+        : undefined,
     ...(error ? { error } : {}),
     totalTokens: sumTelemetryTokens(actionEvents),
     telemetry,
@@ -724,7 +750,11 @@ async function runAsyncRecoveryAction(params: {
     requestId,
     ...(operationId ? { operationId } : {}),
     terminalEvent: terminal.event,
-    resultStatus: typeof terminal.data?.status === "string" ? terminal.data.status : undefined,
+    resultStatus: typeof terminal.data?.resultStatus === "string"
+      ? terminal.data.resultStatus
+      : typeof terminal.data?.status === "string"
+        ? terminal.data.status
+        : undefined,
     ...(error ? { error } : {}),
     totalTokens: sumTelemetryTokens(actionEvents),
     telemetry,
@@ -957,7 +987,7 @@ async function waitForEvent(
 async function waitForAsyncOperationTerminal(
   page: Page,
   bookId: string,
-  kind: "write" | Exclude<LinkedRecoveryKind, "revise">,
+  kind: "write" | LinkedRecoveryKind,
   requestId: string,
   timeoutMs: number,
   tokenBudget: number,
@@ -993,7 +1023,7 @@ async function readAsyncOperationTerminal(
   page: Page,
   bookId: string,
   requestId: string,
-  kind: "write" | Exclude<LinkedRecoveryKind, "revise">,
+  kind: "write" | LinkedRecoveryKind,
 ): Promise<LinkedEvent | null> {
   const result = await page.evaluate(async ({ targetBookId, targetRequestId }) => {
     try {
@@ -1080,12 +1110,18 @@ function buildFailureSignature(
   return createHash("sha256").update(JSON.stringify(basis)).digest("hex").slice(0, 20);
 }
 
-async function persistReport(path: string, report: unknown, testInfo: TestInfo): Promise<void> {
-  await writeReportCheckpoint(path, report);
+async function persistReport(
+  path: string,
+  report: LinkedRunReport,
+  testInfo: TestInfo,
+  stage: string,
+): Promise<void> {
+  await writeReportCheckpoint(path, report, stage);
   await testInfo.attach("linked-acceptance-report", { path, contentType: "application/json" });
 }
 
-async function writeReportCheckpoint(path: string, report: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(report, null, 2)}\n`, "utf-8");
+async function writeReportCheckpoint(path: string, report: LinkedRunReport, stage: string): Promise<void> {
+  report.lastStage = stage;
+  report.updatedAt = new Date().toISOString();
+  await writeLinkedReportCheckpoint(path, report);
 }

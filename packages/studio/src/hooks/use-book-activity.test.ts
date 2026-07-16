@@ -93,6 +93,23 @@ describe("deriveBookActivity", () => {
     expect(deriveBookActivity(cancelled, "alpha").activeOperation).toBeNull();
   });
 
+  it("tracks asynchronous revision operations until their terminal event", () => {
+    const active: ReadonlyArray<SSEMessage> = [
+      msg("revise:start", { bookId: "alpha", requestId: "revise-1" }, 1),
+    ];
+    const completed: ReadonlyArray<SSEMessage> = [
+      ...active,
+      msg("revise:complete", { bookId: "alpha", requestId: "revise-1", chapter: 3 }, 2),
+    ];
+
+    expect(deriveBookActivity(active, "alpha").activeOperation).toEqual({
+      requestId: "revise-1",
+      kind: "revise",
+      cancelling: false,
+    });
+    expect(deriveBookActivity(completed, "alpha").activeOperation).toBeNull();
+  });
+
   it("does not clear a newer operation when an older request terminates", () => {
     const messages: ReadonlyArray<SSEMessage> = [
       msg("write:start", { bookId: "alpha", requestId: "req-old" }, 1),

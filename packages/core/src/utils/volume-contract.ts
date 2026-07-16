@@ -819,7 +819,8 @@ function extractKeyResults(body: string, volumeNumber: number): VolumeContract["
   const results: VolumeContract["keyResults"] = [];
   const lines = body.split(/\r?\n/);
   for (const line of lines) {
-    const match = line.match(/(?:^|\s)(?:[-*]\s*)?(?:(?:V(?:olume)?\s*\d+\s*[-_:])?KR\s*[-_#:]?\s*(\d+)|Key Result\s*(\d+)|关键结果\s*(\d+))\s*[：:.)-]?\s*(.+)$/i);
+    const normalizedLine = line.replace(/\*\*/g, "");
+    const match = normalizedLine.match(/(?:^|\s)(?:[-*]\s*)?(?:(?:V(?:olume)?\s*\d+\s*[-_:])?KR\s*[-_#:]?\s*(\d+)|Key Result\s*(\d+)|关键结果\s*(\d+))\s*[：:.)-]?\s*(.+)$/i);
     if (!match) continue;
     const index = Number(match[1] ?? match[2] ?? match[3]);
     const text = cleanLine(match[4] ?? "");
