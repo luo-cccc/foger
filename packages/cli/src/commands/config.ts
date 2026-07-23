@@ -2,7 +2,13 @@ import { Command } from "commander";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { findProjectRoot, loadConfigWithDiagnostics, log, logError, GLOBAL_CONFIG_DIR, GLOBAL_ENV_PATH } from "../utils.js";
-import { KNOWN_MODEL_ROUTING_AGENTS, listModelsForService, mutateProjectConfig } from "@actalk/inkos-core";
+import {
+  CONTENT_POLICY_FALLBACK_AGENTS,
+  ContentPolicyFallbackConfigSchema,
+  KNOWN_MODEL_ROUTING_AGENTS,
+  listModelsForService,
+  mutateProjectConfig,
+} from "@actalk/inkos-core";
 import { formatListModelsEmpty, formatListModelsHeader, resolveCliLanguage } from "../localization.js";
 
 export const configCommand = new Command("config")
@@ -257,6 +263,84 @@ configCommand
   });
 
 configCommand
+  .command("set-content-policy-fallback")
+  .description("Configure a one-shot cross-provider fallback for governance agents")
+  .argument("<model>", "Fallback model name")
+  .requiredOption("--service <service>", "Fallback service name")
+  .requiredOption("--base-url <url>", "Fallback API base URL")
+  .requiredOption("--api-key-env <envVar>", "Environment variable name for the fallback API key")
+  .option("--provider <provider>", "Provider type (openai / anthropic / custom)", "custom")
+  .option("--api-format <format>", "API format (chat / responses)", "chat")
+  .option("--agents <agents>", "Comma-separated governance agents", CONTENT_POLICY_FALLBACK_AGENTS.join(","))
+  .option("--stream", "Enable streaming (default)")
+  .option("--no-stream", "Disable streaming")
+  .action(async (model: string, opts: {
+    service: string;
+    baseUrl: string;
+    apiKeyEnv: string;
+    provider: string;
+    apiFormat: string;
+    agents: string;
+    stream?: boolean;
+  }) => {
+    const validationError = validateApiKeyEnvName(opts.apiKeyEnv);
+    if (validationError) {
+      logError(validationError);
+      process.exit(1);
+    }
+
+    const agents = opts.agents.split(",").map((agent) => agent.trim()).filter(Boolean);
+    let fallback: ReturnType<typeof ContentPolicyFallbackConfigSchema.parse>;
+    try {
+      fallback = ContentPolicyFallbackConfigSchema.parse({
+        model,
+        service: opts.service,
+        baseUrl: opts.baseUrl,
+        apiKeyEnv: opts.apiKeyEnv,
+        provider: opts.provider,
+        apiFormat: opts.apiFormat,
+        stream: opts.stream ?? true,
+        agents,
+      });
+    } catch (error) {
+      logError(`Invalid content-policy fallback: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+      return;
+    }
+
+    const root = findProjectRoot();
+    try {
+      await mutateProjectConfig(root, (config) => {
+        config.contentPolicyFallback = fallback;
+      });
+      log(
+        `Content-policy fallback: ${fallback.service}/${fallback.model} for ${fallback.agents.join(", ")}`,
+      );
+    } catch (error) {
+      logError(`Failed to update config: ${error}`);
+      process.exit(1);
+    }
+  });
+
+configCommand
+  .command("remove-content-policy-fallback")
+  .description("Disable the configured content-policy fallback")
+  .action(async () => {
+    const root = findProjectRoot();
+    try {
+      const removed = await mutateProjectConfig(root, (config) => {
+        if (!("contentPolicyFallback" in config)) return false;
+        delete config.contentPolicyFallback;
+        return true;
+      });
+      log(removed ? "Removed content-policy fallback." : "No content-policy fallback is configured.");
+    } catch (error) {
+      logError(`Failed to update config: ${error}`);
+      process.exit(1);
+    }
+  });
+
+configCommand
   .command("show-models")
   .description("Show model routing for all agents")
   .option("--json", "Output JSON")
@@ -270,6 +354,7 @@ configCommand
       const effective = await loadConfigWithDiagnostics({ requireApiKey: false, projectRoot: root });
       const defaultModel = effective.llm.model ?? config.llm?.model ?? "(not set)";
       const overrides: Record<string, unknown> = config.modelOverrides ?? {};
+      const contentPolicyFallback = config.contentPolicyFallback;
 
       if (opts.json) {
         log(JSON.stringify({
@@ -277,6 +362,7 @@ configCommand
           configMode: effective.diagnostics.configMode,
           modelSource: effective.diagnostics.modelSource,
           overrides,
+          contentPolicyFallback,
           knownAgents: KNOWN_MODEL_ROUTING_AGENTS,
         }, null, 2));
         return;
@@ -284,6 +370,13 @@ configCommand
 
       log(`Default model: ${defaultModel}`);
       log(`Config mode: ${effective.diagnostics.configMode} (model=${effective.diagnostics.modelSource})\n`);
+      if (contentPolicyFallback && typeof contentPolicyFallback === "object") {
+        const fallback = contentPolicyFallback as Record<string, unknown>;
+        log(
+          `Content-policy fallback: ${String(fallback.service)}/${String(fallback.model)} `
+          + `for ${Array.isArray(fallback.agents) ? fallback.agents.join(", ") : "configured agents"}`,
+        );
+      }
       if (Object.keys(overrides).length === 0) {
         log("No agent-specific overrides. All agents use the default model.");
         return;

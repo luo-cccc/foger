@@ -122,6 +122,14 @@ export function classifyLLMCallRootCause(call: ToolLLMCall): LLMRootCauseSummary
     );
   }
 
+  if (call.failureKind === "provider-content-policy") {
+    return createRootCause(
+      "content_policy",
+      "The provider rejected this input under its content or safety policy. InkOS will not retry the same sample on that provider.",
+      "上游服务按内容或安全策略拒绝了本次输入。InkOS 不会向同一服务重复发送这份样本。",
+    );
+  }
+
   if (/reasoning_content/.test(message)) {
     return createRootCause(
       "reasoning_content",

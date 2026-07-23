@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { atomicWriteJson } from "../utils/atomic-write.js";
+import { isProviderContentPolicyError } from "../llm/provider.js";
 
 export const UnattendedActionSchema = z.enum([
   "write",
@@ -18,6 +19,7 @@ export type UnattendedAction = z.infer<typeof UnattendedActionSchema>;
 export const UnattendedFailureKindSchema = z.enum([
   "provider-transient",
   "provider-auth",
+  "provider-content-policy",
   "timeout",
   "budget",
   "audit-local",
@@ -63,6 +65,8 @@ export const UnattendedBookStateSchema = z.object({
   consecutiveFailures: z.number().int().min(0),
   failureDimensions: z.record(z.number().int().min(0)).default({}),
   attemptsByAction: z.record(z.number().int().min(0)).default({}),
+  recoveryContentFingerprint: z.string().regex(/^[a-f0-9]{24}$/).optional(),
+  attemptsForContent: z.record(z.number().int().min(0)).default({}),
   lastChapterNumber: z.number().int().min(0).optional(),
   lastFailureKind: UnattendedFailureKindSchema.optional(),
   lastError: z.string().optional(),
@@ -95,6 +99,7 @@ export function createEmptyUnattendedState(now: Date = new Date()): UnattendedSc
 }
 
 export function classifyUnattendedError(error: unknown): UnattendedFailureKind {
+  if (isProviderContentPolicyError(error)) return "provider-content-policy";
   const text = error instanceof Error
     ? `${error.name} ${error.message} ${String(error.cause ?? "")}`
     : String(error);

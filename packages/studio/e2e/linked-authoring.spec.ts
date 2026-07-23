@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { expect, test, type APIRequestContext, type Page, type TestInfo } from "@playwright/test";
+import {
+  decideChapterRecovery,
+  type ChapterRecoveryIssue,
+} from "@actalk/inkos-core";
 import { writeLinkedReportCheckpoint } from "../scripts/linked-report.mjs";
 
 const LINKED_EVENT_NAMES = [
@@ -48,6 +52,10 @@ interface LinkedChapterSnapshot {
   readonly operationId?: string;
   readonly auditIssues?: ReadonlyArray<string>;
   readonly lengthWarnings?: ReadonlyArray<string>;
+  readonly recoveryState?: {
+    readonly contentFingerprint: string;
+    readonly blockingIssues: ReadonlyArray<ChapterRecoveryIssue>;
+  };
 }
 
 interface BookDetailResponse {
@@ -444,6 +452,31 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
       }
     }
 
+    if (!liveMode) {
+      const telemetry = report.chapters.flatMap((chapter) => chapter.telemetry);
+      const rejection = telemetry.find((entry) => entry.failureKind === "provider-content-policy");
+      expect(rejection).toMatchObject({
+        agent: "settler",
+        service: "custom",
+        status: "error",
+        attemptCount: 1,
+        retryCount: 0,
+      });
+      const fallback = telemetry.find((entry) =>
+        entry.route === "content-policy-fallback" && entry.status === "success"
+      );
+      expect(fallback).toMatchObject({
+        operationId: rejection?.operationId,
+        agent: "settler",
+        service: "custom:Fallback",
+        model: "stub-fallback-model",
+        fallbackFrom: {
+          service: "custom",
+          failureKind: "provider-content-policy",
+        },
+      });
+    }
+
     stage = "complete";
     report.linkedGate = buildLinkedGate(report, requestedChapters);
     report.qualityGate = buildQualityGate(report.chapters, wordsPerChapter, qualityPolicy);
@@ -587,25 +620,42 @@ async function recoverReportOnlyChapter(params: {
   ) => Promise<void>;
 }): Promise<LinkedChapterSnapshot> {
   let chapter = params.chapter;
+  const globalAttempts: Record<string, number> = {};
+  const attemptsByContent = new Map<string, Record<string, number>>();
 
-  const recoverState = async (): Promise<void> => {
-    if (chapter.status !== "state-degraded") return;
-    chapter = await runAsyncRecoveryAction({ ...params, chapter, kind: "repair-state" });
-    if (chapter.status === "state-degraded") {
-      chapter = await runAsyncRecoveryAction({ ...params, chapter, kind: "resync" });
+  for (let step = 0; step < 8; step += 1) {
+    if (chapter.status !== "state-degraded" && chapter.status !== "audit-failed") {
+      return chapter;
     }
-  };
 
-  await recoverState();
-  if (chapter.status === "audit-failed") {
-    chapter = await runRevisionRecoveryAction(params, chapter);
-    if (chapter.status === "audit-failed") {
-      chapter = await runAsyncRecoveryAction({ ...params, chapter, kind: "rewrite" });
-      await recoverState();
+    const fingerprint = chapter.recoveryState?.contentFingerprint
+      ?? `${chapter.operationId ?? "legacy"}:${chapter.number}:${chapter.wordCount}`;
+    const currentContentAttempts = attemptsByContent.get(fingerprint) ?? {};
+    const decision = decideChapterRecovery({
+      status: chapter.status,
+      issues: chapter.recoveryState?.blockingIssues,
+      attempts: {
+        global: globalAttempts,
+        currentContent: currentContentAttempts,
+      },
+    });
+    if (decision.action === "pause") return chapter;
+
+    globalAttempts[decision.action] = (globalAttempts[decision.action] ?? 0) + 1;
+    currentContentAttempts[decision.action] = (currentContentAttempts[decision.action] ?? 0) + 1;
+    attemptsByContent.set(fingerprint, currentContentAttempts);
+
+    if (decision.action === "revise") {
+      chapter = await runRevisionRecoveryAction(params, chapter);
+      continue;
     }
+    const kind: Exclude<LinkedRecoveryKind, "revise"> = decision.action === "resync-state"
+      ? "resync"
+      : decision.action;
+    chapter = await runAsyncRecoveryAction({ ...params, chapter, kind });
   }
 
-  return chapter;
+  throw new Error(`Chapter ${chapter.number} recovery exceeded the bounded decision loop.`);
 }
 
 async function runRevisionRecoveryAction(
@@ -1055,6 +1105,9 @@ function sanitizeTelemetry(entry: Record<string, unknown>): Record<string, unkno
     totalTokens: entry.totalTokens,
     promptEstimatedTokens: entry.promptEstimatedTokens,
     usageEstimated: entry.usageEstimated,
+    failureKind: entry.failureKind,
+    route: entry.route,
+    fallbackFrom: entry.fallbackFrom,
     attemptCount: entry.attemptCount,
     retryCount: entry.retryCount,
     errorMessage: entry.errorMessage,

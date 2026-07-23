@@ -13,6 +13,7 @@ const report = {
   processKillInjected: false,
   timeoutInjected: false,
   restartRecovered: false,
+  recoveryRuns: 0,
   finalChapterCount: 0,
   readyChapterCount: 0,
   snapshots: 0,
@@ -35,10 +36,21 @@ try {
   assert(timedOutBook?.status === "retry-wait", `Expected retry-wait after timeout, got ${timedOutBook?.status}`);
   report.timeoutInjected = true;
 
-  const completed = JSON.parse(await runWorker(
-    ["run", root, bookId, String(targetChapters), "0", "0"],
-    "UNATTENDED_RUN ",
-  ));
+  let completed;
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    completed = JSON.parse(await runWorker(
+      ["run", root, bookId, String(targetChapters), "0", "0"],
+      "UNATTENDED_RUN ",
+    ));
+    report.recoveryRuns = attempt;
+    if (
+      completed.after === targetChapters
+      && completed.statuses.every((status) => status === "ready-for-review")
+    ) {
+      break;
+    }
+  }
+  assert(completed, "Expected at least one unattended recovery run");
   report.finalChapterCount = completed.after;
   report.readyChapterCount = completed.statuses.filter((status) => status === "ready-for-review").length;
   report.snapshots = completed.snapshots;

@@ -36,15 +36,21 @@ export async function loadProjectConfig(
  * while keeping the secret out of inkos.json and preserving explicit env vars.
  */
 async function hydrateModelOverrideApiKeys(config: ProjectConfig, root: string): Promise<void> {
-  if (!config.modelOverrides) return;
+  if (!config.modelOverrides && !config.contentPolicyFallback) return;
 
   const secrets = await loadSecrets(root);
-  for (const value of Object.values(config.modelOverrides)) {
+  for (const value of Object.values(config.modelOverrides ?? {})) {
     if (typeof value === "string" || !value.apiKeyEnv) continue;
     if (process.env[value.apiKeyEnv]?.trim()) continue;
 
     const service = value.service ?? config.llm.service;
     const apiKey = secrets.services[service]?.apiKey?.trim();
     if (apiKey) process.env[value.apiKeyEnv] = apiKey;
+  }
+
+  const fallback = config.contentPolicyFallback;
+  if (fallback && !process.env[fallback.apiKeyEnv]?.trim()) {
+    const apiKey = secrets.services[fallback.service]?.apiKey?.trim();
+    if (apiKey) process.env[fallback.apiKeyEnv] = apiKey;
   }
 }

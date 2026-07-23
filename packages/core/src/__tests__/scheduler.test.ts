@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Scheduler, type SchedulerConfig } from "../pipeline/scheduler.js";
@@ -9,8 +9,12 @@ import {
   UnattendedStateStore,
   type UnattendedBookState,
 } from "../pipeline/unattended-state.js";
-import type { LLMCallTelemetry } from "../llm/provider.js";
+import { ProviderContentPolicyError, type LLMCallTelemetry } from "../llm/provider.js";
 import type { PipelineDiagnostic } from "../pipeline/diagnostics.js";
+import {
+  buildChapterRecoveryState,
+  fingerprintChapterContent,
+} from "../pipeline/chapter-recovery-policy.js";
 
 function createConfig(): SchedulerConfig {
   return {
@@ -242,6 +246,35 @@ describe("Scheduler", () => {
     }
   });
 
+  it("pauses instead of scheduling the same provider sample after a content-policy rejection", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-unattended-content-policy-"));
+    const scheduler = new Scheduler({ ...createConfig(), projectRoot: root });
+    const book = createBook("policy-book");
+    vi.spyOn(
+      (scheduler as unknown as {
+        pipeline: { writeNextChapter: () => Promise<unknown> };
+      }).pipeline,
+      "writeNextChapter",
+    ).mockRejectedValue(new ProviderContentPolicyError({ service: "ark", model: "model-a" }));
+
+    try {
+      const success = await (scheduler as unknown as {
+        writeOneChapter: (bookId: string, config: BookConfig) => Promise<boolean>;
+      }).writeOneChapter(book.id, book);
+
+      expect(success).toBe(false);
+      expect(scheduler.isBookPaused(book.id)).toBe(true);
+      const persisted = await new UnattendedStateStore(root).load();
+      expect(persisted.books[book.id]).toMatchObject({
+        status: "paused",
+        action: "pause",
+        lastFailureKind: "provider-content-policy",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("persists transient provider overloads and restores retry state", async () => {
     const root = await mkdtemp(join(tmpdir(), "inkos-unattended-overload-"));
     const config = { ...createConfig(), projectRoot: root, retryDelayMs: 30_000 };
@@ -287,8 +320,7 @@ describe("Scheduler", () => {
     const root = await mkdtemp(join(tmpdir(), "inkos-unattended-revise-"));
     const state = new StateManager(root);
     const book = createBook("book-1");
-    await state.saveBookConfig(book.id, book);
-    await state.saveChapterIndex(book.id, [createChapterMeta("audit-failed")]);
+    await seedPendingChapter(state, book, "audit-failed");
     const onChapterComplete = vi.fn();
     const scheduler = new Scheduler({ ...createConfig(), projectRoot: root, onChapterComplete });
     const pipeline = (scheduler as unknown as {
@@ -324,8 +356,7 @@ describe("Scheduler", () => {
     const root = await mkdtemp(join(tmpdir(), "inkos-unattended-resync-"));
     const state = new StateManager(root);
     const book = createBook("book-1");
-    await state.saveBookConfig(book.id, book);
-    await state.saveChapterIndex(book.id, [createChapterMeta("state-degraded")]);
+    await seedPendingChapter(state, book, "state-degraded");
     const scheduler = new Scheduler({ ...createConfig(), projectRoot: root });
     const pipeline = (scheduler as unknown as {
       pipeline: {
@@ -356,12 +387,136 @@ describe("Scheduler", () => {
     }
   });
 
+  it("routes persisted structural evidence directly to one rewrite", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-unattended-structural-rewrite-"));
+    const state = new StateManager(root);
+    const book = createBook("book-1");
+    await seedPendingChapter(state, book, "audit-failed");
+    const content = "Persisted chapter body.";
+    const index = await state.loadChapterIndex(book.id);
+    await state.saveChapterIndex(book.id, index.map((chapter) => ({
+      ...chapter,
+      recoveryState: buildChapterRecoveryState({
+        content,
+        issues: [{
+          severity: "critical",
+          category: "causal-structure",
+          description: "The conflict resolves without its required cause.",
+          suggestion: "Rebuild the causal sequence.",
+          repairScope: "structural",
+        }],
+      }),
+    })));
+    const scheduler = new Scheduler({ ...createConfig(), projectRoot: root });
+    const pipeline = (scheduler as unknown as {
+      pipeline: {
+        reviseDraft: (...args: unknown[]) => Promise<unknown>;
+        rewriteChapter: (...args: unknown[]) => Promise<unknown>;
+      };
+    }).pipeline;
+    const revise = vi.spyOn(pipeline, "reviseDraft");
+    const rewrite = vi.spyOn(pipeline, "rewriteChapter").mockResolvedValue(
+      createPipelineResult("ready-for-review"),
+    );
+
+    try {
+      const success = await (scheduler as unknown as {
+        writeOneChapter: (bookId: string, config: BookConfig) => Promise<boolean>;
+      }).writeOneChapter(book.id, book);
+
+      expect(success).toBe(true);
+      expect(rewrite).toHaveBeenCalledWith(book.id, 1, book.chapterWordCount);
+      expect(revise).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("persists rewrite as the next action when a bounded revision is unchanged", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-unattended-revision-escalation-"));
+    const state = new StateManager(root);
+    const book = createBook("book-1");
+    await seedPendingChapter(state, book, "audit-failed");
+    const scheduler = new Scheduler({ ...createConfig(), projectRoot: root });
+    const pipeline = (scheduler as unknown as {
+      pipeline: { reviseDraft: (...args: unknown[]) => Promise<unknown> };
+    }).pipeline;
+    vi.spyOn(pipeline, "reviseDraft").mockResolvedValue({
+      chapterNumber: 1,
+      wordCount: 1000,
+      fixedIssues: [],
+      applied: false,
+      status: "unchanged",
+      skippedReason: "revision did not improve the chapter",
+    });
+
+    try {
+      const success = await (scheduler as unknown as {
+        writeOneChapter: (bookId: string, config: BookConfig) => Promise<boolean>;
+      }).writeOneChapter(book.id, book);
+
+      expect(success).toBe(false);
+      const persisted = await new UnattendedStateStore(root).load();
+      expect(persisted.books[book.id]).toMatchObject({
+        status: "retry-wait",
+        action: "rewrite",
+        attemptsByAction: { revise: 1 },
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("pauses without another provider call after repair and resync were attempted for the same body", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-unattended-state-convergence-"));
+    const state = new StateManager(root);
+    const book = createBook("book-1");
+    await seedPendingChapter(state, book, "state-degraded");
+    const scheduler = new Scheduler({ ...createConfig(), projectRoot: root });
+    const fingerprint = fingerprintChapterContent("Persisted chapter body.");
+    const internal = scheduler as unknown as {
+      unattendedBooks: Map<string, UnattendedBookState>;
+      pipeline: {
+        repairChapterState: (...args: unknown[]) => Promise<unknown>;
+        resyncChapterArtifacts: (...args: unknown[]) => Promise<unknown>;
+      };
+      writeOneChapter: (bookId: string, config: BookConfig) => Promise<boolean>;
+    };
+    internal.unattendedBooks.set(book.id, {
+      status: "retry-wait",
+      action: "resync-state",
+      consecutiveFailures: 1,
+      failureDimensions: {},
+      attemptsByAction: { "repair-state": 1, "resync-state": 1 },
+      recoveryContentFingerprint: fingerprint,
+      attemptsForContent: { "repair-state": 1, "resync-state": 1 },
+      lastChapterNumber: 1,
+      updatedAt: "2026-04-01T00:00:00.000Z",
+    });
+    const repair = vi.spyOn(internal.pipeline, "repairChapterState");
+    const resync = vi.spyOn(internal.pipeline, "resyncChapterArtifacts");
+
+    try {
+      expect(await internal.writeOneChapter(book.id, book)).toBe(false);
+      expect(repair).not.toHaveBeenCalled();
+      expect(resync).not.toHaveBeenCalled();
+      expect(scheduler.isBookPaused(book.id)).toBe(true);
+      const persisted = await new UnattendedStateStore(root).load();
+      expect(persisted.books[book.id]).toMatchObject({
+        status: "paused",
+        action: "pause",
+        lastFailureKind: "state-degraded",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("pauses before state recovery when the persisted settlement budget is exhausted", async () => {
     const root = await mkdtemp(join(tmpdir(), "inkos-unattended-settlement-budget-"));
     const state = new StateManager(root);
     const book = createBook("book-1");
-    await state.saveBookConfig(book.id, book);
-    await state.saveChapterIndex(book.id, [createChapterMeta("state-degraded")]);
+    await seedPendingChapter(state, book, "state-degraded");
     const onChapterComplete = vi.fn();
     const scheduler = new Scheduler({
       ...createConfig(),
@@ -379,6 +534,7 @@ describe("Scheduler", () => {
       consecutiveFailures: 1,
       failureDimensions: { "state-validation": 1 },
       attemptsByAction: {},
+      attemptsForContent: {},
       lastChapterNumber: 1,
       currentMetrics: {
         calls: 8,
@@ -424,8 +580,7 @@ describe("Scheduler", () => {
     const root = await mkdtemp(join(tmpdir(), "inkos-unattended-recovery-budget-"));
     const state = new StateManager(root);
     const book = createBook("book-1");
-    await state.saveBookConfig(book.id, book);
-    await state.saveChapterIndex(book.id, [createChapterMeta("state-degraded")]);
+    await seedPendingChapter(state, book, "state-degraded");
     const onChapterComplete = vi.fn();
     const scheduler = new Scheduler({
       ...createConfig(),
@@ -548,6 +703,13 @@ describe("classifyUnattendedError", () => {
       new Error("无法连接到 API 服务。网络不通或被防火墙拦截"),
     )).toBe("provider-transient");
   });
+
+  it("classifies provider content-policy rejection separately from auth and transient errors", async () => {
+    const { classifyUnattendedError } = await import("../pipeline/unattended-state.js");
+    expect(classifyUnattendedError(
+      new Error("400 The request failed because the input may contain sensitive information."),
+    )).toBe("provider-content-policy");
+  });
 });
 
 function createBook(id: string): BookConfig {
@@ -575,6 +737,24 @@ function createChapterMeta(status: "audit-failed" | "state-degraded") {
     auditIssues: [],
     lengthWarnings: [],
   };
+}
+
+async function seedPendingChapter(
+  state: StateManager,
+  book: BookConfig,
+  status: "audit-failed" | "state-degraded",
+): Promise<void> {
+  const chaptersDir = join(state.bookDir(book.id), "chapters");
+  await mkdir(chaptersDir, { recursive: true });
+  await Promise.all([
+    state.saveBookConfig(book.id, book),
+    state.saveChapterIndex(book.id, [createChapterMeta(status)]),
+    writeFile(
+      join(chaptersDir, "0001_Chapter_1.md"),
+      "# Chapter 1\n\nPersisted chapter body.",
+      "utf-8",
+    ),
+  ]);
 }
 
 function createPipelineResult(status: "ready-for-review" | "state-degraded") {

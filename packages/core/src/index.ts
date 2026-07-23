@@ -119,6 +119,7 @@ export * from './llm/service-resolver.js';
 export * from './llm/think-tag-stripper.js';
 export * from './pipeline/diagnostics.js';
 export * from './pipeline/chapter-quality-gate.js';
+export * from './pipeline/chapter-recovery-policy.js';
 export * from './models/book-rules.js';
 export * from './models/book.js';
 export * from "./models/canon.js";

@@ -11,6 +11,12 @@ import type { ChapterMeta } from "../models/chapter.js";
 import type { LLMCallTelemetry } from "../llm/provider.js";
 import type { PipelineDiagnostic } from "./diagnostics.js";
 import {
+  auditIssuesFromChapterRecovery,
+  decideChapterRecovery,
+  fingerprintChapterContent,
+  type ChapterRecoveryAction,
+} from "./chapter-recovery-policy.js";
+import {
   classifyUnattendedError,
   createEmptyUnattendedState,
   UnattendedStateStore,
@@ -168,6 +174,7 @@ export class Scheduler {
       consecutiveFailures: 0,
       failureDimensions: {},
       attemptsByAction: {},
+      attemptsForContent: {},
       updatedAt: now,
     });
     void this.persistUnattendedState().catch((error) => {
@@ -224,6 +231,7 @@ export class Scheduler {
       consecutiveFailures: 0,
       failureDimensions: {},
       attemptsByAction: {},
+      attemptsForContent: {},
       ...current,
       ...patch,
       updatedAt: new Date().toISOString(),
@@ -233,11 +241,50 @@ export class Scheduler {
     return next;
   }
 
-  private async markActionAttempt(bookId: string, action: UnattendedAction): Promise<void> {
+  private async markActionAttempt(
+    bookId: string,
+    action: UnattendedAction,
+    contentFingerprint?: string,
+  ): Promise<void> {
     const current = this.unattendedBooks.get(bookId);
     const attemptsByAction = { ...(current?.attemptsByAction ?? {}) };
     attemptsByAction[action] = (attemptsByAction[action] ?? 0) + 1;
-    await this.updateUnattendedBook(bookId, { action, attemptsByAction });
+    const sameContent = contentFingerprint !== undefined
+      && current?.recoveryContentFingerprint === contentFingerprint;
+    const attemptsForContent = sameContent
+      ? { ...(current?.attemptsForContent ?? {}) }
+      : {};
+    if (contentFingerprint) {
+      attemptsForContent[action] = (attemptsForContent[action] ?? 0) + 1;
+    }
+    await this.updateUnattendedBook(bookId, {
+      action,
+      attemptsByAction,
+      ...(contentFingerprint
+        ? { recoveryContentFingerprint: contentFingerprint, attemptsForContent }
+        : {}),
+    });
+  }
+
+  private recoveryDecision(
+    bookId: string,
+    status: "state-degraded" | "audit-failed",
+    issues: ReadonlyArray<AuditIssue>,
+    contentFingerprint?: string,
+  ) {
+    const current = this.unattendedBooks.get(bookId);
+    const currentContent = contentFingerprint !== undefined
+      && current?.recoveryContentFingerprint === contentFingerprint
+      ? current.attemptsForContent
+      : {};
+    return decideChapterRecovery({
+      status,
+      issues,
+      attempts: {
+        global: current?.attemptsByAction,
+        currentContent,
+      },
+    });
   }
 
   private retryWaitMs(bookId: string): number {
@@ -609,7 +656,9 @@ export class Scheduler {
         const kind = classifyUnattendedError(e);
         await this.handleAuditFailure(bookId, chapterNumber, [], {
           kind,
-          action: kind === "provider-auth" || kind === "budget" ? "pause" : "retry-provider",
+          action: kind === "provider-auth" || kind === "provider-content-policy" || kind === "budget"
+            ? "pause"
+            : "retry-provider",
           error: e instanceof Error ? e.message : String(e),
         });
       }
@@ -647,86 +696,178 @@ export class Scheduler {
     bookConfig: BookConfig,
     chapter: ChapterMeta,
   ): Promise<boolean> {
-    if (chapter.status === "state-degraded") {
-      await this.markActionAttempt(bookId, "repair-state");
-      let repaired = await this.pipeline.repairChapterState(bookId, chapter.number);
-      if (repaired.status === "state-degraded") {
-        await this.markActionAttempt(bookId, "resync-state");
-        repaired = await this.pipeline.resyncChapterArtifacts(bookId, chapter.number);
-      }
-      if (repaired.status === "ready-for-review") {
-        return await this.completeChapter(
-          bookId,
-          bookConfig,
-          chapter.number,
-          (repaired.lengthWarnings?.length ?? 0) === 0,
-        );
-      }
+    let current = chapter;
+    let content = await this.readChapterContent(this.state.bookDir(bookId), chapter.number);
+    let fingerprint = fingerprintChapterContent(content);
+    let issues: ReadonlyArray<AuditIssue> = auditIssuesFromChapterRecovery(current, content);
 
-      await this.captureBookMetrics(bookId, (repaired.lengthWarnings?.length ?? 0) === 0);
-      const classification = repaired.status === "audit-failed"
-        ? this.classifyAuditIssues(repaired.auditResult.issues)
-        : { kind: "state-degraded" as const, action: "repair-state" as const };
-      await this.handleAuditFailure(
-        bookId,
-        chapter.number,
-        repaired.auditResult.issues.map((issue) => issue.category),
-        classification,
-      );
-      this.config.onChapterComplete?.(bookId, chapter.number, repaired.status);
+    if (current.status === "state-degraded") {
+      for (;;) {
+        const decision = this.recoveryDecision(
+          bookId,
+          "state-degraded",
+          issues,
+          fingerprint,
+        );
+        if (decision.action === "pause") {
+          await this.pauseForRecoveryDecision(bookId, current, issues, decision);
+          return false;
+        }
+
+        const action: UnattendedAction = decision.action;
+        await this.markActionAttempt(bookId, action, fingerprint);
+        const repaired = action === "repair-state"
+          ? await this.pipeline.repairChapterState(bookId, current.number)
+          : await this.pipeline.resyncChapterArtifacts(bookId, current.number);
+        if (repaired.status === "ready-for-review") {
+          return await this.completeChapter(
+            bookId,
+            bookConfig,
+            current.number,
+            (repaired.lengthWarnings?.length ?? 0) === 0,
+          );
+        }
+
+        const refreshed = await this.loadChapterForRecovery(bookId, current.number);
+        current = refreshed.chapter;
+        content = refreshed.content;
+        fingerprint = refreshed.fingerprint;
+        issues = repaired.status === "audit-failed"
+          ? repaired.auditResult.issues
+          : auditIssuesFromChapterRecovery(current, content);
+
+        if (repaired.status === "audit-failed") {
+          await this.captureBookMetrics(bookId, (repaired.lengthWarnings?.length ?? 0) === 0);
+          const next = this.recoveryDecision(bookId, "audit-failed", issues, fingerprint);
+          await this.recordPendingRecoveryDecision(bookId, current, issues, next);
+          return false;
+        }
+      }
+    }
+
+    const decision = this.recoveryDecision(bookId, "audit-failed", issues, fingerprint);
+    if (decision.action === "pause") {
+      await this.pauseForRecoveryDecision(bookId, current, issues, decision);
       return false;
     }
 
-    const persistedAction = this.unattendedBooks.get(bookId)?.action;
-    const action: UnattendedAction = persistedAction === "rewrite" ? "rewrite" : "revise";
-    await this.markActionAttempt(bookId, action);
-
+    const action: UnattendedAction = decision.action;
+    await this.markActionAttempt(bookId, action, fingerprint);
     if (action === "rewrite") {
       const rewritten = await this.pipeline.rewriteChapter(
         bookId,
-        chapter.number,
+        current.number,
         bookConfig.chapterWordCount,
       );
       if (rewritten.status === "ready-for-review") {
         return await this.completeChapter(
           bookId,
           bookConfig,
-          chapter.number,
+          current.number,
           (rewritten.lengthWarnings?.length ?? 0) === 0,
         );
       }
       await this.captureBookMetrics(bookId, (rewritten.lengthWarnings?.length ?? 0) === 0);
-      const classification = rewritten.status === "state-degraded"
-        ? { kind: "state-degraded" as const, action: "repair-state" as const }
-        : this.classifyAuditIssues(rewritten.auditResult.issues);
-      await this.handleAuditFailure(
+      const refreshed = await this.loadChapterForRecovery(bookId, current.number);
+      const rewrittenIssues = rewritten.status === "audit-failed"
+        ? rewritten.auditResult.issues
+        : auditIssuesFromChapterRecovery(refreshed.chapter, refreshed.content);
+      const next = this.recoveryDecision(
         bookId,
-        chapter.number,
-        rewritten.auditResult.issues.map((issue) => issue.category),
-        classification,
+        rewritten.status,
+        rewrittenIssues,
+        refreshed.fingerprint,
       );
-      this.config.onChapterComplete?.(bookId, chapter.number, rewritten.status);
+      await this.recordPendingRecoveryDecision(bookId, refreshed.chapter, rewrittenIssues, next);
       return false;
     }
 
-    const revised = await this.pipeline.reviseDraft(bookId, chapter.number, "auto");
+    const revised = await this.pipeline.reviseDraft(bookId, current.number, "auto");
     if (revised.status === "ready-for-review") {
       return await this.completeChapter(
         bookId,
         bookConfig,
-        chapter.number,
+        current.number,
         (revised.lengthWarnings?.length ?? 0) === 0,
       );
     }
 
     await this.captureBookMetrics(bookId, (revised.lengthWarnings?.length ?? 0) === 0);
-    await this.handleAuditFailure(bookId, chapter.number, [], {
-      kind: "audit-unknown",
-      action: "rewrite",
-      error: revised.skippedReason,
-    });
-    this.config.onChapterComplete?.(bookId, chapter.number, "audit-failed");
+    const refreshed = await this.loadChapterForRecovery(bookId, current.number);
+    const nextStatus = refreshed.chapter.status === "state-degraded"
+      ? "state-degraded"
+      : "audit-failed";
+    const revisedIssues = auditIssuesFromChapterRecovery(refreshed.chapter, refreshed.content);
+    const next = this.recoveryDecision(
+      bookId,
+      nextStatus,
+      revisedIssues,
+      refreshed.fingerprint,
+    );
+    await this.recordPendingRecoveryDecision(
+      bookId,
+      refreshed.chapter,
+      revisedIssues,
+      revised.skippedReason ? { ...next, reason: `${next.reason} ${revised.skippedReason}` } : next,
+    );
     return false;
+  }
+
+  private async loadChapterForRecovery(bookId: string, chapterNumber: number): Promise<{
+    readonly chapter: ChapterMeta;
+    readonly content: string;
+    readonly fingerprint: string;
+  }> {
+    const chapter = (await this.state.loadChapterIndex(bookId))
+      .find((entry) => entry.number === chapterNumber);
+    if (!chapter) throw new Error(`Chapter ${chapterNumber} disappeared during recovery.`);
+    const content = await this.readChapterContent(this.state.bookDir(bookId), chapterNumber);
+    return { chapter, content, fingerprint: fingerprintChapterContent(content) };
+  }
+
+  private async recordPendingRecoveryDecision(
+    bookId: string,
+    chapter: ChapterMeta,
+    issues: ReadonlyArray<AuditIssue>,
+    decision: { readonly action: ChapterRecoveryAction; readonly reason: string },
+  ): Promise<void> {
+    if (decision.action === "pause") {
+      await this.pauseForRecoveryDecision(bookId, chapter, issues, decision);
+      return;
+    }
+    const classified = chapter.status === "state-degraded"
+      ? { kind: "state-degraded" as const }
+      : this.classifyAuditIssues(issues);
+    await this.handleAuditFailure(
+      bookId,
+      chapter.number,
+      issues.map((issue) => issue.category),
+      {
+        kind: classified.kind,
+        action: decision.action,
+        error: decision.reason,
+      },
+    );
+    this.config.onChapterComplete?.(bookId, chapter.number, chapter.status);
+  }
+
+  private async pauseForRecoveryDecision(
+    bookId: string,
+    chapter: ChapterMeta,
+    issues: ReadonlyArray<AuditIssue>,
+    decision: { readonly reason: string },
+  ): Promise<void> {
+    await this.captureBookMetrics(bookId).catch(() => undefined);
+    const kind = chapter.status === "state-degraded"
+      ? "state-degraded" as const
+      : this.classifyAuditIssues(issues).kind;
+    await this.handleAuditFailure(
+      bookId,
+      chapter.number,
+      issues.map((issue) => issue.category),
+      { kind, action: "pause", error: decision.reason },
+    );
+    this.config.onChapterComplete?.(bookId, chapter.number, chapter.status);
   }
 
   private async completeChapter(
@@ -755,6 +896,8 @@ export class Scheduler {
       consecutiveFailures: 0,
       failureDimensions: {},
       attemptsByAction: {},
+      recoveryContentFingerprint: undefined,
+      attemptsForContent: {},
       lastChapterNumber: chapterNumber,
       lastFailureKind: undefined,
       lastError: undefined,

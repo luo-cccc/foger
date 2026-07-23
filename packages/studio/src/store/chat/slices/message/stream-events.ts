@@ -67,6 +67,9 @@ interface LLMTelemetryEventPayload {
   readonly promptTokens?: number;
   readonly completionTokens?: number;
   readonly totalTokens?: number;
+  readonly failureKind?: "provider-content-policy";
+  readonly route?: "content-policy-fallback";
+  readonly fallbackFrom?: ToolLLMCall["fallbackFrom"];
   readonly partialContentLength?: number;
   readonly errorMessage?: string;
 }
@@ -108,6 +111,9 @@ function parseLLMTelemetryPayload(data: LLMTelemetryEventPayload | null): ToolLL
     promptTokens: numberOrZero(data.promptTokens),
     completionTokens: numberOrZero(data.completionTokens),
     totalTokens: numberOrZero(data.totalTokens),
+    ...(data.failureKind === "provider-content-policy" ? { failureKind: data.failureKind } : {}),
+    ...(data.route === "content-policy-fallback" ? { route: data.route } : {}),
+    ...(data.fallbackFrom ? { fallbackFrom: data.fallbackFrom } : {}),
     ...(typeof data.partialContentLength === "number" ? { partialContentLength: data.partialContentLength } : {}),
     ...(typeof data.errorMessage === "string" && data.errorMessage ? { errorMessage: data.errorMessage } : {}),
   };

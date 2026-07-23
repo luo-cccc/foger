@@ -15,6 +15,7 @@ const delayMs = Math.max(0, Number.parseInt(delayArg, 10) || 0);
 const timeoutMs = Math.max(0, Number.parseInt(timeoutArg, 10) || 0);
 
 process.env.INKOS_AGENT_LLM_STUB = "1";
+process.env.INKOS_AGENT_LLM_STUB_VOLUME_END_CHAPTER = String(targetChapters);
 if (delayMs > 0) process.env.INKOS_AGENT_LLM_STUB_DELAY_MS = String(delayMs);
 else delete process.env.INKOS_AGENT_LLM_STUB_DELAY_MS;
 
@@ -62,12 +63,14 @@ if (mode === "setup") {
   const state = new StateManager(root);
   const before = await state.loadChapterIndex(bookId);
   const remaining = Math.max(0, targetChapters - before.length);
-  if (remaining > 0) {
+  const latest = before.at(-1);
+  const hasPendingRecovery = latest?.status === "audit-failed" || latest?.status === "state-degraded";
+  if (remaining > 0 || hasPendingRecovery) {
     const scheduler = new Scheduler({
       ...pipelineConfig,
       writeCron: "0 0 * * *",
       maxConcurrentBooks: 1,
-      chaptersPerCycle: Math.min(20, remaining),
+      chaptersPerCycle: Math.min(20, Math.max(1, remaining)),
       retryDelayMs: 0,
       cooldownAfterChapterMs: 0,
       maxChaptersPerDay: targetChapters,

@@ -3,6 +3,7 @@ export type PipelineDiagnosticKind =
   | "planner-parse-retry"
   | "planner-fallback"
   | "canon-fallback"
+  | "content-policy-fallback"
   | "resync-analyzer-fallback";
 
 export interface PipelineDiagnostic {

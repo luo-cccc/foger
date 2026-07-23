@@ -479,6 +479,50 @@ describe("CLI integration", () => {
         await writeFile(configPath, originalConfig, "utf-8");
       }
     });
+
+    it("configures and removes an explicit governance content-policy fallback", async () => {
+      await stat(join(projectDir, "inkos.json")).catch(() => {
+        run(["init"]);
+      });
+      const configPath = join(projectDir, "inkos.json");
+      const originalConfig = await readFile(configPath, "utf-8");
+      try {
+        const output = run([
+          "config",
+          "set-content-policy-fallback",
+          "fallback-model",
+          "--service",
+          "fallback-service",
+          "--base-url",
+          "https://fallback.example/v1",
+          "--api-key-env",
+          "INKOS_FALLBACK_API_KEY",
+          "--agents",
+          "planner,settler,chapter-analyzer",
+          "--no-stream",
+        ]);
+        expect(output).toContain("fallback-service/fallback-model");
+
+        const configured = JSON.parse(await readFile(configPath, "utf-8"));
+        expect(configured.contentPolicyFallback).toMatchObject({
+          model: "fallback-model",
+          service: "fallback-service",
+          baseUrl: "https://fallback.example/v1",
+          apiKeyEnv: "INKOS_FALLBACK_API_KEY",
+          agents: ["planner", "settler", "chapter-analyzer"],
+          stream: false,
+        });
+        expect(JSON.parse(run(["config", "show-models", "--json"])).contentPolicyFallback)
+          .toMatchObject({ service: "fallback-service", model: "fallback-model" });
+
+        expect(run(["config", "remove-content-policy-fallback"]))
+          .toContain("Removed content-policy fallback");
+        const removed = JSON.parse(await readFile(configPath, "utf-8"));
+        expect(removed.contentPolicyFallback).toBeUndefined();
+      } finally {
+        await writeFile(configPath, originalConfig, "utf-8");
+      }
+    }, DOUBLE_CLI_INVOCATION_TEST_TIMEOUT_MS);
   });
 
   describe("inkos book list", () => {

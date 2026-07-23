@@ -42,6 +42,7 @@ describe("persistChapterArtifacts", () => {
     await persistChapterArtifacts({
       chapterNumber: 3,
       chapterTitle: "Chapter Title",
+      chapterContent: "Reviewable chapter content.",
       status: "ready-for-review",
       auditResult: createAuditResult({
         issues: [
@@ -50,6 +51,7 @@ describe("persistChapterArtifacts", () => {
           createIssue({ severity: "critical", description: "keep me too" }),
         ],
       }),
+      recoveryIssues: [],
       finalWordCount: 888,
       lengthWarnings: ["warn"],
       degradedIssues: [],
@@ -99,6 +101,11 @@ describe("persistChapterArtifacts", () => {
           configuredMaxRevisions: 2,
         },
         operationId: "550e8400-e29b-41d4-a716-446655440000",
+        recoveryState: expect.objectContaining({
+          version: 1,
+          blockingIssues: [],
+          sourceOperationId: "550e8400-e29b-41d4-a716-446655440000",
+        }),
       }),
     ]);
     expect(markBookActiveIfNeeded).toHaveBeenCalledTimes(1);
@@ -124,12 +131,14 @@ describe("persistChapterArtifacts", () => {
     await persistChapterArtifacts({
       chapterNumber: 2,
       chapterTitle: "Failed Chapter",
+      chapterContent: "Failed chapter content.",
       status: "audit-failed",
       auditResult: createAuditResult({
         passed: false,
         issues: [createIssue({ severity: "critical", description: "blocking issue" })],
         summary: "failed",
       }),
+      recoveryIssues: [createIssue({ severity: "critical", description: "blocking issue", repairScope: "structural" })],
       finalWordCount: 999,
       lengthWarnings: ["too long"],
       degradedIssues: [],
@@ -153,6 +162,13 @@ describe("persistChapterArtifacts", () => {
         number: 2,
         status: "audit-failed",
         auditIssues: ["[critical] blocking issue"],
+        recoveryState: expect.objectContaining({
+          blockingIssues: [expect.objectContaining({
+            severity: "critical",
+            description: "blocking issue",
+            repairScope: "structural",
+          })],
+        }),
       }),
     ]);
     expect(markBookActiveIfNeeded).not.toHaveBeenCalled();
@@ -177,12 +193,14 @@ describe("persistChapterArtifacts", () => {
     await persistChapterArtifacts({
       chapterNumber: 4,
       chapterTitle: "Degraded Chapter",
+      chapterContent: "Degraded chapter content.",
       status: "state-degraded",
       auditResult: createAuditResult({
         passed: false,
         issues: [createIssue({ description: "audit issue" })],
         summary: "needs review",
       }),
+      recoveryIssues: [],
       finalWordCount: 512,
       lengthWarnings: [],
       degradedIssues: [createIssue({ description: "state mismatch" })],
@@ -238,8 +256,10 @@ describe("persistChapterArtifacts", () => {
     await persistChapterArtifacts({
       chapterNumber: 1,
       chapterTitle: "New Title",
+      chapterContent: "Replacement chapter content.",
       status: "ready-for-review",
       auditResult: createAuditResult(),
+      recoveryIssues: [],
       finalWordCount: 2000,
       lengthWarnings: [],
       degradedIssues: [],

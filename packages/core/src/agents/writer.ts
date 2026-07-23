@@ -40,7 +40,6 @@ import { parseCreativeOutput } from "./writer-parser.js";
 import { buildRuntimeStateArtifacts, saveRuntimeStateSnapshot, type RuntimeStateArtifacts } from "../state/runtime-state-store.js";
 import type { RuntimeStateSnapshot } from "../state/state-reducer.js";
 import {
-  chatCompletion,
   estimateTextTokens,
   type LLMMessage,
   type LLMPromptSourceInput,
@@ -173,16 +172,12 @@ export class WriterAgent extends BaseAgent {
     if (!this.settlerCtx) {
       return this.chat(messages, options);
     }
-    return chatCompletion(this.settlerCtx.client, this.settlerCtx.model, messages, {
+    const settlerContext = this.settlerCtx.maxPromptEstimatedTokens === undefined
+      ? { ...this.settlerCtx, maxPromptEstimatedTokens: this.ctx.maxPromptEstimatedTokens }
+      : this.settlerCtx;
+    return this.chatWithContext(settlerContext, "settler", messages, {
       ...options,
-      agentName: "settler",
       callPhase: options?.callPhase ?? "settle",
-      onStreamProgress: this.settlerCtx.onStreamProgress,
-      onCallTelemetry: this.settlerCtx.onCallTelemetry,
-      timeoutMs: this.settlerCtx.defaultTimeoutMs,
-      maxPromptEstimatedTokens:
-        this.settlerCtx.maxPromptEstimatedTokens ?? this.ctx.maxPromptEstimatedTokens,
-      signal: this.settlerCtx.signal,
     });
   }
 

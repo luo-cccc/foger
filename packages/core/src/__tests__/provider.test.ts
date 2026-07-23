@@ -3,6 +3,7 @@ import type { AssistantMessage, Model, Api } from "@mariozechner/pi-ai";
 import {
   __resetFixedTemperatureWarnings,
   chatCompletion,
+  classifyLLMFailure,
   isTransientLLMHttpError,
   type LLMCallTelemetry,
   type LLMClient,
@@ -11,6 +12,22 @@ import {
 describe("transient provider error classification", () => {
   it("treats provider-specific 529 overload responses as retryable", () => {
     expect(isTransientLLMHttpError(new Error("529 当前服务集群负载较高，请稍后重试"))).toBe(true);
+  });
+
+  it("classifies the real Ark sensitive-input rejection without making it transient", () => {
+    const error = new Error("400 The request failed because the input may contain sensitive information.");
+    expect(classifyLLMFailure(error)).toBe("provider-content-policy");
+    expect(isTransientLLMHttpError(error)).toBe(false);
+  });
+
+  it("finds content-policy detail carried only in a provider error body", () => {
+    const error = Object.assign(new Error("400 Bad Request"), {
+      body: {
+        code: "InvalidParameter",
+        message: "The request failed because the input may contain sensitive information.",
+      },
+    });
+    expect(classifyLLMFailure(error)).toBe("provider-content-policy");
   });
 });
 

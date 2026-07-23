@@ -3803,6 +3803,56 @@ describe("PipelineRunner", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it("routes an unchanged audit-passed body to state recovery when its snapshot is missing", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "legacy",
+    });
+    const now = "2026-03-19T00:00:00.000Z";
+    const chaptersDir = join(state.bookDir(bookId), "chapters");
+    const content = "Lin Yue checks the sealed ferry ledger against the token in his coat before crossing the gate.";
+
+    await Promise.all([
+      state.saveChapterIndex(bookId, [{
+        number: 1,
+        title: "Recovered Audit",
+        status: "audit-failed" as ChapterMeta["status"],
+        wordCount: content.length,
+        createdAt: now,
+        updatedAt: now,
+        auditIssues: ["[critical] stale false positive"],
+        lengthWarnings: [],
+      }]),
+      writeFile(
+        join(chaptersDir, "0001_Recovered_Audit.md"),
+        `# 第1章 Recovered Audit\n\n${content}`,
+        "utf-8",
+      ),
+    ]);
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(
+      createAuditResult({ passed: true, issues: [], summary: "audit recovered" }),
+    );
+
+    const result = await runner.reviseDraft(bookId, 1, "auto");
+    const savedIndex = await state.loadChapterIndex(bookId);
+
+    expect(result).toMatchObject({
+      applied: false,
+      status: "state-degraded",
+    });
+    expect(savedIndex[0]).toMatchObject({
+      status: "state-degraded",
+      auditIssues: [expect.stringContaining("重新审计已通过")],
+      recoveryState: {
+        version: 1,
+        blockingIssues: [],
+        terminationReason: "re-audit-passed-without-revision",
+      },
+    });
+    expect(savedIndex[0]?.reviewNote).toContain('"baseStatus":"ready-for-review"');
+
+    await rm(root, { recursive: true, force: true });
+  });
+
   it("repairs the latest state-degraded chapter from persisted body without rewriting it", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture({
       inputGovernanceMode: "legacy",
@@ -4192,6 +4242,7 @@ describe("PipelineRunner", () => {
         resyncChapterArtifacts: (bookId: string, chapterNumber?: number) => Promise<{
           status: string;
           chapterNumber: number;
+          auditResult: AuditResult;
         }>;
       }
     ).resyncChapterArtifacts(bookId, 1);
@@ -4217,6 +4268,13 @@ describe("PipelineRunner", () => {
     expect(savedIndex[0]?.status).toBe(expectedStatus);
     if (initialStatus === "audit-failed") {
       expect(savedIndex[0]?.auditIssues).toContain("[critical] unresolved continuity issue");
+      expect(result.auditResult.issues).toEqual([
+        expect.objectContaining({
+          severity: "critical",
+          category: "persisted-audit",
+          description: "unresolved continuity issue",
+        }),
+      ]);
     }
 
     await rm(root, { recursive: true, force: true });

@@ -29,6 +29,13 @@ export interface ToolLLMCall {
   readonly promptTokens: number;
   readonly completionTokens: number;
   readonly totalTokens: number;
+  readonly failureKind?: "provider-content-policy";
+  readonly route?: "content-policy-fallback";
+  readonly fallbackFrom?: {
+    readonly service: string;
+    readonly model: string;
+    readonly failureKind: "provider-content-policy";
+  };
   readonly partialContentLength?: number;
   readonly errorMessage?: string;
 }

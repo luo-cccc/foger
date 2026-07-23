@@ -126,6 +126,9 @@ const child = spawn(process.execPath, [pnpmCli, "exec", "playwright", "test", ..
     INKOS_LINKED_QUALITY_POLICY: linkedQualityPolicy,
     INKOS_LINKED_CREATE_ATTEMPTS: String(linkedCreateAttempts),
     INKOS_LINKED_WRITE_ATTEMPTS: String(linkedWriteAttempts),
+    INKOS_AGENT_LLM_STUB_CONTENT_POLICY_ONCE: linkedRun && !linkedLive
+      ? "settler|custom"
+      : "",
     INKOS_MAX_PROMPT_ESTIMATED_TOKENS_PER_CALL: String(linkedMaxPromptTokensPerCall),
     INKOS_E2E_LAUNCHER_PID: String(process.pid),
     INKOS_STUDIO_PORT: String(apiPort),

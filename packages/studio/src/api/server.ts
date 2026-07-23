@@ -2019,6 +2019,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
       chapterReviewMode,
       revisionGate,
       modelOverrides: currentConfig.modelOverrides,
+      contentPolicyFallback: currentConfig.contentPolicyFallback,
       notifyChannels: currentConfig.notify,
       logger,
       onContextCompression: (event) => {
@@ -2055,6 +2056,9 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
           totalTokens: telemetry.usage.totalTokens,
           promptEstimatedTokens: telemetry.promptAssembly.estimatedTokens,
           usageEstimated: telemetry.usageEstimated ?? false,
+          failureKind: telemetry.failureKind,
+          route: telemetry.route,
+          fallbackFrom: telemetry.fallbackFrom,
           partialContentLength: telemetry.partialContentLength,
           errorMessage: telemetry.errorMessage,
         });

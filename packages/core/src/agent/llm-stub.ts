@@ -440,6 +440,33 @@ function looksLikeWriterPrompt(joined: string): boolean {
     && /PRE_WRITE_CHECK|CHAPTER_CONTENT|写作自检/.test(joined);
 }
 
+function renderStubChapterDraft(prompt: string): string {
+  const chapterMatch = prompt.match(/(?:Write chapter\s*|请续写第)\s*(\d+)\s*(?:章)?/iu);
+  const chapterNumber = chapterMatch?.[1] ? Number.parseInt(chapterMatch[1], 10) : undefined;
+  if (!chapterNumber) return CHAPTER_DRAFT;
+
+  const configuredVolumeEnd = Number.parseInt(
+    process.env.INKOS_AGENT_LLM_STUB_VOLUME_END_CHAPTER ?? "",
+    10,
+  );
+  const isVolumeEnd = configuredVolumeEnd === chapterNumber
+    || [...prompt.matchAll(/(?:chapters|章节范围)\s*[：:]\s*\d+\s*[-–—]\s*(\d+)/giu)]
+      .some((match) => match[1] && Number.parseInt(match[1], 10) === chapterNumber);
+  if (!isVolumeEnd) return CHAPTER_DRAFT;
+
+  const volumeEndResolution = [
+    "At dawn, Lin Yue secured physical ledger evidence whose origin was independently verified.",
+    "Qiao Xin became an active witness who changed the investigation's available choices.",
+    "Together they presented the complete evidence chain publicly and restored the hidden debt victims' names.",
+    "Lin Yue attached his own name to the public testimony and permanently lost the safety of anonymity.",
+    "He moved from defensive survival toward accountable public action, traced the burned ledger through manifests, seals, witnesses, and consequences, and revealed how the harbor system rewrites obligation and legal identity.",
+  ].join(" ");
+  return CHAPTER_DRAFT.replace(
+    "\n=== POST_SETTLEMENT ===",
+    `\n\n${volumeEndResolution}\n=== POST_SETTLEMENT ===`,
+  );
+}
+
 function looksLikePlannerMemoPrompt(joined: string): boolean {
   return /产生一份\s*chapter_memo|produce a chapter_memo|职责是为下一章产生|job is to produce.*chapter_memo/is.test(joined);
 }
@@ -465,7 +492,7 @@ export function stubChatCompletion(
   } else if (looksLikePlannerMemoPrompt(joined)) {
     content = CHAPTER_MEMO;
   } else if (looksLikeWriterPrompt(joined)) {
-    content = CHAPTER_DRAFT;
+    content = renderStubChapterDraft(joined);
   } else if (/nodes|structure|outline/i.test(joined)) {
     content = STRUCTURE_JSON;
   }

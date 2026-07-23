@@ -1,6 +1,7 @@
 import { access, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
 import type { ChapterMeta } from "../models/chapter.js";
+import { buildChapterRecoveryState } from "../pipeline/chapter-recovery-policy.js";
 import { classifyTruthAuthority, normalizeTruthFileName, type TruthAuthority } from "./truth-authority.js";
 
 export type EditRequest =
@@ -285,9 +286,17 @@ function markChapterForManualReview(
   index: ReadonlyArray<ChapterMeta>,
   chapterNumber: number,
   issue: string,
+  content: string,
   wordCount?: number,
 ): ReadonlyArray<ChapterMeta> {
   const now = new Date().toISOString();
+  const recoveryIssue = {
+    severity: "warning" as const,
+    category: "manual-chapter-edit",
+    description: issue,
+    suggestion: "Re-audit the edited chapter before accepting it.",
+    repairScope: "unknown" as const,
+  };
   return index.map((chapter) => chapter.number === chapterNumber
     ? {
         ...chapter,
@@ -298,6 +307,13 @@ function markChapterForManualReview(
           ...chapter.auditIssues.filter((existing) => !existing.includes(issue)),
           `[warning] ${issue}`,
         ],
+        reviewNote: undefined,
+        recoveryState: buildChapterRecoveryState({
+          content,
+          issues: [recoveryIssue],
+          terminationReason: "manual-chapter-edit",
+          now: () => now,
+        }),
       }
     : chapter);
 }
@@ -327,6 +343,7 @@ async function executeChapterReplace(
     await deps.loadChapterIndex(request.bookId),
     request.chapterNumber,
     MANUAL_CHAPTER_EDIT_ISSUE,
+    fullText,
     roughChapterLength(fullText),
   );
   await deps.saveChapterIndex(request.bookId, updatedIndex);
@@ -367,6 +384,7 @@ async function executeChapterLocalEdit(
     await deps.loadChapterIndex(request.bookId),
     request.chapterNumber,
     MANUAL_CHAPTER_EDIT_ISSUE,
+    nextContent,
   );
   await deps.saveChapterIndex(request.bookId, updatedIndex);
 

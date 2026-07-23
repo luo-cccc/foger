@@ -3,7 +3,13 @@ import { chatCompletion, createLLMClient } from "../llm/provider.js";
 import type { Logger } from "../utils/logger.js";
 import type { BookConfig, RevisionGate } from "../models/book.js";
 import type { ChapterMeta, ChapterReviewTelemetry } from "../models/chapter.js";
-import type { NotifyChannel, LLMConfig, AgentLLMOverride, InputGovernanceMode } from "../models/project.js";
+import type {
+  NotifyChannel,
+  LLMConfig,
+  AgentLLMOverride,
+  ContentPolicyFallbackConfig,
+  InputGovernanceMode,
+} from "../models/project.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import { ArchitectAgent, type ArchitectOutput } from "../agents/architect.js";
 import { CanonExtractor } from "../agents/canon-extractor.js";
@@ -65,6 +71,10 @@ import {
   retrySettlementAfterValidationFailure,
 } from "./chapter-state-recovery.js";
 import { persistChapterArtifacts } from "./chapter-persistence.js";
+import {
+  auditIssuesFromChapterRecovery,
+  buildChapterRecoveryState,
+} from "./chapter-recovery-policy.js";
 import { runChapterReviewCycle, type ChapterReviewAttempt } from "./chapter-review-cycle.js";
 import {
   deriveAuditPassed,
@@ -339,6 +349,7 @@ export interface PipelineConfig {
   readonly notifyChannels?: ReadonlyArray<NotifyChannel>;
   readonly externalContext?: string;
   readonly modelOverrides?: Record<string, string | AgentLLMOverride>;
+  readonly contentPolicyFallback?: ContentPolicyFallbackConfig;
   readonly inputGovernanceMode?: InputGovernanceMode;
   readonly logger?: Logger;
   readonly onStreamProgress?: OnStreamProgress;
@@ -414,7 +425,7 @@ export interface ReviseResult {
   readonly wordCount: number;
   readonly fixedIssues: ReadonlyArray<string>;
   readonly applied: boolean;
-  readonly status: "unchanged" | "ready-for-review" | "audit-failed";
+  readonly status: "unchanged" | "ready-for-review" | "audit-failed" | "state-degraded";
   readonly skippedReason?: string;
   readonly revisionDiagnostics?: {
     readonly standard: string;
@@ -766,8 +777,63 @@ export class PipelineRunner {
     return { model: override.model, client };
   }
 
+  private resolveContentPolicyFallback(
+    agentName: string,
+    primary: { readonly model: string; readonly client: LLMClient },
+  ): { readonly model: string; readonly client: LLMClient } | undefined {
+    const fallback = this.config.contentPolicyFallback;
+    if (!fallback || !(fallback.agents as readonly string[]).includes(agentName)) return undefined;
+
+    const primaryService = primary.client.service ?? "custom";
+    const primaryBaseUrl = primary.client._piModel?.baseUrl?.replace(/\/+$/, "") ?? "";
+    const fallbackBaseUrl = fallback.baseUrl.replace(/\/+$/, "");
+    if (fallback.service === primaryService || fallbackBaseUrl === primaryBaseUrl) {
+      throw new Error(
+        `contentPolicyFallback for agent "${agentName}" must use a different service and endpoint from `
+        + `${primaryService}/${primary.model}.`,
+      );
+    }
+
+    const apiKey = process.env[fallback.apiKeyEnv] ?? "";
+    const apiKeyFingerprint = createHash("sha256")
+      .update(apiKey)
+      .digest("hex")
+      .slice(0, 12);
+    const provider = fallback.provider ?? "custom";
+    const stream = fallback.stream ?? true;
+    const apiFormat = fallback.apiFormat ?? "chat";
+    const cacheKey = [
+      "content-policy-fallback",
+      provider,
+      fallback.service,
+      fallback.baseUrl,
+      `key:${apiKeyFingerprint}`,
+      `stream:${stream}`,
+      `format:${apiFormat}`,
+    ].join("|");
+    let client = this.agentClients.get(cacheKey);
+    if (!client) {
+      const base = this.config.defaultLLMConfig;
+      client = createLLMClient({
+        provider,
+        service: fallback.service,
+        configSource: base?.configSource ?? "env",
+        baseUrl: fallback.baseUrl,
+        apiKey,
+        model: fallback.model,
+        temperature: base?.temperature ?? 0.7,
+        thinkingBudget: base?.thinkingBudget ?? 0,
+        apiFormat,
+        stream,
+      });
+      this.agentClients.set(cacheKey, client);
+    }
+    return { model: fallback.model, client };
+  }
+
   private agentCtxFor(agent: string, bookId?: string): AgentContext {
     const { model, client } = this.resolveOverride(agent);
+    const contentPolicyFallback = this.resolveContentPolicyFallback(agent, { model, client });
     return {
       client,
       model,
@@ -780,6 +846,7 @@ export class PipelineRunner {
       defaultTimeoutMs: this.config.defaultTimeoutMs,
       maxPromptEstimatedTokens: this.config.maxPromptEstimatedTokensPerCall,
       signal: this.config.signal,
+      ...(contentPolicyFallback ? { contentPolicyFallback } : {}),
     };
   }
 
@@ -1559,6 +1626,11 @@ export class PipelineRunner {
             reviewNote: stateRepairIssue
               ? buildStateDegradedReviewNote("ready-for-review", [stateRepairIssue])
               : targetMeta?.status === "state-degraded" ? undefined : ch.reviewNote,
+            recoveryState: buildChapterRecoveryState({
+              content,
+              issues: result.issues,
+              operationId: ch.operationId,
+            }),
           }
         : ch,
     );
@@ -1645,14 +1717,101 @@ export class PipelineRunner {
           : undefined,
       });
 
+      const persistCurrentRecoveryState = async (params: {
+        readonly issues: ReadonlyArray<AuditIssue>;
+        readonly status?: ChapterMeta["status"];
+        readonly auditIssues?: ReadonlyArray<string>;
+        readonly reviewNote?: string;
+        readonly terminationReason?: string;
+      }): Promise<void> => {
+        const now = new Date().toISOString();
+        await this.state.saveChapterIndex(bookId, index.map((chapter) =>
+          chapter.number === targetChapter
+            ? {
+                ...chapter,
+                status: params.status ?? chapter.status,
+                updatedAt: now,
+                auditIssues: params.auditIssues
+                  ? [...params.auditIssues]
+                  : params.issues.map((issue) => `[${issue.severity}] ${issue.description}`),
+                reviewNote: params.reviewNote,
+                recoveryState: buildChapterRecoveryState({
+                  content,
+                  issues: params.issues,
+                  operationId: chapter.operationId,
+                  terminationReason: params.terminationReason,
+                  now: () => now,
+                }),
+              }
+            : chapter,
+        ));
+      };
+
       if (preRevision.blockingCount === 0 && preRevision.aiTellCount === 0) {
+        if (deriveAuditPassed(preRevision.auditResult)) {
+          const hasDurableSnapshot = await stat(
+            join(bookDir, "story", "snapshots", String(targetChapter)),
+          ).then((entry) => entry.isDirectory()).catch(() => false);
+          const stateRepairIssue: AuditIssue | undefined = hasDurableSnapshot
+            ? undefined
+            : {
+                severity: "warning",
+                category: "state-sync-required",
+                description: language === "en"
+                  ? `Chapter ${targetChapter} passed re-audit, but its durable truth snapshot is missing.`
+                  : `第${targetChapter}章重新审计已通过，但缺少对应的持久化真相快照。`,
+                suggestion: language === "en"
+                  ? "Repair or resync chapter state before continuing."
+                  : "继续写作前，请修复或重新同步本章状态。",
+                repairScope: "structural",
+              };
+          await persistCurrentRecoveryState({
+            issues: [],
+            status: stateRepairIssue ? "state-degraded" : "ready-for-review",
+            auditIssues: stateRepairIssue
+              ? [`[warning] ${stateRepairIssue.description}`]
+              : [],
+            reviewNote: stateRepairIssue
+              ? buildStateDegradedReviewNote("ready-for-review", [stateRepairIssue])
+              : undefined,
+            terminationReason: "re-audit-passed-without-revision",
+          });
+          return {
+            chapterNumber: targetChapter,
+            wordCount: countChapterLength(content, countingMode),
+            fixedIssues: [],
+            applied: false,
+            status: stateRepairIssue ? "state-degraded" : "ready-for-review",
+            skippedReason: stateRepairIssue
+              ? "Chapter re-audit passed, but state resync is required before continuing."
+              : "Chapter re-audit passed without requiring revision.",
+            ...(recovery.kind === "none" ? {} : { recovery }),
+          };
+        }
+
+        const unverifiableIssue: AuditIssue = {
+          severity: "critical",
+          category: "audit-unverifiable",
+          description: language === "en"
+            ? "The chapter audit did not pass and exposed no actionable evidence."
+            : "章节审计未通过，但没有提供可执行的阻断证据。",
+          suggestion: language === "en"
+            ? "Re-audit the current chapter before attempting another content mutation."
+            : "再次修改正文前，请先重新审计当前章节。",
+          repairScope: "unknown",
+        };
+        await persistCurrentRecoveryState({
+          issues: [unverifiableIssue],
+          status: "audit-failed",
+          terminationReason: "audit-unverifiable",
+        });
         return {
           chapterNumber: targetChapter,
           wordCount: countChapterLength(content, countingMode),
           fixedIssues: [],
           applied: false,
           status: "unchanged",
-          skippedReason: "No warning, critical, or AI-tell issues to fix.",
+          skippedReason: unverifiableIssue.description,
           ...(recovery.kind === "none" ? {} : { recovery }),
         };
       }
@@ -1771,6 +1930,11 @@ export class PipelineRunner {
             description: issue.description,
             ...(issue.suggestion ? { suggestion: issue.suggestion } : {}),
           }));
+        await persistCurrentRecoveryState({
+          issues: preRevision.auditResult.issues,
+          status: "audit-failed",
+          terminationReason: "revision-not-applied",
+        });
         return {
           chapterNumber: targetChapter,
           wordCount: revisionBaseCount,
@@ -1862,6 +2026,15 @@ export class PipelineRunner {
               auditIssues: effectivePostRevision.auditResult.issues.map((i) => `[${i.severity}] ${i.description}`),
               lengthWarnings,
               lengthTelemetry,
+              reviewNote: undefined,
+              recoveryState: buildChapterRecoveryState({
+                content: normalizedRevision.content,
+                issues: effectivePostRevision.auditResult.issues,
+                operationId: ch.operationId,
+                terminationReason: revisionStatus === "audit-failed"
+                  ? "revision-still-blocked"
+                  : "revision-passed",
+              }),
             }
           : ch,
       );
@@ -2354,6 +2527,7 @@ export class PipelineRunner {
       readFile(join(storyDir, "chapter_summaries.md"), "utf-8").catch(() => ""),
     ]);
     const validator = new StateValidatorAgent(this.agentCtxFor("state-validator", bookId));
+    const recoveryIssues = auditResult.issues;
     const truthValidation = await validateChapterTruthPersistence({
       writer,
       validator,
@@ -2455,8 +2629,10 @@ export class PipelineRunner {
       await persistChapterArtifacts({
         chapterNumber,
         chapterTitle: persistenceOutput.title,
+        chapterContent: finalContent,
         status: resolvedStatus,
         auditResult,
+        recoveryIssues,
         finalWordCount,
         lengthWarnings,
         lengthTelemetry,
@@ -2678,6 +2854,9 @@ export class PipelineRunner {
     await this.syncCurrentStateFactHistory(bookId, targetChapter);
 
     const repairedPassesAudit = baseStatus !== "audit-failed";
+    const remainingAuditIssues = repairedPassesAudit
+      ? []
+      : auditIssuesFromChapterRecovery(targetMeta, content);
     if (repairedPassesAudit) {
       await this.markBookActiveIfNeeded(bookId);
     }
@@ -2687,7 +2866,7 @@ export class PipelineRunner {
       wordCount: targetMeta.wordCount,
       auditResult: {
         passed: repairedPassesAudit,
-        issues: [],
+        issues: remainingAuditIssues,
         summary: repairedPassesAudit ? "state repaired" : "state repaired but chapter still needs review",
       },
       revised: false,
@@ -2868,6 +3047,9 @@ export class PipelineRunner {
         : targetMeta.status === "audit-failed"
           ? "audit-failed"
           : "ready-for-review";
+      const remainingAuditIssues = finalStatus === "audit-failed"
+        ? auditIssuesFromChapterRecovery(targetMeta, content)
+        : [];
 
       if (targetMeta.status === "state-degraded") {
         const degradedMetadata = parseStateDegradedReviewNote(targetMeta.reviewNote);
@@ -2899,7 +3081,7 @@ export class PipelineRunner {
         wordCount: targetMeta.wordCount,
         auditResult: {
           passed: finalStatus !== "audit-failed",
-          issues: [],
+          issues: remainingAuditIssues,
           summary: finalStatus === "audit-failed"
             ? "chapter truth/state resynced from edited body, but chapter still needs audit fixes"
             : "chapter truth/state resynced from edited body",

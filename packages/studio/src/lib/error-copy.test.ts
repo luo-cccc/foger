@@ -140,6 +140,23 @@ describe("summarizeLLMCallRootCause", () => {
       kind: "content_policy",
       label: "Content policy",
     });
+
+    expect(classifyLLMCallRootCause({
+      agent: "settler",
+      phase: "settle",
+      status: "error",
+      service: "ark",
+      model: "model-a",
+      durationMs: 2000,
+      promptTokens: 100,
+      completionTokens: 0,
+      totalTokens: 100,
+      failureKind: "provider-content-policy",
+      errorMessage: "generic provider rejection",
+    })).toMatchObject({
+      kind: "content_policy",
+      label: "Content policy",
+    });
   });
 
   it("classifies overloaded upstream errors and localized labels", () => {

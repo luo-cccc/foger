@@ -51,11 +51,26 @@ export interface LLMCallTelemetry {
   };
   /** True when missing provider usage or retry cost was completed locally. */
   readonly usageEstimated?: boolean;
+  readonly failureKind?: LLMFailureKind;
+  readonly route?: "content-policy-fallback";
+  readonly fallbackFrom?: {
+    readonly service: string;
+    readonly model: string;
+    readonly failureKind: "provider-content-policy";
+  };
   readonly errorMessage?: string;
   readonly partialContentLength?: number;
   readonly partialContent?: string;
   readonly timeoutMs?: number;
   readonly timestamp: string;
+}
+
+export type LLMFailureKind = "provider-content-policy";
+
+export interface LLMFallbackRouteTelemetry {
+  readonly route: "content-policy-fallback";
+  readonly fromService: string;
+  readonly fromModel: string;
 }
 
 export type LLMPromptSourceTier = "system" | "verbatim" | "semantic" | "compressible" | "dynamic";
@@ -381,6 +396,28 @@ export class ContextWindowExceededError extends Error {
   }
 }
 
+/** A provider rejected the input under its content or safety policy. */
+export class ProviderContentPolicyError extends Error {
+  readonly code = "PROVIDER_CONTENT_POLICY";
+  readonly kind = "provider-content-policy";
+  readonly service?: string;
+  readonly model?: string;
+
+  constructor(
+    context?: { readonly service?: string; readonly model?: string },
+    cause?: unknown,
+  ) {
+    const route = [context?.service, context?.model].filter(Boolean).join("/") || "unknown route";
+    super(
+      `Provider content policy rejected the request (${route}). The provider indicated that the input may contain sensitive or policy-restricted information.`,
+      cause === undefined ? undefined : { cause },
+    );
+    this.name = "ProviderContentPolicyError";
+    this.service = context?.service;
+    this.model = context?.model;
+  }
+}
+
 /** Keys managed by the provider layer — prevent extra from overriding them. */
 const RESERVED_KEYS = new Set(["max_tokens", "temperature", "model", "messages", "stream"]);
 
@@ -609,6 +646,10 @@ export function assertWithinContextWindow(params: {
 // === Error Wrapping ===
 
 function wrapLLMError(error: unknown, context?: { readonly baseUrl?: string; readonly model?: string; readonly service?: string }): Error {
+  if (error instanceof ProviderContentPolicyError) return error;
+  if (isProviderContentPolicyError(error)) {
+    return new ProviderContentPolicyError(context, error);
+  }
   const msg = String(error);
   const ctxLine = context
     ? `\n  (baseUrl: ${context.baseUrl}, model: ${context.model})`
@@ -713,16 +754,55 @@ function collectErrorText(error: unknown, depth = 0): string {
   const parts = [String(error)];
   if (error instanceof Error) {
     parts.push(error.name, error.message);
-    const cause = (error as Error & { cause?: unknown }).cause;
+    const extended = error as Error & {
+      cause?: unknown;
+      body?: unknown;
+      error?: unknown;
+      reason?: unknown;
+    };
+    const cause = extended.cause;
     if (cause) parts.push(collectErrorText(cause, depth + 1));
+    if (extended.body) parts.push(collectErrorText(extended.body, depth + 1));
+    if (extended.error) parts.push(collectErrorText(extended.error, depth + 1));
+    if (extended.reason) parts.push(String(extended.reason));
   } else if (typeof error === "object") {
-    const err = error as { code?: unknown; cause?: unknown; message?: unknown; name?: unknown };
+    const err = error as {
+      body?: unknown;
+      code?: unknown;
+      cause?: unknown;
+      error?: unknown;
+      message?: unknown;
+      name?: unknown;
+      reason?: unknown;
+    };
     if (err.name) parts.push(String(err.name));
     if (err.message) parts.push(String(err.message));
     if (err.code) parts.push(String(err.code));
+    if (err.reason) parts.push(String(err.reason));
     if (err.cause) parts.push(collectErrorText(err.cause, depth + 1));
+    if (err.body) parts.push(collectErrorText(err.body, depth + 1));
+    if (err.error) parts.push(collectErrorText(err.error, depth + 1));
   }
   return parts.join("\n");
+}
+
+export function classifyLLMFailure(error: unknown): LLMFailureKind | undefined {
+  if (error instanceof ProviderContentPolicyError) return "provider-content-policy";
+  const text = collectErrorText(error).toLowerCase();
+  if (
+    /input may contain sensitive information/.test(text)
+    || /(?:request|input|prompt|content).{0,48}(?:blocked|rejected|filtered).{0,48}(?:content|safety|moderation)[ _-]?(?:policy|filter)/.test(text)
+    || /(?:content|safety|moderation)[ _-]?(?:policy|filter).{0,48}(?:blocked|rejected|filtered|violation)/.test(text)
+    || /(?:finish[_ -]?reason|code).{0,24}content[_ -]?filter/.test(text)
+    || /responsible[_ -]?ai[_ -]?policy[_ -]?violation/.test(text)
+  ) {
+    return "provider-content-policy";
+  }
+  return undefined;
+}
+
+export function isProviderContentPolicyError(error: unknown): boolean {
+  return classifyLLMFailure(error) === "provider-content-policy";
 }
 
 function isTransientLLMTransportError(error: unknown): boolean {
@@ -1474,6 +1554,8 @@ export async function chatCompletion(
     readonly promptSources?: ReadonlyArray<LLMPromptSourceInput>;
     /** Reject locally before transport when the estimated prompt exceeds this limit. */
     readonly maxPromptEstimatedTokens?: number;
+    /** Audit metadata for a one-shot cross-provider content-policy fallback. */
+    readonly fallbackRoute?: LLMFallbackRouteTelemetry;
   },
 ): Promise<LLMResponse> {
   throwIfSignalAborted(options?.signal);
@@ -1500,6 +1582,7 @@ export async function chatCompletion(
       promptAssembly,
       status: "error",
       usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      ...telemetryFallbackFields(options?.fallbackRoute),
       errorMessage: error.message,
       ...(options?.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
       timestamp: new Date(startedAt).toISOString(),
@@ -1509,6 +1592,40 @@ export async function chatCompletion(
   if (isLlmStubEnabled()) {
     await waitForLlmStubDelay(options?.signal);
     throwIfSignalAborted(options?.signal);
+    if (consumeLlmStubContentPolicyFault(
+      options?.agentName ?? options?.callPhase ?? "unknown",
+      effectiveClient.service ?? "unknown",
+    )) {
+      const error = new ProviderContentPolicyError({
+        service: effectiveClient.service ?? "unknown",
+        model,
+      });
+      options?.onCallTelemetry?.({
+        agent: options?.agentName ?? options?.callPhase ?? "unknown",
+        model,
+        service: effectiveClient.service ?? "unknown",
+        apiFormat: effectiveClient.apiFormat,
+        stream: effectiveClient.stream,
+        phase: options?.callPhase ?? "unknown",
+        durationMs: Date.now() - startedAt,
+        attemptCount: 1,
+        retryCount: 0,
+        promptAssembly,
+        status: "error",
+        usage: {
+          promptTokens: promptAssembly.estimatedTokens,
+          completionTokens: 0,
+          totalTokens: promptAssembly.estimatedTokens,
+        },
+        usageEstimated: true,
+        failureKind: "provider-content-policy",
+        ...telemetryFallbackFields(options?.fallbackRoute),
+        errorMessage: error.message,
+        ...(options?.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+        timestamp: new Date(startedAt).toISOString(),
+      });
+      throw error;
+    }
     const result = stubChatCompletion(messages, model);
     options?.onCallTelemetry?.({
       agent: options?.agentName ?? options?.callPhase ?? "unknown",
@@ -1523,6 +1640,7 @@ export async function chatCompletion(
       promptAssembly,
       status: "success",
       usage: result.usage,
+      ...telemetryFallbackFields(options?.fallbackRoute),
       ...(options?.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
       timestamp: new Date(startedAt).toISOString(),
     });
@@ -1555,6 +1673,7 @@ export async function chatCompletion(
     partialContentLength?: number,
     partialContent?: string,
     usageEstimated?: boolean,
+    failureKind?: LLMFailureKind,
   ) => {
     options?.onCallTelemetry?.({
       agent: options?.agentName ?? options?.callPhase ?? "unknown",
@@ -1570,6 +1689,8 @@ export async function chatCompletion(
       status,
       usage,
       ...(usageEstimated ? { usageEstimated: true } : {}),
+      ...(failureKind ? { failureKind } : {}),
+      ...telemetryFallbackFields(options?.fallbackRoute),
       ...(errorMessage ? { errorMessage } : {}),
       ...(partialContentLength !== undefined ? { partialContentLength } : {}),
       ...(partialContent !== undefined ? { partialContent } : {}),
@@ -1652,15 +1773,56 @@ export async function chatCompletion(
     // 那会产出写到一半就结束的章节/设定文件。重试由 withTransientLLMRetry
     // 负责（完整重新生成）；重试耗尽后如实抛错。
     const wrapped = wrapLLMError(error, errorCtx);
+    const failureKind = classifyLLMFailure(wrapped);
+    const rejectedPromptUsage = failureKind === "provider-content-policy"
+      ? {
+          promptTokens: promptAssembly.estimatedTokens,
+          completionTokens: 0,
+          totalTokens: promptAssembly.estimatedTokens,
+        }
+      : { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     emitTelemetry(
       error instanceof PartialResponseError ? "partial" : "error",
-      { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      rejectedPromptUsage,
       wrapped.message,
       error instanceof PartialResponseError ? error.partialContent.length : undefined,
       error instanceof PartialResponseError ? error.partialContent : undefined,
+      failureKind === "provider-content-policy",
+      failureKind,
     );
     throw wrapped;
   }
+}
+
+function telemetryFallbackFields(route: LLMFallbackRouteTelemetry | undefined): Pick<
+  LLMCallTelemetry,
+  "route" | "fallbackFrom"
+> {
+  if (!route) return {};
+  return {
+    route: route.route,
+    fallbackFrom: {
+      service: route.fromService,
+      model: route.fromModel,
+      failureKind: "provider-content-policy",
+    },
+  };
+}
+
+const consumedLlmStubContentPolicyFaults = new Set<string>();
+
+export function __resetLlmStubContentPolicyFaults(): void {
+  consumedLlmStubContentPolicyFaults.clear();
+}
+
+function consumeLlmStubContentPolicyFault(agent: string, service: string): boolean {
+  const configured = process.env.INKOS_AGENT_LLM_STUB_CONTENT_POLICY_ONCE?.trim();
+  if (!configured) return false;
+  const key = `${agent}|${service}`;
+  const configuredKeys = configured.split(",").map((value) => value.trim()).filter(Boolean);
+  if (!configuredKeys.includes(key) || consumedLlmStubContentPolicyFaults.has(key)) return false;
+  consumedLlmStubContentPolicyFaults.add(key);
+  return true;
 }
 
 function throwIfSignalAborted(signal: AbortSignal | undefined): void {

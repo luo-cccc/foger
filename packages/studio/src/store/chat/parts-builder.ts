@@ -28,6 +28,9 @@ export interface LLMTelemetryStreamEvent {
   readonly promptTokens: number;
   readonly completionTokens: number;
   readonly totalTokens: number;
+  readonly failureKind?: "provider-content-policy";
+  readonly route?: "content-policy-fallback";
+  readonly fallbackFrom?: ToolLLMCall["fallbackFrom"];
   readonly partialContentLength?: number;
   readonly errorMessage?: string;
 }
@@ -194,6 +197,9 @@ function appendToolLLMCall(
       promptTokens: incoming.promptTokens,
       completionTokens: incoming.completionTokens,
       totalTokens: incoming.totalTokens,
+      ...(incoming.failureKind ? { failureKind: incoming.failureKind } : {}),
+      ...(incoming.route ? { route: incoming.route } : {}),
+      ...(incoming.fallbackFrom ? { fallbackFrom: incoming.fallbackFrom } : {}),
       ...(incoming.partialContentLength !== undefined ? { partialContentLength: incoming.partialContentLength } : {}),
       ...(incoming.errorMessage ? { errorMessage: incoming.errorMessage } : {}),
     },

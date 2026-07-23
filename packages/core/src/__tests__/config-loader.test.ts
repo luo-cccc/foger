@@ -17,6 +17,7 @@ const ENV_KEYS = [
   "INKOS_LLM_EXTRA_top_p",
   "INKOS_DEFAULT_LANGUAGE",
   "INKOS_ROUTE_MINIMAX_KEY",
+  "INKOS_CONTENT_POLICY_FALLBACK_KEY",
 ] as const;
 
 describe("loadProjectConfig local provider auth", () => {
@@ -201,6 +202,56 @@ describe("loadProjectConfig local provider auth", () => {
       apiKeyEnv: "INKOS_ROUTE_MINIMAX_KEY",
     });
     expect(process.env.INKOS_ROUTE_MINIMAX_KEY).toBe("sk-minimax-override");
+  });
+
+  it("hydrates the explicit content-policy fallback from its own service secret", async () => {
+    root = await mkdtemp(join(tmpdir(), "inkos-config-loader-policy-fallback-"));
+    for (const key of ENV_KEYS) {
+      previousEnv.set(key, process.env[key]);
+      process.env[key] = "";
+    }
+
+    await writeFile(join(root, "inkos.json"), JSON.stringify({
+      name: "policy-fallback-project",
+      version: "0.1.0",
+      language: "zh",
+      llm: {
+        configSource: "studio",
+        services: [
+          { service: "openrouter", baseUrl: "https://openrouter.ai/api/v1" },
+          { service: "minimax", baseUrl: "https://api.minimaxi.com/v1" },
+        ],
+        defaultModel: "deepseek/deepseek-v4-flash",
+      },
+      contentPolicyFallback: {
+        model: "MiniMax-M3",
+        provider: "openai",
+        service: "minimax",
+        baseUrl: "https://api.minimaxi.com/v1",
+        apiKeyEnv: "INKOS_CONTENT_POLICY_FALLBACK_KEY",
+        apiFormat: "chat",
+        stream: false,
+        agents: ["planner", "settler", "chapter-analyzer"],
+      },
+    }, null, 2), "utf-8");
+    await mkdir(join(root, ".inkos"), { recursive: true });
+    await writeFile(
+      join(root, ".inkos", "secrets.json"),
+      JSON.stringify({ services: {
+        openrouter: { apiKey: "sk-openrouter" },
+        minimax: { apiKey: "sk-minimax-fallback" },
+      } }, null, 2),
+      "utf-8",
+    );
+
+    const config = await loadProjectConfig(root, { consumer: "studio" });
+
+    expect(config.contentPolicyFallback).toMatchObject({
+      service: "minimax",
+      model: "MiniMax-M3",
+      agents: ["planner", "settler", "chapter-analyzer"],
+    });
+    expect(process.env.INKOS_CONTENT_POLICY_FALLBACK_KEY).toBe("sk-minimax-fallback");
   });
 
   it("loads custom service config using custom secret key and entry baseUrl", async () => {

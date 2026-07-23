@@ -135,6 +135,28 @@ describe("llm-stub", () => {
     expect(parsed.preWriteCheck).toContain("章尾必须发生的改变");
   });
 
+  it("adds deterministic volume resolution evidence only to the volume-end chapter", () => {
+    const writerPrompt = "Output PRE_WRITE_CHECK first, then CHAPTER_CONTENT.\n# Volume Contract\n- chapters: 1-20";
+    const regular = stubChatCompletion(
+      [
+        { role: "system", content: `Write chapter 19. ${writerPrompt}` },
+        { role: "user", content: "请续写第19章。" },
+      ],
+      "stub-model",
+    );
+    const volumeEnd = stubChatCompletion(
+      [
+        { role: "system", content: `Write chapter 20. ${writerPrompt}` },
+        { role: "user", content: "请续写第20章。" },
+      ],
+      "stub-model",
+    );
+
+    expect(regular.content).not.toContain("complete evidence chain publicly");
+    expect(volumeEnd.content).toContain("complete evidence chain publicly");
+    expect(volumeEnd.content).toContain("permanently lost the safety of anonymity");
+  });
+
   it("returns a valid chapter memo for planner prompts", () => {
     const response = stubChatCompletion(
       [

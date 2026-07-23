@@ -130,6 +130,16 @@ function ensureE2eProject(projectRoot: string, llmMode: "stub" | "live", sourceR
       },
       notify: [],
       inputGovernanceMode: "v2",
+      contentPolicyFallback: {
+        model: "stub-fallback-model",
+        provider: "custom",
+        service: "custom:Fallback",
+        baseUrl: "http://127.0.0.1:11435/v1",
+        apiKeyEnv: "INKOS_E2E_CONTENT_POLICY_FALLBACK_KEY",
+        apiFormat: "chat",
+        stream: true,
+        agents: ["settler"],
+      },
       daemon: {
         schedule: {
           writeCron: "*/15 * * * *",
@@ -148,6 +158,9 @@ function ensureE2eProject(projectRoot: string, llmMode: "stub" | "live", sourceR
       services: {
         "custom:Custom": {
           apiKey: "stub-api-key",
+        },
+        "custom:Fallback": {
+          apiKey: "stub-fallback-api-key",
         },
       },
     }, null, 2)}\n`,

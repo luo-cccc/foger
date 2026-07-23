@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CONTENT_POLICY_FALLBACK_AGENTS } from "../llm/agent-model-routing.js";
 
 // C1 (v2.0.0 breaking): `maxTokens` 字段已被 providers bank 接管；zod 用 strip mode 静默丢弃老配置里的 `maxTokens`。
 const LLMServiceEntrySchema = z.object({
@@ -113,6 +114,16 @@ export const AgentLLMOverrideSchema = z.object({
 
 export type AgentLLMOverride = z.infer<typeof AgentLLMOverrideSchema>;
 
+export const ContentPolicyFallbackConfigSchema = AgentLLMOverrideSchema.extend({
+  service: z.string().min(1),
+  baseUrl: z.string().url(),
+  apiKeyEnv: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "apiKeyEnv must be an environment variable name"),
+  agents: z.array(z.enum(CONTENT_POLICY_FALLBACK_AGENTS)).min(1)
+    .default([...CONTENT_POLICY_FALLBACK_AGENTS]),
+});
+
+export type ContentPolicyFallbackConfig = z.infer<typeof ContentPolicyFallbackConfigSchema>;
+
 export const InputGovernanceModeSchema = z.enum(["legacy", "v2"]);
 export type InputGovernanceMode = z.infer<typeof InputGovernanceModeSchema>;
 
@@ -132,6 +143,8 @@ export const ProjectConfigSchema = z.object({
     reviewRetries: 2,
   }),
   modelOverrides: z.record(z.string(), ModelOverrideValueSchema).optional(),
+  /** Explicit one-shot cross-provider route for provider content-policy rejections. */
+  contentPolicyFallback: ContentPolicyFallbackConfigSchema.optional(),
   inputGovernanceMode: InputGovernanceModeSchema.default("v2"),
   daemon: z.object({
     schedule: z.object({

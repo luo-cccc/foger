@@ -43,6 +43,25 @@ export const ChapterReviewTelemetrySchema = z.object({
 });
 export type ChapterReviewTelemetry = z.infer<typeof ChapterReviewTelemetrySchema>;
 
+export const ChapterRecoveryIssueSchema = z.object({
+  severity: z.enum(["critical", "warning", "info"]),
+  category: z.string().min(1),
+  description: z.string().min(1),
+  suggestion: z.string().default(""),
+  repairScope: z.enum(["local", "structural", "unknown"]).optional(),
+});
+export type ChapterRecoveryIssue = z.infer<typeof ChapterRecoveryIssueSchema>;
+
+export const ChapterRecoveryStateSchema = z.object({
+  version: z.literal(1),
+  contentFingerprint: z.string().regex(/^[a-f0-9]{24}$/),
+  blockingIssues: z.array(ChapterRecoveryIssueSchema),
+  sourceOperationId: z.string().uuid().optional(),
+  terminationReason: z.string().optional(),
+  updatedAt: z.string().datetime(),
+});
+export type ChapterRecoveryState = z.infer<typeof ChapterRecoveryStateSchema>;
+
 export const ChapterMetaSchema = z.object({
   number: z.number().int().min(1),
   title: z.string(),
@@ -64,6 +83,7 @@ export const ChapterMetaSchema = z.object({
   }).optional(),
   reviewTelemetry: ChapterReviewTelemetrySchema.optional(),
   operationId: z.string().uuid().optional(),
+  recoveryState: ChapterRecoveryStateSchema.optional(),
 });
 
 export type ChapterMeta = z.infer<typeof ChapterMetaSchema>;

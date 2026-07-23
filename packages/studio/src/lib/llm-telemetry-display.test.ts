@@ -24,6 +24,13 @@ describe("parseStudioLLMTelemetryEvent", () => {
       promptTokens: 100,
       completionTokens: 200,
       totalTokens: 300,
+      failureKind: "provider-content-policy",
+      route: "content-policy-fallback",
+      fallbackFrom: {
+        service: "ark",
+        model: "primary-model",
+        failureKind: "provider-content-policy",
+      },
       partialContentLength: 800,
       errorMessage: "timed out",
     })).toEqual(expect.objectContaining({
@@ -33,6 +40,9 @@ describe("parseStudioLLMTelemetryEvent", () => {
       totalTokens: 300,
       attemptCount: 3,
       retryCount: 2,
+      failureKind: "provider-content-policy",
+      route: "content-policy-fallback",
+      fallbackFrom: expect.objectContaining({ service: "ark" }),
       partialContentLength: 800,
     }));
   });

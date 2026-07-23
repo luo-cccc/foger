@@ -22,6 +22,13 @@ export interface StudioLLMTelemetryEvent {
   readonly promptTokens: number;
   readonly completionTokens: number;
   readonly totalTokens: number;
+  readonly failureKind?: "provider-content-policy";
+  readonly route?: "content-policy-fallback";
+  readonly fallbackFrom?: {
+    readonly service: string;
+    readonly model: string;
+    readonly failureKind: "provider-content-policy";
+  };
   readonly partialContentLength?: number;
   readonly errorMessage?: string;
 }
@@ -80,11 +87,22 @@ export function parseStudioLLMTelemetryEvent(data: unknown): StudioLLMTelemetryE
     promptTokens: record.promptTokens,
     completionTokens: record.completionTokens,
     totalTokens: record.totalTokens,
+    ...(record.failureKind === "provider-content-policy" ? { failureKind: record.failureKind } : {}),
+    ...(record.route === "content-policy-fallback" ? { route: record.route } : {}),
+    ...(isFallbackFrom(record.fallbackFrom) ? { fallbackFrom: record.fallbackFrom } : {}),
     ...(typeof record.partialContentLength === "number"
       ? { partialContentLength: record.partialContentLength }
       : {}),
     ...(typeof record.errorMessage === "string" ? { errorMessage: record.errorMessage } : {}),
   };
+}
+
+function isFallbackFrom(value: unknown): value is NonNullable<StudioLLMTelemetryEvent["fallbackFrom"]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.service === "string"
+    && typeof record.model === "string"
+    && record.failureKind === "provider-content-policy";
 }
 
 export function buildLLMTelemetrySnapshot(

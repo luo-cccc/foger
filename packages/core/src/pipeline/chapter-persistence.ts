@@ -3,6 +3,7 @@ import type { ChapterMeta, ChapterReviewTelemetry } from "../models/chapter.js";
 import type { LengthTelemetry } from "../models/length-governance.js";
 import { buildStateDegradedReviewNote } from "./chapter-state-recovery.js";
 import { resolveChapterReviewStatus } from "./chapter-quality-gate.js";
+import { buildChapterRecoveryState } from "./chapter-recovery-policy.js";
 
 export interface ChapterPersistenceUsage {
   readonly promptTokens: number;
@@ -15,8 +16,10 @@ export type ChapterPersistenceStatus = "ready-for-review" | "audit-failed" | "st
 export async function persistChapterArtifacts(params: {
   readonly chapterNumber: number;
   readonly chapterTitle: string;
+  readonly chapterContent: string;
   readonly status: ChapterPersistenceStatus;
   readonly auditResult: AuditResult;
+  readonly recoveryIssues: ReadonlyArray<AuditIssue>;
   readonly finalWordCount: number;
   readonly lengthWarnings: ReadonlyArray<string>;
   readonly lengthTelemetry?: LengthTelemetry;
@@ -68,6 +71,13 @@ export async function persistChapterArtifacts(params: {
     tokenUsage: params.tokenUsage,
     reviewTelemetry: params.reviewTelemetry,
     ...(params.operationId ? { operationId: params.operationId } : {}),
+    recoveryState: buildChapterRecoveryState({
+      content: params.chapterContent,
+      issues: params.recoveryIssues,
+      operationId: params.operationId,
+      terminationReason: params.reviewTelemetry?.terminationReason,
+      now: params.now,
+    }),
   };
   const existingIdx = existingIndex.findIndex((e) => e.number === params.chapterNumber);
   const updatedIndex = existingIdx >= 0
