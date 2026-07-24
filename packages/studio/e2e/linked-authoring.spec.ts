@@ -177,6 +177,11 @@ const maxCreateAttempts = Math.max(1, readPositiveInteger("INKOS_LINKED_CREATE_A
 const maxWriteAttempts = Math.max(1, readPositiveInteger("INKOS_LINKED_WRITE_ATTEMPTS", liveMode ? 3 : 1));
 const creationTimeoutMs = liveMode ? 30 * 60_000 : 180_000;
 const operationTimeoutMs = liveMode ? 30 * 60_000 : 180_000;
+const stubContentPolicyFaultEnabled = !liveMode
+  && (process.env.INKOS_AGENT_LLM_STUB_CONTENT_POLICY_ONCE ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .includes("settler|custom");
 
 test("@linked correlates browser, Studio API, Core telemetry, persistence, and Doctor", async ({
   page,
@@ -452,7 +457,7 @@ test("@linked correlates browser, Studio API, Core telemetry, persistence, and D
       }
     }
 
-    if (!liveMode) {
+    if (stubContentPolicyFaultEnabled) {
       const telemetry = report.chapters.flatMap((chapter) => chapter.telemetry);
       const rejection = telemetry.find((entry) => entry.failureKind === "provider-content-policy");
       expect(rejection).toMatchObject({

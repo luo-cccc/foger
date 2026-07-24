@@ -60,7 +60,7 @@ import {
 } from "../utils/volume-contract.js";
 import type { VolumeContract, VolumeProgressFile } from "../models/volume-contract.js";
 import { rewriteStructuredStateFromMarkdown } from "../state/state-bootstrap.js";
-import { appendFile, readFile, readdir, writeFile, mkdir, rm, stat } from "node:fs/promises";
+import { appendFile, cp, readFile, readdir, writeFile, mkdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -1083,6 +1083,7 @@ export class PipelineRunner {
     bookId: string,
     language: "zh" | "en",
     stageLanguage: "zh" | "en",
+    strict = false,
   ): Promise<void> {
     this.logStage(stageLanguage, { zh: "抽取结构化设定", en: "extracting structured canon" });
     try {
@@ -1120,6 +1121,7 @@ export class PipelineRunner {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (strict) throw error;
       this.config.logger?.warn?.(`[canon-extractor] skipped: ${message}`);
     }
   }
@@ -1135,98 +1137,127 @@ export class PipelineRunner {
     const bookDir = this.state.bookDir(bookId);
     const storyDir = join(bookDir, "story");
     const isPhase5 = await isNewLayoutBook(bookDir);
-
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const backupTag = isPhase5 ? "phase5" : "phase4";
-    const backupDir = join(storyDir, `.backup-${backupTag}-${timestamp}`);
-    await mkdir(backupDir, { recursive: true });
-
-    const flatFiles = ["story_bible.md", "volume_outline.md", "book_rules.md", "character_matrix.md"];
-    for (const fileName of flatFiles) {
-      try {
-        const content = await readFile(join(storyDir, fileName), "utf-8");
-        await writeFile(join(backupDir, fileName), content, "utf-8");
-      } catch {
-        // Missing legacy shim files are fine for partially migrated books.
-      }
-    }
-
-    if (isPhase5) {
-      await this.copyDirShallow(join(storyDir, "outline"), join(backupDir, "outline"));
-      await this.copyDirRecursive(join(storyDir, "roles"), join(backupDir, "roles"));
-    }
-
-    const book = await this.state.loadBookConfig(bookId);
-    let oldStoryBible: string;
-    let oldVolumeOutline: string;
-    let oldBookRules: string;
-    let oldCharacterMatrix: string;
-
-    if (isPhase5) {
-      [oldStoryBible, oldVolumeOutline, oldCharacterMatrix] = await Promise.all([
-        readStoryFrame(bookDir),
-        readVolumeMap(bookDir),
-        readCharacterContext(bookDir),
-      ]);
-      oldBookRules = await readFile(join(storyDir, "book_rules.md"), "utf-8").catch(() => "");
-    } else {
-      [oldStoryBible, oldVolumeOutline, oldBookRules, oldCharacterMatrix] = await Promise.all([
-        readFile(join(storyDir, "story_bible.md"), "utf-8").catch(() => ""),
-        readFile(join(storyDir, "volume_outline.md"), "utf-8").catch(() => ""),
-        readFile(join(storyDir, "book_rules.md"), "utf-8").catch(() => ""),
-        readFile(join(storyDir, "character_matrix.md"), "utf-8").catch(() => ""),
-      ]);
-    }
-
-    const architect = new ArchitectAgent(this.agentCtxFor("architect", bookId));
-    const foundation = await architect.generateFoundation(book, undefined, undefined, {
-      reviseFrom: {
-        storyBible: oldStoryBible,
-        volumeOutline: oldVolumeOutline,
-        bookRules: oldBookRules,
-        characterMatrix: oldCharacterMatrix,
-        userFeedback: feedback,
-      },
-    });
-
-    const reviewer = new FoundationReviewerAgent(this.agentCtxFor("foundation-reviewer", bookId));
-    const resolvedLanguage = (book.language ?? "zh") === "en" ? "en" as const : "zh" as const;
+    const transactionId = randomUUID();
+    const stagingBookDir = join(bookDir, `.foundation-revise-${transactionId}`);
+    const stagingStoryDir = join(stagingBookDir, "story");
+    await mkdir(stagingBookDir, { recursive: true });
     try {
-      const review = await reviewer.review({
-        foundation,
-        mode: "original",
-        language: resolvedLanguage,
-        targetChapters: book.targetChapters,
-      } as Parameters<FoundationReviewerAgent["review"]>[0]);
-      if (!review.passed) {
+      await cp(storyDir, stagingStoryDir, { recursive: true });
+      await cp(join(bookDir, "book.json"), join(stagingBookDir, "book.json"));
+
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const backupTag = isPhase5 ? "phase5" : "phase4";
+      const backupDir = join(stagingStoryDir, `.backup-${backupTag}-${timestamp}`);
+      await mkdir(backupDir, { recursive: true });
+
+      const flatFiles = ["story_bible.md", "volume_outline.md", "book_rules.md", "character_matrix.md"];
+      for (const fileName of flatFiles) {
+        try {
+          const content = await readFile(join(storyDir, fileName), "utf-8");
+          await writeFile(join(backupDir, fileName), content, "utf-8");
+        } catch {
+          // Missing legacy shim files are fine for partially migrated books.
+        }
+      }
+
+      if (isPhase5) {
+        await this.copyDirShallow(join(storyDir, "outline"), join(backupDir, "outline"));
+        await this.copyDirRecursive(join(storyDir, "roles"), join(backupDir, "roles"));
+      }
+
+      const book = await this.state.loadBookConfig(bookId);
+      let oldStoryBible: string;
+      let oldVolumeOutline: string;
+      let oldBookRules: string;
+      let oldCharacterMatrix: string;
+
+      if (isPhase5) {
+        [oldStoryBible, oldVolumeOutline, oldCharacterMatrix] = await Promise.all([
+          readStoryFrame(bookDir),
+          readVolumeMap(bookDir),
+          readCharacterContext(bookDir),
+        ]);
+        oldBookRules = await readFile(join(storyDir, "book_rules.md"), "utf-8").catch(() => "");
+      } else {
+        [oldStoryBible, oldVolumeOutline, oldBookRules, oldCharacterMatrix] = await Promise.all([
+          readFile(join(storyDir, "story_bible.md"), "utf-8").catch(() => ""),
+          readFile(join(storyDir, "volume_outline.md"), "utf-8").catch(() => ""),
+          readFile(join(storyDir, "book_rules.md"), "utf-8").catch(() => ""),
+          readFile(join(storyDir, "character_matrix.md"), "utf-8").catch(() => ""),
+        ]);
+      }
+
+      const architect = new ArchitectAgent(this.agentCtxFor("architect", bookId));
+      const foundation = await architect.generateFoundation(book, undefined, undefined, {
+        reviseFrom: {
+          storyBible: oldStoryBible,
+          volumeOutline: oldVolumeOutline,
+          bookRules: oldBookRules,
+          characterMatrix: oldCharacterMatrix,
+          userFeedback: feedback,
+        },
+      });
+
+      const reviewer = new FoundationReviewerAgent(this.agentCtxFor("foundation-reviewer", bookId));
+      const resolvedLanguage = (book.language ?? "zh") === "en" ? "en" as const : "zh" as const;
+      try {
+        const review = await reviewer.review({
+          foundation,
+          mode: "original",
+          language: resolvedLanguage,
+          targetChapters: book.targetChapters,
+        } as Parameters<FoundationReviewerAgent["review"]>[0]);
+        if (!review.passed) {
+          this.config.logger?.warn?.(
+            `[reviseFoundation] Foundation review did not pass; accepting rewrite. Feedback: ${review.overallFeedback ?? ""}`,
+          );
+        }
+      } catch (error) {
         this.config.logger?.warn?.(
-          `[reviseFoundation] Foundation review did not pass; accepting rewrite. Feedback: ${review.overallFeedback ?? ""}`,
+          `[reviseFoundation] Foundation review failed and was skipped: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
-    } catch (error) {
-      this.config.logger?.warn?.(
-        `[reviseFoundation] Foundation review failed and was skipped: ${error instanceof Error ? error.message : String(error)}`,
+
+      const outlineDir = join(stagingStoryDir, "outline");
+      await mkdir(outlineDir, { recursive: true });
+      await mkdir(join(stagingStoryDir, "roles", "主要角色"), { recursive: true });
+      await mkdir(join(stagingStoryDir, "roles", "次要角色"), { recursive: true });
+
+      const { profile: gp } = await this.loadGenreProfile(book.genre);
+      await architect.writeFoundationFiles(
+        stagingBookDir,
+        foundation,
+        gp.numericalSystem,
+        book.language ?? gp.language,
+        "revise",
       );
+
+      // Canon is part of the same transaction: a revised foundation must never
+      // become visible while story/canon still describes the previous version.
+      await this.extractInitialCanon(
+        stagingBookDir,
+        bookId,
+        resolvedLanguage,
+        resolvedLanguage,
+        true,
+      );
+
+      const rollbackStoryDir = join(bookDir, `.foundation-revise-rollback-${transactionId}`);
+      await renamePathWithRetry(storyDir, rollbackStoryDir);
+      try {
+        await renamePathWithRetry(stagingStoryDir, storyDir);
+      } catch (error) {
+        await renamePathWithRetry(rollbackStoryDir, storyDir).catch(() => undefined);
+        throw error;
+      }
+      await rm(rollbackStoryDir, { recursive: true, force: true }).catch((error) => {
+        this.config.logger?.warn?.(
+          `[reviseFoundation] Could not remove rollback directory: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    } finally {
+      await rm(stagingBookDir, { recursive: true, force: true }).catch(() => undefined);
     }
-
-    const outlineDir = join(storyDir, "outline");
-    await mkdir(outlineDir, { recursive: true });
-    await mkdir(join(storyDir, "roles", "主要角色"), { recursive: true });
-    await mkdir(join(storyDir, "roles", "次要角色"), { recursive: true });
-
-    const { profile: gp } = await this.loadGenreProfile(book.genre);
-    await architect.writeFoundationFiles(
-      bookDir,
-      foundation,
-      gp.numericalSystem,
-      book.language ?? gp.language,
-      "revise",
-    );
-
-    // Re-extract structured canon so story/canon/*.json reflects the revised
-    // foundation. Without this, later chapters compile their claim working set
-    // from stale canon. Extraction failure is non-fatal (logged as warning).
-    await this.extractInitialCanon(bookDir, bookId, resolvedLanguage, resolvedLanguage);
   }
 
   private async copyDirShallow(src: string, dest: string): Promise<void> {

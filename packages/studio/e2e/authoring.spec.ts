@@ -548,27 +548,48 @@ test("tests and saves a custom service after a successful stub probe", async ({
   page,
   request,
 }) => {
-  const savedBaseUrl = "http://127.0.0.1:11435/v1";
+  const before = await readJson<{
+    services: unknown[];
+    service: string | null;
+    defaultModel: string | null;
+    storedConfigSource: string;
+  }>(await request.get("/api/v1/services/config"));
+  const savedBaseUrl = "http://127.0.0.1:11436/v1";
+  try {
+    await page.goto("/#/services/custom%3ACustom");
+    await expect(page.getByTestId("service-base-url")).toBeVisible();
 
-  await page.goto("/#/services/custom%3ACustom");
-  await expect(page.getByTestId("service-base-url")).toBeVisible();
+    await page.getByTestId("service-api-key").fill("e2e-saved-key");
+    await page.getByTestId("service-base-url").fill(savedBaseUrl);
+    await page.getByTestId("service-test-connection").click();
+    await expect(page.getByTestId("service-connection-success")).toBeVisible();
 
-  await page.getByTestId("service-api-key").fill("e2e-saved-key");
-  await page.getByTestId("service-base-url").fill(savedBaseUrl);
-  await page.getByTestId("service-test-connection").click();
-  await expect(page.getByTestId("service-connection-success")).toBeVisible();
-
-  await page.getByTestId("service-save").click();
-  await pollUntil(
-    async () => await readJson<{ services: Array<{ service?: string; name?: string; baseUrl?: string }> }>(
-      await request.get("/api/v1/services/config"),
-    ),
-    (config) => config.services.some((service) =>
-      service.service === "custom" && service.name === "Custom" && service.baseUrl === savedBaseUrl,
-    ),
-    {
-      timeoutMs: 30_000,
-      description: "custom service configuration to be saved",
-    },
-  );
+    await page.getByTestId("service-save").click();
+    await pollUntil(
+      async () => await readJson<{ services: Array<{ service?: string; name?: string; baseUrl?: string }> }>(
+        await request.get("/api/v1/services/config"),
+      ),
+      (config) => config.services.some((service) =>
+        service.service === "custom" && service.name === "Custom" && service.baseUrl === savedBaseUrl,
+      ),
+      {
+        timeoutMs: 30_000,
+        description: "custom service configuration to be saved",
+      },
+    );
+  } finally {
+    const restoreConfig = await request.put("/api/v1/services/config", {
+      data: {
+        services: before.services,
+        service: before.service,
+        defaultModel: before.defaultModel,
+        configSource: before.storedConfigSource,
+      },
+    });
+    expect(restoreConfig.ok()).toBe(true);
+    const restoreSecret = await request.put("/api/v1/services/custom%3ACustom/secret", {
+      data: { apiKey: "stub-api-key" },
+    });
+    expect(restoreSecret.ok()).toBe(true);
+  }
 });

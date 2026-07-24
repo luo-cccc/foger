@@ -10,6 +10,7 @@ import type { AuditIssue } from "../agents/continuity.js";
 import type { ChapterMeta } from "../models/chapter.js";
 import type { LLMCallTelemetry } from "../llm/provider.js";
 import type { PipelineDiagnostic } from "./diagnostics.js";
+import { Cron } from "croner";
 import {
   auditIssuesFromChapterRecovery,
   decideChapterRecovery,
@@ -45,8 +46,7 @@ export interface SchedulerConfig extends PipelineConfig {
 
 interface ScheduledTask {
   readonly name: string;
-  readonly intervalMs: number;
-  timer?: ReturnType<typeof setInterval>;
+  readonly job: Cron;
 }
 
 export class Scheduler {
@@ -56,6 +56,8 @@ export class Scheduler {
   private tasks: ScheduledTask[] = [];
   private running = false;
   private writeCycleInFlight: Promise<void> | null = null;
+  private readonly shutdownController = new AbortController();
+  private reservedChapterSlots = 0;
 
   // Quality gate tracking (per book)
   private consecutiveFailures = new Map<string, number>();
@@ -78,6 +80,9 @@ export class Scheduler {
     const upstreamDiagnostic = config.onPipelineDiagnostic;
     this.pipeline = new PipelineRunner({
       ...config,
+      signal: config.signal
+        ? AbortSignal.any([config.signal, this.shutdownController.signal])
+        : this.shutdownController.signal,
       maxPromptEstimatedTokensPerCall: config.qualityGates?.maxPromptTokensPerCall ?? 16_000,
       onCallTelemetry: (telemetry) => {
         upstreamTelemetry?.(telemetry);
@@ -101,24 +106,28 @@ export class Scheduler {
 
   async start(): Promise<void> {
     if (this.running) return;
+    if (this.shutdownController.signal.aborted) {
+      throw new Error("A stopped Scheduler cannot be restarted; create a new Scheduler instance.");
+    }
     await this.restoreUnattendedState();
     this.running = true;
 
-    // Run write cycle immediately on start, then schedule
-    await this.triggerWriteCycle();
-
-    // Schedule recurring write cycle
-    const writeCycleMs = this.cronToMs(this.config.writeCron);
-    const writeTask: ScheduledTask = {
-      name: "write-cycle",
-      intervalMs: writeCycleMs,
-    };
-    writeTask.timer = setInterval(() => {
-      this.triggerWriteCycle().catch((e) => {
-        this.config.onError?.("scheduler", e as Error);
-      });
-    }, writeCycleMs);
-    this.tasks.push(writeTask);
+    const job = new Cron(this.config.writeCron, {
+      protect: true,
+      catch: (error) => {
+        if (!this.isShutdownError(error)) {
+          this.config.onError?.("scheduler", error as Error);
+        }
+      },
+    }, async () => {
+      if (!this.running) return;
+      try {
+        await this.triggerWriteCycle();
+      } catch (error) {
+        if (!this.isShutdownError(error)) throw error;
+      }
+    });
+    this.tasks.push({ name: "write-cycle", job });
   }
 
   /** Run exactly one write cycle without installing a recurring timer. */
@@ -135,12 +144,17 @@ export class Scheduler {
     }
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.running = false;
     for (const task of this.tasks) {
-      if (task.timer) clearInterval(task.timer);
+      task.job.stop();
     }
     this.tasks = [];
+    if (!this.shutdownController.signal.aborted) {
+      this.shutdownController.abort(new DOMException("Scheduler stopped", "AbortError"));
+    }
+    await this.writeCycleInFlight?.catch(() => undefined);
+    await this.persistStateTail.catch(() => undefined);
   }
 
   get isRunning(): boolean {
@@ -517,14 +531,14 @@ export class Scheduler {
 
   /** Check if daily cap is reached across all books. */
   private isDailyCapReached(): boolean {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = this.localDateKey();
     const count = this.dailyChapterCount.get(today) ?? 0;
-    return count >= this.config.maxChaptersPerDay;
+    return count + this.reservedChapterSlots >= this.config.maxChaptersPerDay;
   }
 
   /** Increment daily chapter counter. */
   private async recordChapterWritten(): Promise<void> {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = this.localDateKey();
     const count = this.dailyChapterCount.get(today) ?? 0;
     this.dailyChapterCount.set(today, count + 1);
 
@@ -560,12 +574,16 @@ export class Scheduler {
       }
     }
 
-    const booksToWrite = activeBooks.slice(0, this.config.maxConcurrentBooks);
-
-    // Parallel book processing
-    await Promise.all(
-      booksToWrite.map((book) => this.processBook(book.id, book.config)),
-    );
+    let nextBookIndex = 0;
+    const workerCount = Math.min(this.config.maxConcurrentBooks, activeBooks.length);
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (this.running) {
+        const book = activeBooks[nextBookIndex];
+        nextBookIndex += 1;
+        if (!book) return;
+        await this.processBook(book.id, book.config);
+      }
+    }));
   }
 
   /** Process a single book: write chaptersPerCycle chapters with retry + cooldown. */
@@ -580,14 +598,15 @@ export class Scheduler {
         await this.sleep(this.config.cooldownAfterChapterMs);
       }
 
-      const success = await this.writeOneChapter(bookId, bookConfig);
+      const success = await this.writeOneChapterWithinDailyCap(bookId, bookConfig);
       if (!success) {
+        if (this.isDailyCapReached()) return;
         const failures = this.consecutiveFailures.get(bookId) ?? 0;
         if (failures <= this.gates.maxAuditRetries && !this.pausedBooks.has(bookId)) {
           const waitMs = Math.max(this.config.retryDelayMs, this.retryWaitMs(bookId));
           this.log?.warn(`${bookId} retrying unattended action in ${waitMs}ms`);
           if (waitMs > 0) await this.sleep(waitMs);
-          const retrySuccess = await this.writeOneChapter(bookId, bookConfig);
+          const retrySuccess = await this.writeOneChapterWithinDailyCap(bookId, bookConfig);
           if (!retrySuccess) break; // Stop this book's cycle on second failure
         } else {
           break; // Stop this book's cycle
@@ -646,6 +665,7 @@ export class Scheduler {
       this.config.onChapterComplete?.(bookId, result.chapterNumber, result.status);
       return false;
     } catch (e) {
+      if (this.isShutdownError(e)) return false;
       this.config.onError?.(bookId, e as Error);
       const chapterNumber = attemptedChapter?.number ?? 0;
       const metrics = await this.captureBookMetrics(bookId).catch(() => undefined);
@@ -881,7 +901,6 @@ export class Scheduler {
       chapterNumber,
       withinHardRange,
     );
-    await this.recordChapterWritten();
     if (!runtimeGatesPassed) {
       this.config.onChapterComplete?.(bookId, chapterNumber, "ready-for-review");
       return false;
@@ -1063,30 +1082,53 @@ export class Scheduler {
     return contentStart >= 0 ? lines.slice(contentStart).join("\n") : raw;
   }
 
-  private cronToMs(cron: string): number {
-    const parts = cron.split(" ");
-    if (parts.length < 5) return 24 * 60 * 60 * 1000;
-
-    const minute = parts[0]!;
-    const hour = parts[1]!;
-
-    // "*/N * * * *" → every N minutes
-    if (minute.startsWith("*/")) {
-      const interval = parseInt(minute.slice(2), 10);
-      return interval * 60 * 1000;
+  private async writeOneChapterWithinDailyCap(bookId: string, bookConfig: BookConfig): Promise<boolean> {
+    if (!this.tryReserveChapterSlot()) return false;
+    let success = false;
+    try {
+      success = await this.writeOneChapter(bookId, bookConfig);
+      return success;
+    } finally {
+      this.reservedChapterSlots = Math.max(0, this.reservedChapterSlots - 1);
+      if (success) await this.recordChapterWritten();
     }
+  }
 
-    // "0 */N * * *" → every N hours
-    if (hour.startsWith("*/")) {
-      const interval = parseInt(hour.slice(2), 10);
-      return interval * 60 * 60 * 1000;
-    }
+  private tryReserveChapterSlot(): boolean {
+    const today = this.localDateKey();
+    const written = this.dailyChapterCount.get(today) ?? 0;
+    if (written + this.reservedChapterSlots >= this.config.maxChaptersPerDay) return false;
+    this.reservedChapterSlots += 1;
+    return true;
+  }
 
-    // Fixed time → treat as daily
-    return 24 * 60 * 60 * 1000;
+  private localDateKey(now: Date = new Date()): string {
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  private isShutdownError(error: unknown): boolean {
+    return this.shutdownController.signal.aborted
+      || this.config.signal?.aborted === true
+      || (error instanceof Error && error.name === "AbortError");
   }
 
   private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    if (ms <= 0) return Promise.resolve();
+    const signal = this.shutdownController.signal;
+    if (signal.aborted) return Promise.reject(signal.reason);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(signal.reason);
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
   }
 }

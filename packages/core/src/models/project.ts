@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CronPattern } from "croner";
 import { CONTENT_POLICY_FALLBACK_AGENTS } from "../llm/agent-model-routing.js";
 
 // C1 (v2.0.0 breaking): `maxTokens` 字段已被 providers bank 接管；zod 用 strip mode 静默丢弃老配置里的 `maxTokens`。
@@ -129,6 +130,15 @@ export type InputGovernanceMode = z.infer<typeof InputGovernanceModeSchema>;
 
 const ModelOverrideValueSchema = z.union([z.string(), AgentLLMOverrideSchema]);
 
+const CronExpressionSchema = z.string().trim().min(1).refine((value) => {
+  try {
+    new CronPattern(value);
+    return true;
+  } catch {
+    return false;
+  }
+}, "Invalid cron expression");
+
 export const ProjectConfigSchema = z.object({
   name: z.string().min(1),
   version: z.literal("0.1.0"),
@@ -148,7 +158,7 @@ export const ProjectConfigSchema = z.object({
   inputGovernanceMode: InputGovernanceModeSchema.default("v2"),
   daemon: z.object({
     schedule: z.object({
-      writeCron: z.string().default("*/15 * * * *"),
+      writeCron: CronExpressionSchema.default("*/15 * * * *"),
     }),
     maxConcurrentBooks: z.number().int().min(1).default(3),
     chaptersPerCycle: z.number().int().min(1).max(20).default(1),

@@ -2208,6 +2208,14 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
     if (await completeBookExists(bookDir)) {
       return c.json({ error: `Book "${bookId}" already exists` }, 409);
     }
+    if (bookCreateStatus.get(bookId)?.status === "creating") {
+      return c.json({
+        error: `Book "${bookId}" is already being created`,
+        code: "BOOK_CREATE_ACTIVE",
+        status: "creating",
+        bookId,
+      }, 409);
+    }
 
     broadcast("book:creating", { bookId, title: body.title });
     bookCreateStatus.set(bookId, { status: "creating" });
@@ -3266,8 +3274,8 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
   });
 
   app.post("/api/v1/daemon/start", async (c) => {
-    if (schedulerInstance?.isRunning) {
-      return c.json({ error: "Daemon already running" }, 400);
+    if (schedulerInstance) {
+      return c.json({ error: "Daemon already running or transitioning" }, 400);
     }
     try {
       const currentConfig = await loadCurrentProjectConfig();
@@ -3288,10 +3296,10 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
       });
       schedulerInstance = scheduler;
       broadcast("daemon:started", {});
-      void scheduler.start().catch((e) => {
+      void scheduler.start().catch(async (e) => {
         const error = e instanceof Error ? e : new Error(String(e));
         if (schedulerInstance === scheduler) {
-          scheduler.stop();
+          await scheduler.stop();
           schedulerInstance = null;
           broadcast("daemon:stopped", {});
         }
@@ -3303,12 +3311,16 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string) {
     }
   });
 
-  app.post("/api/v1/daemon/stop", (c) => {
+  app.post("/api/v1/daemon/stop", async (c) => {
     if (!schedulerInstance?.isRunning) {
       return c.json({ error: "Daemon not running" }, 400);
     }
-    schedulerInstance.stop();
-    schedulerInstance = null;
+    const scheduler = schedulerInstance;
+    broadcast("daemon:stopping", {});
+    await scheduler.stop();
+    if (schedulerInstance === scheduler) {
+      schedulerInstance = null;
+    }
     broadcast("daemon:stopped", {});
     return c.json({ ok: true, running: false });
   });

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 const schedulerStartMock = vi.fn<() => Promise<void>>();
+const schedulerStopMock = vi.fn<() => Promise<void>>();
 const initBookMock = vi.fn();
 const planChapterMock = vi.fn();
 const composeChapterMock = vi.fn();
@@ -239,8 +240,9 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
       await schedulerStartMock();
     }
 
-    stop(): void {
+    async stop(): Promise<void> {
       this.running = false;
+      await schedulerStopMock();
     }
 
     get isRunning(): boolean {
@@ -388,6 +390,8 @@ describe("createStudioServer daemon lifecycle", () => {
     root = await mkdtemp(join(tmpdir(), "inkos-studio-server-"));
     await writeFile(join(root, "inkos.json"), JSON.stringify(projectConfig, null, 2), "utf-8");
     schedulerStartMock.mockReset();
+    schedulerStopMock.mockReset();
+    schedulerStopMock.mockResolvedValue(undefined);
     initBookMock.mockReset();
     planChapterMock.mockReset();
     composeChapterMock.mockReset();
@@ -641,6 +645,30 @@ describe("createStudioServer daemon lifecycle", () => {
 
     resolveStart?.();
   }, 60_000);
+
+  it("does not allow a replacement daemon until the previous daemon has fully stopped", async () => {
+    schedulerStartMock.mockResolvedValue(undefined);
+    let finishStop!: () => void;
+    schedulerStopMock.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      finishStop = resolve;
+    }));
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    expect((await app.request("http://localhost/api/v1/daemon/start", { method: "POST" })).status).toBe(200);
+    const stopping = app.request("http://localhost/api/v1/daemon/stop", { method: "POST" });
+    await vi.waitFor(() => expect(schedulerStopMock).toHaveBeenCalledTimes(1));
+
+    const overlappingStart = await app.request("http://localhost/api/v1/daemon/start", { method: "POST" });
+    expect(overlappingStart.status).toBe(400);
+    await expect(overlappingStart.json()).resolves.toMatchObject({
+      error: "Daemon already running or transitioning",
+    });
+
+    finishStop();
+    expect((await stopping).status).toBe(200);
+    expect((await app.request("http://localhost/api/v1/daemon/start", { method: "POST" })).status).toBe(200);
+  });
 
   it("rejects book routes with path traversal ids", async () => {
     const { createStudioServer } = await import("./server.js");
@@ -2734,6 +2762,40 @@ describe("createStudioServer daemon lifecycle", () => {
     });
     expect(processProjectInteractionRequestMock).not.toHaveBeenCalled();
     await expect(access(join(root, "books", "existing-book", "story", "story_bible.md"))).resolves.toBeUndefined();
+  });
+
+  it("rejects a concurrent create request for the same normalized book id", async () => {
+    let rejectCreate!: (reason?: unknown) => void;
+    processProjectInteractionRequestMock.mockImplementationOnce(() =>
+      new Promise((_resolve, reject) => { rejectCreate = reject; })
+    );
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const request = () => app.request("http://localhost/api/v1/books/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: "Concurrent Book",
+        genre: "xuanhuan",
+        platform: "qidian",
+        language: "zh",
+      }),
+    });
+
+    const first = await request();
+    const second = await request();
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(409);
+    await expect(second.json()).resolves.toMatchObject({
+      code: "BOOK_CREATE_ACTIVE",
+      status: "creating",
+      bookId: "concurrent-book",
+    });
+    expect(processProjectInteractionRequestMock).toHaveBeenCalledTimes(1);
+
+    rejectCreate(new Error("test cleanup"));
+    await Promise.resolve();
   });
 
   it("reports an async create error when foundation files exist but role cards are empty", async () => {

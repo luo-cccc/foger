@@ -21,6 +21,9 @@ test-project/
 .worktrees/
 docs/*
 !docs/*.md
+!docs/releases/
+docs/releases/*
+!docs/releases/release-notes.md
 novel-to-comic-research.docx
 .pnpm-store/
 tmp/

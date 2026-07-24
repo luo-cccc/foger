@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { BookCreationDraft } from "@actalk/inkos-core";
 import { BookPlus, CheckCircle2, RotateCcw, Sparkles } from "lucide-react";
 import { fetchJson, useApi } from "../hooks/use-api";
@@ -592,6 +592,7 @@ export function BookCreate({ nav, theme, t }: { nav: Nav; theme: Theme; t: TFunc
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [bookCreateSessionId, setBookCreateSessionIdState] = useState<string | null>(null);
+  const createInFlight = useRef(false);
 
   const summaryStages = useMemo(
     () => (draft ? buildCreationDraftStages(draft, projectLang) : []),
@@ -726,10 +727,11 @@ export function BookCreate({ nav, theme, t }: { nav: Nav; theme: Theme; t: TFunc
   };
 
   const handleFormCreate = async () => {
-    if (!canSubmitForm) {
+    if (!canSubmitForm || createInFlight.current) {
       return;
     }
 
+    createInFlight.current = true;
     setCreating(true);
     setError(null);
     setStatus(copy.creationStatus);
@@ -749,15 +751,17 @@ export function BookCreate({ nav, theme, t }: { nav: Nav; theme: Theme; t: TFunc
       setError(cause instanceof Error ? cause.message : String(cause));
       setStatus(null);
     } finally {
+      createInFlight.current = false;
       setCreating(false);
     }
   };
 
   const handleCreate = async () => {
-    if (!canCreateFromDraft(draft)) {
+    if (!canCreateFromDraft(draft) || createInFlight.current) {
       return;
     }
 
+    createInFlight.current = true;
     setCreating(true);
     setError(null);
     try {
@@ -773,6 +777,7 @@ export function BookCreate({ nav, theme, t }: { nav: Nav; theme: Theme; t: TFunc
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
+      createInFlight.current = false;
       setCreating(false);
     }
   };

@@ -1,5 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildApiUrl, deriveInvalidationPaths, fetchJson } from "./use-api";
+import { buildApiUrl, deriveInvalidationPaths, fetchJson, LatestApiRequestGuard } from "./use-api";
+
+describe("LatestApiRequestGuard", () => {
+  it("invalidates and aborts an older request when a new request begins", () => {
+    const guard = new LatestApiRequestGuard();
+    const oldRequest = guard.begin();
+    const currentRequest = guard.begin();
+
+    expect(oldRequest.signal.aborted).toBe(true);
+    expect(oldRequest.isCurrent()).toBe(false);
+    expect(currentRequest.signal.aborted).toBe(false);
+    expect(currentRequest.isCurrent()).toBe(true);
+
+    guard.cancel();
+    expect(currentRequest.signal.aborted).toBe(true);
+    expect(currentRequest.isCurrent()).toBe(false);
+  });
+});
 
 describe("buildApiUrl", () => {
   it("returns null for blank paths so callers can skip requests", () => {

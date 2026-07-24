@@ -375,6 +375,13 @@ describe("ProjectConfigSchema", () => {
     expect(result.daemon.maxChaptersPerDay).toBe(50);
   });
 
+  it("rejects invalid daemon cron expressions", () => {
+    expect(() => ProjectConfigSchema.parse({
+      ...validProject,
+      daemon: { schedule: { writeCron: "not a cron expression" } },
+    })).toThrow(/Invalid cron expression/);
+  });
+
   it("defaults long-form writing review retries to two and accepts project overrides", () => {
     const defaults = ProjectConfigSchema.parse(validProject);
     expect(defaults.writing.reviewRetries).toBe(2);

@@ -64,7 +64,7 @@ export const upCommand = new Command("up")
       // Handle shutdown
       const shutdown = async () => {
         log("\nShutting down daemon...");
-        scheduler.stop();
+        await scheduler.stop();
         logStream?.end();
         const currentPidPath = pidPath;
         if (currentPidPath !== undefined) {

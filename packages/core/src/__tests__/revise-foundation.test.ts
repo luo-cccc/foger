@@ -597,8 +597,8 @@ describe("reviseFoundation re-extracts structured canon", () => {
     }
   });
 
-  it("does not fail the revise when canon extraction throws (non-fatal degradation)", async () => {
-    const { mkdtemp, writeFile, mkdir, rm } = await import("node:fs/promises");
+  it("rolls back the foundation and canon when canon extraction fails", async () => {
+    const { mkdtemp, writeFile, mkdir, rm, readFile } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { PipelineRunner } = await import("../pipeline/runner.js");
@@ -613,6 +613,12 @@ describe("reviseFoundation re-extracts structured canon", () => {
       await writeFile(join(bookDir, "story", "volume_outline.md"), "## 卷一", "utf-8");
       await writeFile(join(bookDir, "story", "book_rules.md"), "## 规则", "utf-8");
       await writeFile(join(bookDir, "story", "character_matrix.md"), "## 角色", "utf-8");
+      await mkdir(join(bookDir, "story", "canon"), { recursive: true });
+      await writeFile(
+        join(bookDir, "story", "canon", "claims.json"),
+        JSON.stringify({ claims: [{ id: "OLD-CANON", content: "旧设定" }] }),
+        "utf-8",
+      );
       await writeFile(join(bookDir, "book.json"), JSON.stringify({
         id: "canon-fail-book", title: "书", platform: "qidian", genre: "xuanhuan",
         status: "active", targetChapters: 50, chapterWordCount: 3000, language: "zh",
@@ -636,7 +642,12 @@ describe("reviseFoundation re-extracts structured canon", () => {
         state, projectRoot: root, client: TEST_CLIENT, model: "test-model",
       } as unknown as ConstructorParameters<typeof PipelineRunner>[0]);
 
-      await expect(runner.reviseFoundation("canon-fail-book", "换个世界观")).resolves.not.toThrow();
+      await expect(runner.reviseFoundation("canon-fail-book", "换个世界观"))
+        .rejects.toThrow("boom");
+      await expect(readFile(join(bookDir, "story", "story_bible.md"), "utf-8"))
+        .resolves.toBe("# 架构稿");
+      await expect(readFile(join(bookDir, "story", "canon", "claims.json"), "utf-8"))
+        .resolves.toContain("OLD-CANON");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

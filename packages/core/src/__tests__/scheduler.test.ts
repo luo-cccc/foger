@@ -59,22 +59,132 @@ describe("Scheduler", () => {
     const runWriteCycle = vi
       .spyOn(scheduler as unknown as { runWriteCycle: () => Promise<void> }, "runWriteCycle")
       .mockImplementation(async () => {
-        if (runWriteCycle.mock.calls.length === 1) {
-          return;
-        }
         await blockedCycle;
       });
     await scheduler.start();
+    expect(runWriteCycle).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(runWriteCycle).toHaveBeenCalledTimes(2);
+    expect(runWriteCycle).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(runWriteCycle).toHaveBeenCalledTimes(2);
+    expect(runWriteCycle).toHaveBeenCalledTimes(1);
 
     releaseCycle?.();
     await blockedCycle;
-    scheduler.stop();
+    await scheduler.stop();
+  });
+
+  it("honors a fixed wall-clock cron time", async () => {
+    vi.setSystemTime(new Date(2026, 6, 24, 10, 29, 30));
+    const scheduler = new Scheduler({ ...createConfig(), writeCron: "30 10 * * *" });
+    const cycle = vi.spyOn(
+      scheduler as unknown as { runWriteCycle: () => Promise<void> },
+      "runWriteCycle",
+    ).mockResolvedValue(undefined);
+
+    await scheduler.start();
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(cycle).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(cycle).toHaveBeenCalledTimes(1);
+    await scheduler.stop();
+  });
+
+  it("aborts and waits for an in-flight cycle when stopped", async () => {
+    const scheduler = new Scheduler(createConfig());
+    const internal = scheduler as unknown as {
+      shutdownController: AbortController;
+      runWriteCycle: () => Promise<void>;
+    };
+    let cycleFinished = false;
+    vi.spyOn(internal, "runWriteCycle").mockImplementation(async () => {
+      await new Promise<void>((resolve) => {
+        internal.shutdownController.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      cycleFinished = true;
+    });
+
+    await scheduler.start();
+    await vi.advanceTimersByTimeAsync(60_000);
+    await scheduler.stop();
+
+    expect(internal.shutdownController.signal.aborted).toBe(true);
+    expect(cycleFinished).toBe(true);
+    expect(scheduler.isRunning).toBe(false);
+  });
+
+  it("does not persist an unattended failure when shutdown aborts a chapter", async () => {
+    const scheduler = new Scheduler(createConfig());
+    const internal = scheduler as unknown as {
+      pipeline: { writeNextChapter: () => Promise<unknown> };
+      shutdownController: AbortController;
+      handleAuditFailure: (...args: unknown[]) => Promise<void>;
+      writeOneChapter: (bookId: string, config: BookConfig) => Promise<boolean>;
+    };
+    vi.spyOn(internal.pipeline, "writeNextChapter").mockImplementation(async () => {
+      internal.shutdownController.abort(new DOMException("stopped", "AbortError"));
+      throw new DOMException("stopped", "AbortError");
+    });
+    const failure = vi.spyOn(internal, "handleAuditFailure");
+
+    await expect(internal.writeOneChapter("book-1", createBook("book-1"))).resolves.toBe(false);
+    expect(failure).not.toHaveBeenCalled();
+  });
+
+  it("processes every active book with a bounded worker pool", async () => {
+    const scheduler = new Scheduler({ ...createConfig(), maxConcurrentBooks: 2 });
+    const internal = scheduler as unknown as {
+      running: boolean;
+      state: {
+        listBooks: () => Promise<string[]>;
+        loadBookConfig: (id: string) => Promise<BookConfig>;
+      };
+      processBook: (id: string, config: BookConfig) => Promise<void>;
+      runWriteCycle: () => Promise<void>;
+    };
+    const ids = ["book-1", "book-2", "book-3", "book-4", "book-5"];
+    vi.spyOn(internal.state, "listBooks").mockResolvedValue(ids);
+    vi.spyOn(internal.state, "loadBookConfig").mockImplementation(async (id) => createBook(id));
+    const processed = vi.spyOn(internal, "processBook").mockResolvedValue(undefined);
+    internal.running = true;
+
+    await internal.runWriteCycle();
+
+    expect(processed.mock.calls.map(([id]) => id)).toEqual(ids);
+  });
+
+  it("reserves daily capacity before concurrent chapter writes", async () => {
+    const scheduler = new Scheduler({ ...createConfig(), maxChaptersPerDay: 2 });
+    const internal = scheduler as unknown as {
+      writeOneChapter: (bookId: string, config: BookConfig) => Promise<boolean>;
+      writeOneChapterWithinDailyCap: (bookId: string, config: BookConfig) => Promise<boolean>;
+      dailyChapterCount: Map<string, number>;
+      localDateKey: () => string;
+      persistUnattendedState: () => Promise<void>;
+    };
+    let releaseWrites: (() => void) | undefined;
+    const blocked = new Promise<void>((resolve) => { releaseWrites = resolve; });
+    const write = vi.spyOn(internal, "writeOneChapter").mockImplementation(async () => {
+      await blocked;
+      return true;
+    });
+    vi.spyOn(internal, "persistUnattendedState").mockResolvedValue(undefined);
+
+    const attempts = ["book-1", "book-2", "book-3"].map((id) =>
+      internal.writeOneChapterWithinDailyCap(id, createBook(id))
+    );
+    expect(write).toHaveBeenCalledTimes(2);
+    releaseWrites?.();
+    await expect(Promise.all(attempts)).resolves.toEqual([true, true, false]);
+    expect(internal.dailyChapterCount.get(internal.localDateKey())).toBe(2);
+  });
+
+  it("uses the host local calendar date for daily quotas", () => {
+    const scheduler = new Scheduler(createConfig());
+    const localDateKey = (scheduler as unknown as { localDateKey: (now: Date) => string }).localDateKey;
+
+    expect(localDateKey.call(scheduler, new Date(2026, 0, 2, 0, 30))).toBe("2026-01-02");
   });
 
   it("runs one restored write cycle without installing a recurring timer", async () => {

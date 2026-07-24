@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { localizeKnownRuntimeMessage } from "../lib/error-copy";
 
 const BASE = "/api/v1";
@@ -6,6 +6,37 @@ const API_INVALIDATE_EVENT = "inkos:api-invalidate";
 
 interface ApiInvalidateDetail {
   readonly paths: ReadonlyArray<string>;
+}
+
+export interface ApiRequestToken {
+  readonly signal: AbortSignal;
+  isCurrent(): boolean;
+}
+
+export class LatestApiRequestGuard {
+  private sequence = 0;
+  private controller: AbortController | null = null;
+
+  begin(): ApiRequestToken {
+    this.cancel();
+    const sequence = this.sequence;
+    const controller = new AbortController();
+    this.controller = controller;
+    return {
+      signal: controller.signal,
+      isCurrent: () => sequence === this.sequence && !controller.signal.aborted,
+    };
+  }
+
+  finish(token: ApiRequestToken): void {
+    if (token.isCurrent()) this.controller = null;
+  }
+
+  cancel(): void {
+    this.sequence += 1;
+    this.controller?.abort();
+    this.controller = null;
+  }
 }
 
 export function buildApiUrl(path: string): string | null {
@@ -123,30 +154,44 @@ export function useApi<T>(path: string) {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const requestGuard = useRef<LatestApiRequestGuard | null>(null);
+  requestGuard.current ??= new LatestApiRequestGuard();
 
   const refetch = useCallback(async () => {
+    const guard = requestGuard.current!;
     const url = buildApiUrl(path);
     if (!url) {
+      guard.cancel();
       setData(null);
       setError(null);
       setLoading(false);
       return;
     }
 
+    const request = guard.begin();
     setLoading(true);
     setError(null);
     try {
-      const json = await fetchJson<T>(url);
+      const json = await fetchJson<T>(url, { signal: request.signal });
+      if (!request.isCurrent()) return;
       setData(json);
     } catch (e) {
+      if (!request.isCurrent()) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
+      if (!request.isCurrent()) return;
+      guard.finish(request);
       setLoading(false);
     }
   }, [path]);
 
   useEffect(() => {
-    refetch();
+    setData(null);
+    setError(null);
+    void refetch();
+    return () => {
+      requestGuard.current?.cancel();
+    };
   }, [refetch]);
 
   useEffect(() => {
