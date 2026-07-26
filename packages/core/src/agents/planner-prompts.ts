@@ -6,6 +6,8 @@
  * (NOT YAML frontmatter, NOT JSON-with-embedded-markdown).
  */
 
+import { buildNarrativeDriveContract } from "./narrative-drive-contract.js";
+
 export const PLANNER_MEMO_SYSTEM_PROMPT = `你是这本小说的创作总编，职责是为下一章产生一份 chapter_memo。你不写正文——你只规划这章要完成什么、兑现什么、不要做什么。下游写手（writer）会按你的 memo 扩写正文。
 
 你的工作原则（内化，不要在 memo 里引用条目号）：
@@ -25,6 +27,8 @@ export const PLANNER_MEMO_SYSTEM_PROMPT = `你是这本小说的创作总编，�
 13. 圆心法同场多视角：当本章有一个核心事件把两个以上主要角色聚到同一场景（家庭冲突、对质、意外、抉择时刻），必须把这个事件当成圆心，给每个在场关键角色安排**一段独立的内心反应**——他们看到的同一件事，各自怎么解读、怎么算计、怎么动摇。memo 里用 "## 当前任务" 或 "## 日常/过渡承担什么任务" 显式说明"本章 X/Y/Z 各从自己角度过一次"，不要只写一个视角
 14. 揭 1 埋 2 推荐：本章每 resolve 掉 1 个钩子，尽量在 open 段同时埋 2 个新钩子（上限仍是 ≤ 2 个/章），而且新钩子最好跟刚揭的钩子有因果关联，不要凭空冒出来。硬底线是"揭 1 埋 1"——resolve 了 N 个，open 至少 N 个，下游 validator 会卡
 15. 用户设定的内容比例必须落成场面：如果 brief、book_rules、current_focus 或本章用户指令写了"权谋/感情各半""事业线 70% + 恋爱线 30%"这类比例，不要在 memo 里只复述比例。必须把每条线分配到本章可见场景、对话、行动或关系变化里；某条线本章暂不推进时，要写清楚为什么暂压、下一次何时补。
+
+${buildNarrativeDriveContract("planner", "zh")}
 
 ## 输出格式（严格遵守）
 
@@ -141,6 +145,8 @@ Your working principles (internalize them — do not cite by number in the memo)
 13. Center-of-circle multi-POV: when the chapter has one core event that pulls two or more main characters into the same scene (family clash, confrontation, accident, decision moment), treat that event as the center and give each present key character **a distinct inner reaction** — same event, different interpretations, different calculations, different wavering. In "## Current task" or "## What the slow / transitional beats carry", explicitly say "X/Y/Z each run through it from their own angle this chapter"; do not collapse everything to a single POV.
 14. Reveal 1, bury 2 (recommended): for every hook you resolve this chapter, try to open 2 new hooks in the same memo (the ≤ 2 new hooks cap still applies), and the new hooks should be causally connected to the one you just resolved, not out of nowhere. The hard floor is "reveal 1, bury 1" — if you resolve N, you must open ≥ N; the downstream validator will reject otherwise.
 15. User-specified content proportions must become scenes: if the brief, book_rules, current_focus, or per-chapter user instruction says "politics 50% / romance 50%" or "career line 70% + romance 30%", do not merely repeat the ratio in the memo. Allocate each line to visible scenes, dialogue, action, or relationship movement. If a line is intentionally paused this chapter, state why and when the next visible beat should compensate.
+
+${buildNarrativeDriveContract("planner", "en")}
 
 ## Output format (strict)
 

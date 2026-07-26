@@ -101,22 +101,22 @@ export class FoundationReviewerAgent extends BaseAgent {
     const compact = target <= FOUNDATION_COMPACT_MAX_CHAPTERS;
     return language === "en"
       ? [
-          `Core Conflict (Is there a clear, compelling central conflict that can sustain the requested ${target} chapters?)`,
-          `Opening Momentum (Can the first ${openingWindow} chapters create a page-turning hook?)`,
-          "World Coherence (Is the worldbuilding internally consistent and specific?)",
+          `Core Conflict (Is there a compelling high-pressure relationship whose parties cannot simply walk away, with enough leverage and cost to sustain the requested ${target} chapters?)`,
+          `Opening Momentum (Can the first ${openingWindow} chapters combine a familiar payoff with a concrete emotional hook rather than only introducing lore?)`,
+          "World Coherence (Is the premise difference internally consistent, specific, and consequential for character choices and costs rather than cosmetic renaming?)",
           "Character Differentiation (Are the main characters distinct in voice and motivation?)",
           compact
-            ? `Pacing Feasibility (Does the Compact Chapter Beat Contract cover all ${target} chapters with a distinct Goal, Obstacle, Turn, observable Delivery, and causal End Hook per chapter, while chapter ${target} closes the core conflict?)`
-            : `Pacing Feasibility (Does the outline fit the requested ${target} chapters and avoid repeating the same beat for ${repeatWindow} chapters?)`,
+            ? `Pacing Feasibility (Does the Compact Chapter Beat Contract cover all ${target} chapters with a distinct Goal, Obstacle, evidence-driven Turn, observable familiar Delivery, and emotional End Hook per chapter, while chapter ${target} closes the core conflict?)`
+            : `Pacing Feasibility (Does the outline fit the requested ${target} chapters, vary evidence-driven reversals with aftermath, and avoid repeating the same beat for ${repeatWindow} chapters?)`,
         ]
       : [
-          `核心冲突（是否有清晰且有足够张力的核心冲突支撑用户要求的${target}章？）`,
-          `开篇节奏（前${openingWindow}章能否形成翻页驱动力？）`,
-          "世界一致性（世界观是否内洽且具体？）",
+          `核心冲突（是否有双方不能轻易退出、各自握有筹码与退出代价的高压关系，足以支撑用户要求的${target}章？）`,
+          `开篇节奏（前${openingWindow}章能否用熟悉爽点承接新设定，并形成具体的情绪续读钩子，而不是只介绍世界观？）`,
+          "世界一致性（新颖设定是否内洽、具体，并真实改变人物选择与失败代价，而非只替换术语？）",
           "角色区分度（主要角色的声音和动机是否各不相同？）",
           compact
-            ? `节奏可行性（紧凑篇逐章节拍合同是否覆盖全部${target}章，每章都有不同的目标、阻碍、转折、可观察交付和因果章末钩子，且第${target}章闭合核心冲突？）`
-            : `节奏可行性（大纲是否适配用户要求的${target}章，并避免连续${repeatWindow}章同一种节拍？）`,
+            ? `节奏可行性（紧凑篇逐章节拍合同是否覆盖全部${target}章，每章都有不同的目标、阻碍、转折、可观察交付和因果章末钩子；其中转折有前置证据、交付承接熟悉回报、章末留下情绪余震，且第${target}章闭合核心冲突？）`
+            : `节奏可行性（大纲是否适配用户要求的${target}章，让有证据的反转与后效交替，并避免连续${repeatWindow}章同一种节拍？）`,
         ];
   }
 
@@ -127,16 +127,16 @@ export class FoundationReviewerAgent extends BaseAgent {
       ? [
           `Source DNA Preservation (Does the ${modeLabel} respect the original's world rules, character personalities, and established facts?)`,
           `New Narrative Space (Is there a clear divergence point or new territory that gives the story room to be ORIGINAL, not a retelling?)`,
-          "Core Conflict (Is the new story's central conflict compelling and distinct from the original?)",
-          "Opening Momentum (Can the first 5 chapters create a page-turning hook without requiring 3 chapters of setup?)",
-          `Pacing Feasibility (Does the outline avoid the trap of re-walking the original's plot beats?)`,
+          "Core Conflict (Does the new story create a distinct high-pressure relationship whose parties cannot simply walk away?)",
+          "Opening Momentum (Can the first 5 chapters pair a source-familiar payoff with the new narrative space and a concrete emotional hook?)",
+          `Pacing Feasibility (Does the outline avoid re-walking the original's plot beats, using evidence-driven reversals and aftermath instead of arbitrary surprise?)`,
         ]
       : [
           `原作DNA保留（${modeLabel}是否尊重原作的世界规则、角色性格、已确立事实？）`,
           `新叙事空间（是否有明确的分岔点或新领域，让故事有原创空间，而非复述原作？）`,
-          "核心冲突（新故事的核心冲突是否有足够张力且区别于原作？）",
-          "开篇节奏（前5章能否形成翻页驱动力，不需要3章铺垫？）",
-          `节奏可行性（卷纲是否避免了重走原作剧情节拍的陷阱？）`,
+          "核心冲突（新故事是否建立了区别于原作、双方又不能轻易退出的高压关系？）",
+          "开篇节奏（前5章能否让原作读者熟悉的回报承接新叙事空间，并形成具体的情绪续读钩子？）",
+          `节奏可行性（卷纲是否避免重走原作剧情节拍，用有证据的反转及后效替代任意惊讶？）`,
         ];
   }
 

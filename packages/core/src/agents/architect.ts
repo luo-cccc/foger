@@ -15,6 +15,7 @@ import {
   normalizeFoundationVolumeContracts,
   renderFoundationScaleGuidance,
 } from "../utils/foundation-scale.js";
+import { buildNarrativeDriveContract } from "./narrative-drive-contract.js";
 
 // ---------------------------------------------------------------------------
 // Phase 5 (v13) — Static 骨架 layer collapse
@@ -225,6 +226,8 @@ ${reviseFrom.userFeedback || "（无）"}
 
 ${scaleGuidance}
 
+${buildNarrativeDriveContract("foundation", "zh")}
+
 ## 题材底色
 ${genreBody}
 
@@ -433,6 +436,8 @@ ${gp.eraResearch ? `## 年代限制
 - Title: ${book.title}
 
 ${scaleGuidance}
+
+${buildNarrativeDriveContract("foundation", "en")}
 
 ## Genre body
 ${genreBody}

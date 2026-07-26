@@ -69,6 +69,9 @@ describe("FoundationReviewerAgent", () => {
     expect(messages[0]?.content).toContain("覆盖全部8章");
     expect(messages[0]?.content).toContain("逐章节拍合同");
     expect(messages[0]?.content).toContain("目标、阻碍、转折、可观察交付");
+    expect(messages[0]?.content).toContain("高压关系");
+    expect(messages[0]?.content).toContain("新颖设定");
+    expect(messages[0]?.content).toContain("情绪续读钩子");
     expect(messages[0]?.content).not.toContain("支撑40章");
     expect(messages[0]?.content).not.toContain("连续10章");
   });

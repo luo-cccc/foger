@@ -4,6 +4,7 @@ import type { BookRules } from "../models/book-rules.js";
 import type { LengthSpec } from "../models/length-governance.js";
 import { buildEnglishCoreRules, buildEnglishAntiAIRules, buildEnglishCharacterMethod, buildEnglishPreWriteChecklist, buildEnglishGenreIntro } from "./en-prompt-sections.js";
 import { stripBuiltInWritingMethodology } from "../utils/writing-methodology.js";
+import { buildNarrativeDriveContract } from "./narrative-drive-contract.js";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -40,6 +41,7 @@ export function buildWriterSystemPrompt(
         buildEnglishCoreRules(book),
         buildGovernedInputContract("en", governed),
         buildChapterMemoContract("en", governed),
+        buildNarrativeDriveContract("writer", "en"),
         buildWritingCraftCard("en"),
         buildProseExecutionRules("en"),
         buildCreativeConstitution("en"),
@@ -59,6 +61,7 @@ export function buildWriterSystemPrompt(
         buildCoreRules(),
         buildGovernedInputContract("zh", governed),
         buildChapterMemoContract("zh", governed),
+        buildNarrativeDriveContract("writer", "zh"),
         buildWritingCraftCard("zh"),
         buildProseExecutionRules("zh"),
         buildCreativeConstitution("zh"),

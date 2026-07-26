@@ -15,6 +15,7 @@ import { renderMemoAsNarrativeBlock } from "../utils/narrative-control.js";
 import { join } from "node:path";
 import { estimateTextTokens } from "../llm/provider.js";
 import { resolvePromptCompactionTarget, truncatePromptBlock } from "../utils/prompt-budget.js";
+import { buildNarrativeDriveContract } from "./narrative-drive-contract.js";
 
 export interface AuditResult {
   readonly passed: boolean;
@@ -435,6 +436,8 @@ Sparse chapter_memo is legitimate. Breather / aftermath / transition chapters ma
 
 If the chapter memo, rule stack, or supplied context specifies content proportions between lines (politics/romance, career/relationship, case/character, etc.), audit whether those lines appear as actual scenes, dialogue, action, or relationship movement. A line that is only summarized in one sentence counts as missing. Mark it critical only when the memo explicitly required it for this chapter.
 
+${buildNarrativeDriveContract("auditor", "en")}
+
 For every issue, set repair_scope as a typed routing hint: "local" for wording, paragraph shape, small repetition, or narrow sentence-level fixes; "structural" for plot drift, timeline break, missing scene/payoff, character logic collapse, POV/knowledge boundary failure, or anything requiring a rewritten scene/chapter; "unknown" only when you genuinely cannot decide.
 
 Audit dimensions:
@@ -476,6 +479,8 @@ Score holistically — do not let a single minor issue tank the score.`
 稀疏 memo 是合法状态。喘息章 / 后效章 / 过渡章的 memo 可以只有 goal + 骨架 body——此类 memo 不判 incomplete，也不能因为 memo 没写的段落就扣成稿的分。只按 memo 实际写出来的内容判偏离。
 
 如果章节备忘、规则栈或输入上下文明确指定多条剧情线的比例（权谋/感情、事业/恋爱、案件/人物等），要审它们是否真正落成了场景、对话、行动或关系变化。只用一句总结带过的线，视为缺失。只有当 memo 明确要求本章必须推进该线时，才标 critical。
+
+${buildNarrativeDriveContract("auditor", "zh")}
 
 每条 issue 必须给 repair_scope 作为 typed 路由提示："local" 表示措辞、段落形状、小重复、句段级小修；"structural" 表示主线偏离、时间线断裂、场面/回报缺失、人物逻辑崩、视角/信息边界失败，或任何需要重写场景/整章的问题；只有确实无法判断时才写 "unknown"。
 

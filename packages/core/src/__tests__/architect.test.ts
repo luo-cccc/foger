@@ -214,6 +214,8 @@ describe("ArchitectAgent", () => {
     expect(messages[0]?.content).toContain("上一轮审核反馈");
     expect(messages[0]?.content).toContain("请把核心冲突收紧");
     expect(messages[0]?.content).toContain("明确新空间不是旧案重演");
+    expect(messages[0]?.content).toContain("## 叙事驱动乘法合同");
+    expect(messages[0]?.content).toContain("新颖设定 x 熟悉爽点 x 高压关系 x 因果反转 x 情绪钩子");
   });
 
   it("strips assistant-style trailing coda from the final pending hooks section", async () => {

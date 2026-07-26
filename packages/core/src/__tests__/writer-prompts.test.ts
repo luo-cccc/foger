@@ -54,6 +54,8 @@ describe("buildWriterSystemPrompt", () => {
     expect(prompt).toContain("写作铁律");
     expect(prompt).toContain("盐溶于汤");
     expect(prompt).toContain("黄金三章写作纪律");
+    expect(prompt).toContain("## 叙事驱动执行");
+    expect(prompt).toContain("不擅自增加新反转或新 hook");
   });
 
   it("injects cross-theme prose-execution rules: simile restraint + dramatize the climax (zh)", () => {
@@ -71,6 +73,7 @@ describe("buildWriterSystemPrompt", () => {
     );
     expect(prompt).toContain("Simile restraint");
     expect(prompt).toContain("Play out the climax");
+    expect(prompt).toContain("## Narrative Drive Execution");
   });
 
   it("enforces narrative person only when the user explicitly set one (#290)", () => {

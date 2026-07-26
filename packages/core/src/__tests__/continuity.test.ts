@@ -148,6 +148,8 @@ describe("ContinuityAuditor", () => {
       const systemPrompt = messages?.[0]?.content ?? "";
 
       expect(systemPrompt).toContain("ALL OUTPUT MUST BE IN ENGLISH");
+      expect(systemPrompt).toContain("## Narrative Drive Audit");
+      expect(systemPrompt).toContain("never require all five in every chapter");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
