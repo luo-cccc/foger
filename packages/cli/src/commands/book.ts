@@ -2,7 +2,17 @@ import { Command } from "commander";
 import { access, readFile, rm } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { join, resolve } from "node:path";
-import { BookConfigSchema, deriveBookIdFromTitle, executeCoreMutation, normalizePlatformOrOther, PipelineRunner, StateManager, type BookConfig } from "@actalk/inkos-core";
+import {
+  BookConfigSchema,
+  deriveBookIdFromTitle,
+  executeBookBackupCommand,
+  executeCoreMutation,
+  listBookBackups,
+  normalizePlatformOrOther,
+  PipelineRunner,
+  StateManager,
+  type BookConfig,
+} from "@actalk/inkos-core";
 import {
   formatBookCreateCreated,
   formatBookCreateCreating,
@@ -252,6 +262,81 @@ bookCommand
         log(JSON.stringify({ error: String(e) }));
       } else {
         logError(`Failed to delete book: ${e}`);
+      }
+      process.exit(1);
+    }
+  });
+
+bookCommand
+  .command("backup")
+  .description("Create or list whole-book backups")
+  .argument("[book-id]", "Book ID (auto-detected if only one book)")
+  .option("--list", "List existing backups")
+  .option("--json", "Output JSON")
+  .action(async (bookIdArg: string | undefined, opts) => {
+    try {
+      const root = findProjectRoot();
+      const bookId = await resolveBookId(bookIdArg, root);
+      const state = new StateManager(root);
+      if (opts.list) {
+        const backups = await listBookBackups(state, bookId);
+        if (opts.json) {
+          log(JSON.stringify({ bookId, backups }, null, 2));
+        } else if (backups.length === 0) {
+          log(`No backups found for "${bookId}".`);
+        } else {
+          for (const backup of backups) log(`  ${backup.id} | ${backup.createdAt}`);
+        }
+        return;
+      }
+
+      const result = await executeBookBackupCommand(state, { kind: "backup-book", bookId });
+      if (!("backupId" in result)) throw new Error("Unexpected restore result while creating a backup");
+      if (opts.json) {
+        log(JSON.stringify(result, null, 2));
+      } else {
+        log(`Backed up "${bookId}" as ${result.backupId}.`);
+        log(`  ${result.path}`);
+      }
+    } catch (e) {
+      if (opts.json) {
+        log(JSON.stringify({ error: String(e) }));
+      } else {
+        logError(`Failed to back up book: ${e}`);
+      }
+      process.exit(1);
+    }
+  });
+
+bookCommand
+  .command("restore")
+  .description("Restore a whole-book backup and preserve the current state as a pre-restore backup")
+  .argument("<book-id>", "Book ID")
+  .argument("<backup-id>", "Backup ID from inkos book backup --list")
+  .option("--json", "Output JSON")
+  .action(async (bookId: string, backupId: string, opts) => {
+    try {
+      const root = findProjectRoot();
+      const state = new StateManager(root);
+      const result = await executeBookBackupCommand(state, {
+        kind: "restore-book",
+        bookId,
+        backupId,
+      });
+      if (!("restoredFrom" in result)) throw new Error("Unexpected backup result while restoring a book");
+      if (opts.json) {
+        log(JSON.stringify(result, null, 2));
+      } else {
+        log(`Restored "${bookId}" from ${result.restoredFrom}.`);
+        if (result.preRestoreBackupId) {
+          log(`  Previous state preserved as ${result.preRestoreBackupId}.`);
+        }
+      }
+    } catch (e) {
+      if (opts.json) {
+        log(JSON.stringify({ error: String(e) }));
+      } else {
+        logError(`Failed to restore book: ${e}`);
       }
       process.exit(1);
     }

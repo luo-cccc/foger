@@ -4,6 +4,7 @@ import { BookConfigSchema, type BookConfig } from "../models/book.js";
 import type { ChapterMeta } from "../models/chapter.js";
 import { bootstrapStructuredStateFromMarkdown, resolveDurableStoryProgress } from "./state-bootstrap.js";
 import { atomicWriteFile, atomicWriteJson } from "../utils/atomic-write.js";
+import { recoverIncompleteBookRestore } from "./book-backup.js";
 
 export type ChapterPersistenceRecovery =
   | { readonly kind: "none" }
@@ -177,6 +178,13 @@ export class StateManager {
       throw e;
     }
     this.activeWrites.add(bookId);
+    try {
+      await recoverIncompleteBookRestore(this, bookId);
+    } catch (error) {
+      this.activeWrites.delete(bookId);
+      await unlink(lockPath).catch(() => undefined);
+      throw error;
+    }
     return async () => {
       this.activeWrites.delete(bookId);
       try {

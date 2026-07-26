@@ -164,6 +164,10 @@ export interface SessionRuntime {
   readonly stream: EventSource | null;
   readonly isStreaming: boolean;
   readonly lastError: string | null;
+  readonly lastFailedSend?: {
+    readonly text: string;
+    readonly options?: SendMessageOptions;
+  };
   // 仅前端存在、尚未持久化到磁盘的草稿会话。发送第一条消息时才调 POST /sessions 把它落盘。
   readonly isDraft: boolean;
 }
@@ -209,6 +213,7 @@ export interface MessageActions {
   deleteSession: (sessionId: string) => Promise<void>;
   loadSessionDetail: (sessionId: string) => Promise<void>;
   sendMessage: (sessionId: string, text: string, options?: SendMessageOptions) => Promise<void>;
+  retryLastSend: (sessionId: string) => Promise<void>;
   abortSession: (sessionId: string) => Promise<void>;
   setSelectedModel: (model: string, service: string) => void;
 }

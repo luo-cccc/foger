@@ -623,15 +623,29 @@ function messageEventsToInteractionMessages(events: MessageEvent[]): Interaction
   const flushPendingToolExecutions = () => {
     if (pendingToolExecutions.length === 0) return;
     const last = messages[messages.length - 1];
-    if (last?.role !== "assistant") return;
-    messages[messages.length - 1] = {
-      ...last,
-      toolExecutions: [
-        ...(last.toolExecutions ?? []),
-        ...pendingToolExecutions,
-      ],
-    };
-    pendingToolExecutions = [];
+    const thinking = joinThinking(pendingThinking);
+    if (last?.role === "assistant") {
+      messages[messages.length - 1] = {
+        ...last,
+        ...(thinking ? { thinking: joinThinking([last.thinking, thinking]) } : {}),
+        toolExecutions: [
+          ...(last.toolExecutions ?? []),
+          ...pendingToolExecutions,
+        ],
+      };
+    } else {
+      messages.push({
+        role: "assistant",
+        content: "",
+        ...(thinking ? { thinking } : {}),
+        toolExecutions: pendingToolExecutions,
+        timestamp: pendingToolExecutions.reduce(
+          (latest, execution) => Math.max(latest, execution.completedAt ?? execution.startedAt),
+          0,
+        ),
+      });
+    }
+    clearPending();
   };
   const toolCallKey = (requestId: string, toolCallId: string): string =>
     `${requestId}\0${toolCallId}`;

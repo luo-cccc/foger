@@ -255,4 +255,62 @@ describe("chat message actions", () => {
 
     expect(store.getState().resolvedProposals).toEqual({ "proposal-1": "confirmed" });
   });
+
+  it("retries the last failed send once with its original options", async () => {
+    const store = createTestStore();
+    const sessionId = store.getState().createDraftSession("harbor-book", "book");
+    const options = {
+      activeBookId: "harbor-book",
+      sessionKind: "book" as const,
+      actionSource: "free-text" as const,
+    };
+
+    await store.getState().sendMessage(sessionId, "继续检查伏笔", options);
+    expect(store.getState().sessions[sessionId]?.lastFailedSend).toEqual({
+      text: "继续检查伏笔",
+      options,
+    });
+
+    store.getState().setSelectedModel("deepseek-v4-flash", "kkaiapi");
+    fetchJson
+      .mockResolvedValueOnce({ session: { sessionId, bookId: "harbor-book", sessionKind: "book" } })
+      .mockResolvedValueOnce({ response: "检查完成", session: { sessionId, bookId: "harbor-book", sessionKind: "book" } });
+
+    const firstRetry = store.getState().retryLastSend(sessionId);
+    const duplicateRetry = store.getState().retryLastSend(sessionId);
+    await Promise.all([firstRetry, duplicateRetry]);
+
+    const agentCalls = fetchJson.mock.calls.filter(([path]) => path === "/agent");
+    expect(agentCalls).toHaveLength(1);
+    expect(JSON.parse((agentCalls[0]?.[1] as { body: string }).body)).toMatchObject({
+      instruction: "继续检查伏笔",
+      activeBookId: "harbor-book",
+      sessionKind: "book",
+      actionSource: "free-text",
+    });
+    expect(store.getState().sessions[sessionId]?.lastFailedSend).toBeUndefined();
+  });
+
+  it("does not offer a retry when an aborted request resolves with an error payload", async () => {
+    const store = createTestStore();
+    const sessionId = store.getState().createDraftSession(null, "chat");
+    store.getState().setSelectedModel("deepseek-v4-flash", "kkaiapi");
+
+    let resolveAgent!: (value: unknown) => void;
+    fetchJson
+      .mockResolvedValueOnce({ session: { sessionId, bookId: null, sessionKind: "chat" } })
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveAgent = resolve;
+      }))
+      .mockResolvedValueOnce({});
+
+    const sent = store.getState().sendMessage(sessionId, "继续检查");
+    await vi.waitFor(() => expect(fakeEventSources).toHaveLength(1));
+
+    await store.getState().abortSession(sessionId);
+    resolveAgent({ error: { code: "aborted", message: "Request aborted" } });
+    await sent;
+
+    expect(store.getState().sessions[sessionId]?.lastFailedSend).toBeUndefined();
+  });
 });

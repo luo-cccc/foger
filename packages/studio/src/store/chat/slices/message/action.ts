@@ -352,10 +352,18 @@ export const createMessageSlice: StateCreator<ChatStore, [], [], MessageActions>
       ?? session.sessionKind
       ?? (activeBookId ? "book" : "chat");
     const actionSource = options?.actionSource ?? "free-text";
+    const rememberFailedSend = () => {
+      set((state) => ({
+        sessions: updateSession(state.sessions, sessionId, () => ({
+          lastFailedSend: options ? { text, options } : { text },
+        })),
+      }));
+    };
 
     if (!get().selectedModel) {
       get().addUserMessage(sessionId, formatUserMessageForDisplay(userInstruction, attachments));
       get().addErrorMessage(sessionId, tr("请先选择一个模型", "Select a model first"));
+      rememberFailedSend();
       return;
     }
 
@@ -383,6 +391,7 @@ export const createMessageSlice: StateCreator<ChatStore, [], [], MessageActions>
         }));
       } catch (err) {
         get().addErrorMessage(sessionId, err instanceof Error ? err.message : String(err));
+        rememberFailedSend();
         return;
       }
     }
@@ -396,6 +405,7 @@ export const createMessageSlice: StateCreator<ChatStore, [], [], MessageActions>
       sessions: updateSession(state.sessions, sessionId, () => ({
         isStreaming: true,
         lastError: null,
+        lastFailedSend: undefined,
       })),
     }));
 
@@ -476,6 +486,7 @@ export const createMessageSlice: StateCreator<ChatStore, [], [], MessageActions>
         } else {
           get().addErrorMessage(sessionId, errorMessage);
         }
+        if (get().sessions[sessionId]?.isStreaming) rememberFailedSend();
       } else if (finalContent) {
         if (hasStream) {
           get().finalizeStream(sessionId, streamTs, finalContent, toolCall);
@@ -522,11 +533,13 @@ export const createMessageSlice: StateCreator<ChatStore, [], [], MessageActions>
             "The model returned no text. Check the protocol type (chat/responses), the streaming toggle, or upstream service compatibility.",
           );
           get().addErrorMessage(sessionId, emptyMessage);
+          if (get().sessions[sessionId]?.isStreaming) rememberFailedSend();
         }
       }
     } catch (error) {
       streamEs.close();
       const errorMessage = error instanceof Error ? error.message : String(error);
+      if (get().sessions[sessionId]?.isStreaming) rememberFailedSend();
       const hasStream = Boolean(
         get().sessions[sessionId]?.messages.some((message) => message.timestamp === streamTs),
       );
@@ -543,5 +556,15 @@ export const createMessageSlice: StateCreator<ChatStore, [], [], MessageActions>
         })),
       }));
     }
+  },
+
+  retryLastSend: async (sessionId) => {
+    const session = get().sessions[sessionId];
+    const failed = session?.lastFailedSend;
+    if (!session || !failed || session.isStreaming) return;
+    set((state) => ({
+      sessions: updateSession(state.sessions, sessionId, () => ({ lastFailedSend: undefined })),
+    }));
+    await get().sendMessage(sessionId, failed.text, failed.options);
   },
 });

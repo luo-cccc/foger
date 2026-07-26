@@ -90,6 +90,11 @@ describe("providers structural integrity", () => {
     expect(getEndpoint("minimax")?.baseUrl).toBe("https://api.minimaxi.com/v1");
   });
 
+  it("B2：小米 MiMo 使用当前 OpenAI-compatible endpoint", () => {
+    expect(getEndpoint("xiaomimimo")?.api).toBe("openai-completions");
+    expect(getEndpoint("xiaomimimo")?.baseUrl).toBe("https://api.xiaomimimo.com/v1");
+  });
+
   it("B2：中国原厂批次 2 全部收录（6 个）", () => {
     const ids = getAllEndpoints().map((p) => p.id);
     for (const id of ["spark", "sensenova", "tencentcloud", "xiaomimimo", "longcat", "internlm"]) {

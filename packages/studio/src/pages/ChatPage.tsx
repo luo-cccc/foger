@@ -28,6 +28,7 @@ import {
   Check,
   X,
   Paperclip,
+  RotateCcw,
   Square,
 } from "lucide-react";
 import { Shimmer } from "../components/ai-elements/shimmer";
@@ -234,6 +235,7 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
   // -- Store actions --
   const setInput = useChatStore((s) => s.setInput);
   const sendMessage = useChatStore((s) => s.sendMessage);
+  const retryLastSend = useChatStore((s) => s.retryLastSend);
   const abortSession = useChatStore((s) => s.abortSession);
   const setSelectedModel = useChatStore((s) => s.setSelectedModel);
   const loadSessionList = useChatStore((s) => s.loadSessionList);
@@ -833,6 +835,18 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
 
       <div className="shrink-0 border-t border-border/40 px-4 py-3">
         <div className="max-w-3xl mx-auto">
+          {activeSession?.lastFailedSend && activeSessionId && !loading && (
+            <div className="mb-2 flex justify-end">
+              <button
+                type="button"
+                onClick={() => void retryLastSend(activeSessionId)}
+                className="inline-flex h-8 items-center gap-2 rounded-md border border-border/70 px-3 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                {isZh ? "重试上一条消息" : "Retry last message"}
+              </button>
+            </div>
+          )}
           <div className="flex items-start gap-2">
             <div className="relative flex-1 rounded-xl bg-secondary/30 transition-all">
               <input

@@ -10,7 +10,7 @@ overrides:
   "@mariozechner/pi-ai": "0.67.1"
   "@mariozechner/pi-agent-core": "0.67.1"
   "@babel/core": "7.29.7"
-  "@hono/node-server": "1.19.13"
+  "@hono/node-server": "2.0.12"
   "@protobufjs/utf8": "1.1.1"
   "basic-ftp": "5.3.1"
   "brace-expansion@>=2.0.0 <3.0.0": "2.0.3"

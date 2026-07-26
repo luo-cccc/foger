@@ -1,6 +1,7 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
-import { EPub } from "epub-gen-memory";
+import JSZip from "jszip";
 
 export interface ExportStateLike {
   readonly bookDir: (bookId: string) => string;
@@ -55,6 +56,71 @@ function markdownToSimpleHtml(markdown: string): { title: string; html: string }
   return { title, html };
 }
 
+async function buildEpub(
+  title: string,
+  language: string,
+  chapters: ReadonlyArray<{ readonly title: string; readonly content: string }>,
+): Promise<Buffer> {
+  const zip = new JSZip();
+  const bookId = `urn:uuid:${randomUUID()}`;
+  const modified = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+
+  // EPUB requires this to be the first archive entry and stored without compression.
+  zip.file("mimetype", "application/epub+zip", { compression: "STORE" });
+  zip.file("META-INF/container.xml", `<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`);
+
+  const manifestItems: string[] = [];
+  const spineItems: string[] = [];
+  const navItems: string[] = [];
+  for (const [index, chapter] of chapters.entries()) {
+    const sequence = index + 1;
+    const id = `chapter-${sequence}`;
+    const href = `${id}.xhtml`;
+    const safeTitle = escapeHtml(chapter.title);
+    manifestItems.push(`    <item id="${id}" href="${href}" media-type="application/xhtml+xml"/>`);
+    spineItems.push(`    <itemref idref="${id}"/>`);
+    navItems.push(`      <li><a href="${href}">${safeTitle}</a></li>`);
+    zip.file(`OEBPS/${href}`, `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="${language}" lang="${language}">
+<head><meta charset="UTF-8"/><title>${safeTitle}</title></head>
+<body><h1>${safeTitle}</h1>${chapter.content}</body>
+</html>`);
+  }
+
+  zip.file("OEBPS/nav.xhtml", `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="${language}" lang="${language}">
+<head><meta charset="UTF-8"/><title>${escapeHtml(title)}</title></head>
+<body><nav epub:type="toc" id="toc"><h1>${escapeHtml(title)}</h1><ol>
+${navItems.join("\n")}
+    </ol></nav></body>
+</html>`);
+  zip.file("OEBPS/content.opf", `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id" xml:lang="${language}">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="book-id">${bookId}</dc:identifier>
+    <dc:title>${escapeHtml(title)}</dc:title>
+    <dc:language>${language}</dc:language>
+    <meta property="dcterms:modified">${modified}</meta>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+${manifestItems.join("\n")}
+  </manifest>
+  <spine>
+${spineItems.join("\n")}
+  </spine>
+</package>`);
+
+  return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+}
+
 export async function buildExportArtifact(
   state: ExportStateLike,
   bookId: string,
@@ -93,10 +159,7 @@ export async function buildExportArtifact(
       const { title, html } = markdownToSimpleHtml(markdown);
       epubChapters.push({ title, content: html });
     }
-    const epubInstance = new EPub(
-      { title: book.title, lang: book.language === "en" ? "en" : "zh-CN" },
-      epubChapters,
-    );
+    const language = book.language === "en" ? "en" : "zh-CN";
     return {
       outputPath,
       fileName: `${bookId}.epub`,
@@ -104,7 +167,7 @@ export async function buildExportArtifact(
       totalWords,
       format,
       contentType: "application/epub+zip",
-      payload: await epubInstance.genEpub(),
+      payload: await buildEpub(book.title, language, epubChapters),
     };
   }
 

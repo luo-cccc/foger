@@ -385,6 +385,7 @@ async function executeChapterLocalEdit(
     request.chapterNumber,
     MANUAL_CHAPTER_EDIT_ISSUE,
     nextContent,
+    roughChapterLength(nextContent),
   );
   await deps.saveChapterIndex(request.bookId, updatedIndex);
 

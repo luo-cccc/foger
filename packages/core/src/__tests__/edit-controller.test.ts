@@ -280,6 +280,7 @@ describe("edit controller", () => {
 
     await expect(readFile(join(bookDir, "chapters", "0003_灰墙榜下.md"), "utf-8")).resolves.toContain("新名字");
     expect(savedIndex[0]?.status).toBe("audit-failed");
+    expect(savedIndex[0]?.wordCount).toBe(7);
     expect(savedIndex[0]?.auditIssues.at(-1)).toContain(MANUAL_CHAPTER_EDIT_ISSUE);
     expect(result.reviewRequired).toBe(true);
   });

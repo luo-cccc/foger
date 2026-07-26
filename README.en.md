@@ -171,6 +171,9 @@ inkos status                      # Check status
 inkos review list my-book         # Review drafts
 inkos review approve-all my-book  # Batch approve
 inkos export my-book --format epub  # Export EPUB (read on phone/Kindle)
+inkos book backup my-book         # Back up the whole book
+inkos book backup my-book --list  # List available backups
+inkos book restore my-book <backup-id>  # Restore and preserve the current state first
 ```
 
 Language is set per-genre by default. Override explicitly with `--lang en` or `--lang zh`. Use `inkos genre list` to see all available genres and their default languages.

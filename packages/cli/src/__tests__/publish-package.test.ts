@@ -139,10 +139,19 @@ describe.sequential("publish packaging", () => {
   it("keeps source publish dependencies registry-installable", async () => {
     const cliPackageJson = await sourceCliPackageJsonPromise;
     const studioPackageJson = await sourceStudioPackageJsonPromise;
+    const corePackageJson = JSON.parse(
+      await readFile(resolve(workspaceRoot, "packages/core/package.json"), "utf-8"),
+    );
 
     expect(cliPackageJson.dependencies["@actalk/inkos-core"]).not.toMatch(/^workspace:/);
     expect(cliPackageJson.dependencies["@actalk/inkos-studio"]).not.toMatch(/^workspace:/);
     expect(studioPackageJson.dependencies["@actalk/inkos-core"]).not.toMatch(/^workspace:/);
+    expect(studioPackageJson.dependencies["@hono/node-server"]).toBe("2.0.12");
+    expect(corePackageJson.dependencies["@mariozechner/pi-agent-core"]).toBe("0.67.1");
+    expect(corePackageJson.dependencies["@mariozechner/pi-ai"]).toBe("0.67.1");
+    expect(corePackageJson.dependencies.jszip).toBe("3.10.1");
+    expect(corePackageJson.dependencies["epub-gen-memory"]).toBeUndefined();
+    expect(cliPackageJson.dependencies["epub-gen-memory"]).toBeUndefined();
   });
 
   it("verifies publishable manifests before npm publish runs", async () => {
@@ -270,6 +279,24 @@ describe.sequential("publish packaging", () => {
 
       expect(packedPackageJson.dependencies["@actalk/inkos-core"]).toBe(corePackageJson.version);
       expect(packedPackageJson.dependencies["@actalk/inkos-studio"]).toBe(studioPackageJson.version);
+    } finally {
+      await rm(packDir, { recursive: true, force: true });
+    }
+  });
+
+  it("excludes compiled tests from the CLI tarball", { timeout: CLI_PACK_TEST_TIMEOUT_MS }, async () => {
+    const packDir = await mkdtemp(join(tmpdir(), "inkos-cli-pack-tests-"));
+
+    try {
+      const tarballPath = await packPackage(cliDir, packDir);
+      const tarArgs = [...tarForceLocalArgs(), "-tf"];
+      const archiveListing = execFileSync("tar", [...tarArgs, tarballPath], {
+        cwd: workspaceRoot,
+        encoding: "utf-8",
+      });
+
+      expect(archiveListing).not.toContain("/__tests__/");
+      expect(archiveListing).not.toMatch(/\.test\.(?:d\.ts|js)(?:\.map)?$/m);
     } finally {
       await rm(packDir, { recursive: true, force: true });
     }

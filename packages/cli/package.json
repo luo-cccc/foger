@@ -25,7 +25,8 @@
   },
   "files": [
     "dist",
-    "!dist/__tests__"
+    "!dist/**/__tests__/**",
+    "!dist/**/*.test.*"
   ],
   "license": "AGPL-3.0-only",
   "repository": {
@@ -52,7 +53,6 @@
     "@actalk/inkos-studio": "1.6.3",
     "commander": "^13.0.0",
     "dotenv": "^16.4.0",
-    "epub-gen-memory": "^1.0.10",
     "ink": "^7.0.0",
     "ink-text-input": "^6.0.0",
     "marked": "^15.0.12",
