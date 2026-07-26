@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFile, stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const ROOT = process.cwd();
@@ -9,6 +9,7 @@ const INDEX_HTML = resolve(DIST_DIR, "index.html");
 const DEFAULT_LIMITS = {
   entryJsBytes: 600 * 1024,
   entryCssBytes: 150 * 1024,
+  maxJsChunkBytes: 700 * 1024,
 };
 
 function parseByteLimit(name, fallback) {
@@ -34,6 +35,7 @@ function fail(message) {
 const limits = {
   entryJsBytes: parseByteLimit("INKOS_STUDIO_ENTRY_JS_LIMIT_BYTES", DEFAULT_LIMITS.entryJsBytes),
   entryCssBytes: parseByteLimit("INKOS_STUDIO_ENTRY_CSS_LIMIT_BYTES", DEFAULT_LIMITS.entryCssBytes),
+  maxJsChunkBytes: parseByteLimit("INKOS_STUDIO_MAX_JS_CHUNK_LIMIT_BYTES", DEFAULT_LIMITS.maxJsChunkBytes),
 };
 
 let html;
@@ -66,4 +68,21 @@ for (const asset of entryJs) {
 }
 for (const asset of entryCss) {
   await checkAsset(asset, limits.entryCssBytes, "Studio entry CSS");
+}
+
+const assetNames = await readdir(resolve(DIST_DIR, "assets"));
+const jsChunks = await Promise.all(assetNames.filter((name) => name.endsWith(".js")).map(async (name) => ({
+  name,
+  size: (await stat(resolve(DIST_DIR, "assets", name))).size,
+})));
+const oversizedChunks = jsChunks.filter(({ size }) => size > limits.maxJsChunkBytes);
+const largestChunk = jsChunks.toSorted((left, right) => right.size - left.size)[0];
+if (largestChunk) {
+  console.log(
+    `${oversizedChunks.length === 0 ? "PASS" : "FAIL"} largest Studio JS chunk: `
+    + `assets/${largestChunk.name} ${formatBytes(largestChunk.size)} / ${formatBytes(limits.maxJsChunkBytes)}`,
+  );
+}
+for (const chunk of oversizedChunks) {
+  fail(`Studio JS chunk exceeds the configured budget: assets/${chunk.name} ${formatBytes(chunk.size)}`);
 }

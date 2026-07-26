@@ -6,7 +6,7 @@ import { renamePathWithRetry } from "./fs-retry.js";
 export async function atomicWriteFile(
   path: string,
   data: string | Uint8Array,
-  encoding?: BufferEncoding,
+  encodingOrOptions?: BufferEncoding | { readonly encoding?: BufferEncoding; readonly mode?: number },
 ): Promise<void> {
   const dir = dirname(path);
   await mkdir(dir, { recursive: true });
@@ -14,12 +14,18 @@ export async function atomicWriteFile(
     dir,
     `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`,
   );
+  const options = typeof encodingOrOptions === "string"
+    ? { encoding: encodingOrOptions }
+    : encodingOrOptions ?? {};
 
   try {
     if (typeof data === "string") {
-      await writeFile(tempPath, data, encoding ?? "utf-8");
+      await writeFile(tempPath, data, {
+        encoding: options.encoding ?? "utf-8",
+        ...(options.mode === undefined ? {} : { mode: options.mode }),
+      });
     } else {
-      await writeFile(tempPath, data);
+      await writeFile(tempPath, data, options.mode === undefined ? undefined : { mode: options.mode });
     }
     await renamePathWithRetry(tempPath, path);
   } finally {
@@ -30,6 +36,10 @@ export async function atomicWriteFile(
 export async function atomicWriteJson(
   path: string,
   value: unknown,
+  options?: { readonly mode?: number },
 ): Promise<void> {
-  await atomicWriteFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
+  await atomicWriteFile(path, `${JSON.stringify(value, null, 2)}\n`, {
+    encoding: "utf-8",
+    ...(options?.mode === undefined ? {} : { mode: options.mode }),
+  });
 }

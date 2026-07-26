@@ -86,6 +86,11 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { isSafeBookId } from "./safety.js";
 import { ApiError } from "./errors.js";
 import { buildStudioBookConfig } from "./book-create.js";
+import {
+  resolveStudioAccessPolicy,
+  studioAccessMiddleware,
+  type StudioAccessPolicy,
+} from "./auth.js";
 
 // -- Studio server language (read per request from the project config's `language`) --
 
@@ -1873,8 +1878,13 @@ async function probeServiceCapabilities(args: {
 
 // --- Server factory ---
 
-export function createStudioServer(initialConfig: ProjectConfig, root: string) {
+export function createStudioServer(
+  initialConfig: ProjectConfig,
+  root: string,
+  accessPolicy?: StudioAccessPolicy,
+) {
   const app = new Hono();
+  if (accessPolicy) app.use("*", studioAccessMiddleware(accessPolicy));
   const state = new StateManager(root);
   let cachedConfig = initialConfig;
   type StudioOperationKind = "write" | "draft" | "revise" | "rewrite" | "repair-state" | "resync";
@@ -4902,8 +4912,9 @@ export async function startStudioServer(
   options?: { readonly staticDir?: string; readonly hostname?: string },
 ): Promise<ReturnType<typeof serve>> {
   const config = await loadProjectConfig(root, { consumer: "studio", requireApiKey: false });
-
-  const app = createStudioServer(config, root);
+  const hostname = options?.hostname ?? (process.env.INKOS_STUDIO_HOST?.trim() || "127.0.0.1");
+  const accessPolicy = resolveStudioAccessPolicy(hostname, port);
+  const app = createStudioServer(config, root, accessPolicy);
 
   // Serve frontend static files — single process for API + frontend
   if (options?.staticDir) {
@@ -4944,7 +4955,6 @@ export async function startStudioServer(
     }
   }
 
-  const hostname = options?.hostname ?? (process.env.INKOS_STUDIO_HOST?.trim() || "127.0.0.1");
   console.log(`InkOS Studio running on http://${hostname}:${port}`);
   return serve({ fetch: app.fetch, port, hostname });
 }

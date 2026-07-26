@@ -812,3 +812,20 @@ Windows 原子 rename 现在对 `EACCES/EBUSY/ENOTEMPTY/EPERM` 做 5 次指数�
 - 完整 `pnpm verify` 与 `pnpm stress:unattended` 通过；当前确定性测试为 Core `1475`、Studio Vitest `407`、Studio 报告终态 Node 测试 `2`、CLI `211`，共 `2095` 项。无人值守压力测试最终 `20/20 ready-for-review`、21 个快照，强杀、超时和跨 2 次运行恢复均收敛。
 
 该结果关闭确定性 fallback 合同，不关闭真实 20 章验收。下一次付费复验必须使用全新隔离项目、显式配置且与 Ark Plan 不同 endpoint 的 fallback provider，并继续保持唯一报告路径、20/20 持久化、truth/快照一致、Doctor 全关联和可靠终态门禁；本轮不重复 8.27 的付费样本。
+
+### 8.29 DeepSeek 官方无限预算单章联动复验（2026-07-26）
+
+本轮使用 DeepSeek 官方 `deepseek-v4-flash`，通过真实浏览器、Studio API/SSE、Core、持久化和 Doctor 执行一章、1000 字 linked acceptance。总 token 与单次 prompt 均不设置硬上限，密钥只存在于 Git 忽略的隔离源配置和测试运行时密钥库；原始报告、截图、临时项目和密钥在汇总后清理。
+
+- 先以严格质量策略运行。建书一次成功，Architect、Foundation Reviewer、Canon Extractor 与章节流水线共 13 次 provider 调用全部成功，provider retry 为 0，总 usage `136379` tokens。章节已持久化且 Doctor 能按 operationId 关联，`linkedGate.passed=true`。
+- 严格样本最终为 `audit-failed`、1366 字，超出 1000 字目标对应的 728-1272 硬区间。一次 Reviser 和两次 Length Normalizer 均成功返回，但没有把章节收敛到 `ready-for-review` 与硬字数区间，因此 `qualityGate.passed=false`。这次失败没有预算取消或 provider 错误，属于真实内容质量未收敛。
+- 随后以独立报告路径运行 report-only 对照。建书和写章均一次成功，共 9 次 provider 调用、`93374` tokens、0 retry；章节为 `ready-for-review`、1160 字、无字数警告，Doctor 关联通过，linked gate 与章节质量判断均通过。初始章节已经健康，因此没有触发额外 recovery action。
+- 两个无限预算样本证明密钥、官方模型、浏览器/API/SSE/Core/持久化/Doctor 主链路可用，同时也表明单章严格质量仍有样本波动。不能用 report-only 的一次通过覆盖严格样本的确定失败；生产判断仍应保留严格质量失败率，并在新的确定性质量修复后再扩大章节样本。
+
+### 8.30 DeepSeek 官方替换凭据复验（2026-07-26）
+
+本轮在完成生产门禁加固后，以替换后的运行时凭据复验 DeepSeek 官方 `deepseek-v4-flash`。配置为一章、1000 字、总预算 `250000` tokens、单次 prompt 上限 `32000`、strict 质量策略，并使用 `manual` 生产审核模式。凭据仅从进程环境读取，没有写入仓库或报告。
+
+- linked acceptance 在建书的首次官方请求即返回 HTTP 401；对官方 `/models` 端点的独立连通检查同样返回 401，说明失败发生在供应商认证层，而不是 Studio、SSE、Core、事务持久化或质量门禁。
+- Provider usage 为 0，没有产生可归因的 token 消耗，也没有进入章节流水线。因此本轮不能视为真实模型生产验收通过，8.29 的成功样本仅保留为历史证据。
+- 离线全量、Stub 联动、Studio E2E、跨进程压力和无人值守强杀恢复仍独立通过；在有效的新凭据完成同配置复验前，daemon 不因本轮结果获得真实模型生产放行。

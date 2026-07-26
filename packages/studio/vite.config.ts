@@ -5,6 +5,11 @@ import { resolve } from "node:path";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  build: {
+    // Mermaid is isolated behind a dynamic import; its largest optional diagram
+    // chunk stays below this production budget.
+    chunkSizeWarningLimit: 700,
+  },
   resolve: {
     alias: {
       "@": resolve(__dirname, "src"),

@@ -114,6 +114,45 @@ describe("LengthNormalizerAgent", () => {
     expect(result.tokenUsage).toBeUndefined();
   });
 
+  it("deterministically closes a production-sized overrun below ten percent", async () => {
+    const agent = createAgent();
+    const chatSpy = vi.spyOn(BaseAgent.prototype as never, "chat");
+    const lengthSpec = LengthSpecSchema.parse({
+      target: 1000,
+      softMin: 864,
+      softMax: 1136,
+      hardMin: 728,
+      hardMax: 1272,
+      countingMode: "zh_chars",
+      normalizeMode: "compress",
+    });
+    const opening = "开场因果：林澈确认账本页码被替换。";
+    const ending = "章尾行动：他带着证据赶往旧仓库。";
+    const draft = [
+      opening,
+      ...Array.from({ length: 88 }, (_, index) => (
+        index === 44 ? "中段调查确认[[KEEP_ME]]必须保留。" : "中段调查推进并留下可核验动作。"
+      )),
+      ending,
+    ].join("\n");
+    const overrun = countChapterLength(draft, "zh_chars") - lengthSpec.hardMax;
+    expect(overrun).toBeGreaterThan(Math.floor(lengthSpec.hardMax * 0.05));
+    expect(overrun).toBeLessThanOrEqual(Math.floor(lengthSpec.hardMax * 0.1));
+
+    const result = await agent.normalizeChapter({
+      chapterContent: draft,
+      lengthSpec,
+      chapterIntent: "Preserve [[KEEP_ME]].",
+    });
+
+    expect(chatSpy).not.toHaveBeenCalled();
+    expect(result.normalizedContent).toContain(opening);
+    expect(result.normalizedContent).toContain(ending);
+    expect(result.normalizedContent).toContain("[[KEEP_ME]]");
+    expect(result.finalCount).toBeGreaterThanOrEqual(lengthSpec.hardMin);
+    expect(result.finalCount).toBeLessThanOrEqual(lengthSpec.hardMax);
+  });
+
   it("keeps LLM normalization for overruns beyond the deterministic window", async () => {
     const agent = createAgent();
     const normalized = "模型压缩后的正文。".repeat(110);
@@ -135,7 +174,7 @@ describe("LengthNormalizerAgent", () => {
     await agent.normalizeChapter({ chapterContent: draft, lengthSpec });
 
     expect(countChapterLength(draft, "zh_chars") - lengthSpec.hardMax)
-      .toBeGreaterThan(Math.floor(lengthSpec.hardMax * 0.05));
+      .toBeGreaterThan(Math.floor(lengthSpec.hardMax * 0.1));
     expect(chatSpy).toHaveBeenCalled();
   });
 

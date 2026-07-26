@@ -8,6 +8,10 @@
 - 修复局部章节 patch 后 `chapters/index.json` 字数未同步的问题，整章替换与局部编辑现在使用同一正文计数规则。
 - 修复会话 transcript 以纯工具调用结束时，刷新后工具结果卡可能消失的问题；恢复逻辑会创建独立 assistant 工具消息并保留 thinking、参数、结果和详情。
 - 小米 MiMo 默认端点更新为 `https://api.xiaomimimo.com/v1`，并增加 provider 结构回归测试。
+- Studio 远程监听改为显式安全配置：非本机地址必须提供长认证令牌、声明 HTTPS 反向代理并限制 HTTPS 来源；支持浏览器 Basic Auth 和脚本 Bearer Token，同时拒绝跨站写请求。
+- 新增 `writing.reviewMode`。Studio 日常生产建议使用 `manual`，写完后交由人工审阅；无人值守任务使用 `auto`，继续执行有界自动审校，达到预算或质量门禁时暂停。
+- 加强本地凭据与依赖安全：POSIX 系统上的密钥目录和文件采用仅当前用户可访问的权限，生产依赖已消除已知漏洞。
+- Studio 的 Markdown 代码高亮语言与 Mermaid 图表改为按需加载，降低首屏资源体积并保留代码、推理过程和摘要渲染能力。
 
 ### 2026-07-24
 

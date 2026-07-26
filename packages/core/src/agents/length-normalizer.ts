@@ -29,6 +29,8 @@ interface NormalizationAttempt {
   readonly warning?: string;
 }
 
+const MAX_DETERMINISTIC_HARD_MAX_OVERRUN_RATE = 0.1;
+
 export class LengthNormalizerAgent extends BaseAgent {
   get name(): string {
     return "length-normalizer";
@@ -167,7 +169,10 @@ export class LengthNormalizerAgent extends BaseAgent {
     if (mode !== "compress" || originalCount <= input.lengthSpec.hardMax) {
       return undefined;
     }
-    const maximumDeterministicOverrun = Math.max(1, Math.floor(input.lengthSpec.hardMax * 0.05));
+    const maximumDeterministicOverrun = Math.max(
+      1,
+      Math.floor(input.lengthSpec.hardMax * MAX_DETERMINISTIC_HARD_MAX_OVERRUN_RATE),
+    );
     if (originalCount - input.lengthSpec.hardMax > maximumDeterministicOverrun) {
       return undefined;
     }

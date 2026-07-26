@@ -40,7 +40,7 @@
     "test:linked": "pnpm --filter @actalk/inkos-studio test:linked",
     "test:linked:live": "pnpm --filter @actalk/inkos-studio test:linked:live",
     "verify": "pnpm check:hygiene && pnpm typecheck && pnpm audit:semantic-patterns && pnpm build && pnpm check:studio-bundle && pnpm test && pnpm verify:publish-manifests",
-    "release": "pnpm verify && pnpm audit --prod && pnpm --filter @actalk/inkos-studio test:e2e"
+    "release": "pnpm verify && pnpm audit --prod --registry=https://registry.npmjs.org && pnpm --filter @actalk/inkos-studio test:e2e"
   },
   "engines": {
     "node": ">=20.0.0",

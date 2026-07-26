@@ -349,6 +349,20 @@ describe("CLI integration", () => {
       const config = JSON.parse(raw);
       expect(config.writing.reviewRetries).toBe(3);
     });
+
+    it("sets the assisted manual chapter review mode", async () => {
+      try {
+        await readFile(join(projectDir, "inkos.json"), "utf-8");
+      } catch {
+        run(["init"]);
+      }
+      const output = run(["config", "set", "writing.reviewMode", "manual"]);
+      expect(output).toContain("Set writing.reviewMode = manual");
+
+      const raw = await readFile(join(projectDir, "inkos.json"), "utf-8");
+      const config = JSON.parse(raw);
+      expect(config.writing.reviewMode).toBe("manual");
+    });
   });
 
   describe("inkos config show", () => {

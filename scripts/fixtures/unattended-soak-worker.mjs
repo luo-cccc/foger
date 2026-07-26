@@ -91,8 +91,7 @@ if (mode === "setup") {
         throw new Error("ETIMEDOUT injected provider timeout");
       };
     }
-    await scheduler.start();
-    scheduler.stop();
+    await scheduler.runOnce();
   }
 
   const chapters = await state.loadChapterIndex(bookId);

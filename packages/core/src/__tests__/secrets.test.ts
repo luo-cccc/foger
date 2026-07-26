@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { loadSecrets, saveSecrets, getServiceApiKey } from "../llm/secrets.js";
-import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -54,6 +54,16 @@ describe("secrets", () => {
       const secrets = await loadSecrets(root);
       expect(secrets.services.new.apiKey).toBe("new-key");
       expect(secrets.services.old).toBeUndefined();
+    });
+
+    it.runIf(process.platform !== "win32")("uses owner-only directory and file permissions", async () => {
+      await saveSecrets(root, {
+        services: { deepseek: { apiKey: "sk-private" } },
+      });
+      const directoryMode = (await stat(join(root, ".inkos"))).mode & 0o777;
+      const fileMode = (await stat(join(root, ".inkos", "secrets.json"))).mode & 0o777;
+      expect(directoryMode).toBe(0o700);
+      expect(fileMode).toBe(0o600);
     });
   });
 

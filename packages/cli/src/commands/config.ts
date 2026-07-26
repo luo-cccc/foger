@@ -30,6 +30,7 @@ configCommand
         "llm.thinkingBudget", "llm.proxyUrl", "llm.apiFormat", "llm.stream",
         "inputGovernanceMode",
         "foundation.reviewRetries",
+        "writing.reviewMode",
         "writing.reviewRetries",
         "writing.revisionGate",
         "daemon.schedule.writeCron",

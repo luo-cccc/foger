@@ -1,9 +1,6 @@
 import { useEffect, useState } from "react";
 import { Streamdown } from "streamdown";
-import { cjk } from "@streamdown/cjk";
-import { code } from "@streamdown/code";
-import { math } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
+import { lightweightStreamdownPlugins } from "../../lib/streamdown-plugins";
 import { useChatStore } from "../../store/chat";
 import { fetchJson } from "../../hooks/use-api";
 import { SidebarCard } from "./SidebarCard";
@@ -14,8 +11,6 @@ import {
   frontmatterToCards,
   type TruthFrontmatter,
 } from "../../lib/truth-display";
-
-const streamdownPlugins = { cjk, code, math, mermaid };
 
 const SIDEBAR_MD_CLASS =
   "text-[15px] text-muted-foreground leading-7 " +
@@ -105,7 +100,7 @@ export function SummarySection({ bookId }: SummarySectionProps) {
       <>
         {legacy.world && (
           <SidebarCard title={tr("世界观", "World")}>
-            <Streamdown className={SIDEBAR_MD_CLASS} plugins={streamdownPlugins}>
+            <Streamdown className={SIDEBAR_MD_CLASS} plugins={lightweightStreamdownPlugins}>
               {legacy.world}
             </Streamdown>
           </SidebarCard>
@@ -113,13 +108,13 @@ export function SummarySection({ bookId }: SummarySectionProps) {
         {(legacy.protagonist || legacy.cast) && (
           <SidebarCard title={tr("角色", "Characters")}>
             {legacy.protagonist && (
-              <Streamdown className={SIDEBAR_MD_CLASS} plugins={streamdownPlugins}>
+              <Streamdown className={SIDEBAR_MD_CLASS} plugins={lightweightStreamdownPlugins}>
                 {legacy.protagonist}
               </Streamdown>
             )}
             {legacy.cast && (
               <div className={legacy.protagonist ? "mt-2" : undefined}>
-                <Streamdown className={SIDEBAR_MD_CLASS} plugins={streamdownPlugins}>
+                <Streamdown className={SIDEBAR_MD_CLASS} plugins={lightweightStreamdownPlugins}>
                   {legacy.cast}
                 </Streamdown>
               </div>
@@ -151,7 +146,7 @@ export function SummarySection({ bookId }: SummarySectionProps) {
       )}
       {worldOverview && (
         <SidebarCard title={tr("世界观", "World")}>
-          <Streamdown className={SIDEBAR_MD_CLASS} plugins={streamdownPlugins}>
+          <Streamdown className={SIDEBAR_MD_CLASS} plugins={lightweightStreamdownPlugins}>
             {worldOverview}
           </Streamdown>
           {openFull}

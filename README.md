@@ -43,6 +43,9 @@ InkOS 是一个面向长篇小说创作的 AI Agent 系统：从创作简报建�
 - CLI 新增整书备份、列表和恢复命令；恢复前自动保存当前状态，进程在替换过程中中断时，下一次书籍操作会先回滚到恢复前备份。
 - Studio Chat 会保留最后一条失败消息及其附件和操作参数，允许一键重试并阻止重复点击造成双发。
 - 局部章节编辑会同步刷新索引字数，刷新会话不再丢失纯工具调用卡；小米 MiMo 使用新的官方 API 地址。
+- Studio 远程监听必须配置长认证令牌、HTTPS 反向代理和 HTTPS 来源白名单，并拒绝跨站写请求；本机回环访问仍保持零配置。
+- 写作门禁新增 `manual` / `auto` 模式：日常生产建议人工复核，无人值守任务保持有界自动审校，预算或质量不达标时暂停。
+- 密钥文件权限和生产依赖安全已加固；Markdown 代码高亮语言与 Mermaid 图表改为按需加载，减少 Studio 首屏资源。
 
 [查看完整更新记录](docs/releases/release-notes.md)
 
@@ -262,7 +265,23 @@ inkos compose chapter 吞天魔帝
 
 每章自动创建状态快照，`inkos write rewrite` 可回滚任意章节。写手动笔前输出自检表（上下文、资源、伏笔、风险），写完输出结算表，审计员交叉验证。书籍写入和项目配置使用跨进程文件锁串行化；章节产物与 plan/compose/audit/consolidate 多文件输出使用事务 marker、备份、原子替换和失败恢复，避免正文、索引、truth 或 runtime/summary 只写入一部分。写后验证器含跨章重复检测和十余条硬规则自动 spot-fix。
 
-Studio 默认只监听 `127.0.0.1`，不启用通配 CORS；服务密钥只返回“是否已配置”，不会把原始 API Key 回传给前端。需要局域网访问时必须显式设置 `INKOS_STUDIO_HOST`，并自行补充适合部署环境的认证边界。
+Studio 默认只监听 `127.0.0.1`，不启用通配 CORS；服务密钥只返回“是否已配置”，不会把原始 API Key 回传给前端。非 loopback 绑定默认拒绝启动，必须同时配置 `INKOS_STUDIO_AUTH_TOKEN`（至少 24 字符）、`INKOS_STUDIO_BEHIND_HTTPS_PROXY=1` 和逗号分隔的 HTTPS `INKOS_STUDIO_ALLOWED_ORIGINS`。浏览器使用用户名 `inkos` 和该令牌进行 Basic Auth，脚本可发送同值 Bearer Token；跨站写请求会被拒绝。HTTPS 必须由反向代理终止，不能把带认证的 Studio 直接暴露为明文 HTTP。
+
+生产写作建议区分两种门禁。人工辅助模式写完即停，由用户审计、修订或批准，适合 Studio 日常生产：
+
+```bash
+inkos config set writing.reviewMode manual
+```
+
+无人值守模式保持严格自动审校，并设置有限的单章和单次 prompt 上限；达到预算或质量门禁时暂停，不应通过无限重试继续消费：
+
+```bash
+inkos config set writing.reviewMode auto
+inkos config set daemon.qualityGates.maxChapterTokens 200000
+inkos config set daemon.qualityGates.maxPromptTokensPerCall 32000
+```
+
+这些数值是 DeepSeek 长推理链路的保守起点，不是通用默认值；应根据项目 telemetry 下调。`report-only` 只属于真实模型验收脚本，不是生产放行策略。
 
 伏笔系统使用 Zod schema 校验——`lastAdvancedChapter` 必须是整数，`status` 只能是 open/progressing/deferred/resolved。LLM 输出的 JSON delta 在写入前经过 `applyRuntimeStateDelta` 做 immutable 更新 + `validateRuntimeState` 结构校验。坏数据直接拒绝，不会滚雪球。
 
