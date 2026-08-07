@@ -18,12 +18,19 @@ import {
   Pencil,
   Save,
   Eye,
+  Zap,
 } from "lucide-react";
 
 interface ChapterData {
-  readonly chapterNumber: number;
+  readonly episodeNumber: number;
   readonly filename: string;
   readonly content: string;
+  readonly performance?: {
+    readonly elapsedMs: number;
+    readonly calls: Readonly<Record<string, number>>;
+    readonly totalTokens: number;
+    readonly contextEstimatedTokens: number;
+  };
 }
 
 interface Nav {
@@ -40,7 +47,7 @@ export function ChapterReader({ bookId, chapterNumber, nav, theme, t }: {
 }) {
   const c = useColors(theme);
   const { data, loading, error, refetch } = useApi<ChapterData>(
-    `/books/${bookId}/chapters/${chapterNumber}`,
+    `/books/${bookId}/episodes/${chapterNumber}`,
   );
   const [editing, setEditing] = useState(false);
   const [editContent, setEditContent] = useState("");
@@ -60,7 +67,7 @@ export function ChapterReader({ bookId, chapterNumber, nav, theme, t }: {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await fetchJson(`/books/${bookId}/chapters/${chapterNumber}`, {
+      await fetchJson(`/books/${bookId}/episodes/${chapterNumber}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: editContent }),
@@ -87,7 +94,7 @@ export function ChapterReader({ bookId, chapterNumber, nav, theme, t }: {
   // Split markdown content into title and body
   const lines = data.content.split("\n");
   const titleLine = lines.find((l) => l.startsWith("# "));
-  const title = titleLine?.replace(/^#\s*/, "") ?? `Chapter ${chapterNumber}`;
+  const title = titleLine?.replace(/^#\s*/, "") ?? `Episode ${chapterNumber}`;
   const body = lines
     .filter((l) => l !== titleLine)
     .join("\n")
@@ -95,7 +102,7 @@ export function ChapterReader({ bookId, chapterNumber, nav, theme, t }: {
 
   const handleApprove = async () => {
     try {
-      await postApi(`/books/${bookId}/chapters/${chapterNumber}/approve`);
+      await postApi(`/books/${bookId}/episodes/${chapterNumber}/approve`);
       nav.toBook(bookId);
     } catch (e) {
       alert(e instanceof Error ? e.message : "Approve failed");
@@ -104,7 +111,7 @@ export function ChapterReader({ bookId, chapterNumber, nav, theme, t }: {
 
   const handleReject = async () => {
     try {
-      await postApi(`/books/${bookId}/chapters/${chapterNumber}/reject`);
+      await postApi(`/books/${bookId}/episodes/${chapterNumber}/reject`);
       nav.toBook(bookId);
     } catch (e) {
       alert(e instanceof Error ? e.message : "Reject failed");
@@ -242,6 +249,12 @@ export function ChapterReader({ bookId, chapterNumber, nav, theme, t }: {
                <Clock size={14} className="text-primary/60" />
                <span>{Math.ceil(body.length / 500)} {t("reader.minRead")}</span>
              </div>
+             {data.performance && (
+               <div data-testid="episode-performance-detail" className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-secondary/50">
+                 <Zap size={14} className="text-primary/60" />
+                 <span>{Object.values(data.performance.calls).reduce((sum, count) => sum + count, 0)} calls · {data.performance.totalTokens.toLocaleString()} token</span>
+               </div>
+             )}
           </div>
           <p className="text-[10px] uppercase tracking-widest text-muted-foreground/40 font-bold">{t("reader.endOfChapter")}</p>
         </footer>

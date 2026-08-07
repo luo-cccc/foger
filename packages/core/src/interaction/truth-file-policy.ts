@@ -8,6 +8,7 @@ const WRITABLE_TRUTH_FLAT_FILES = new Set([
   "particle_ledger.md",
   "pending_hooks.md",
   "chapter_summaries.md",
+  "episode_summaries.md",
   "subplot_board.md",
   "emotional_arcs.md",
   "style_guide.md",
@@ -26,7 +27,7 @@ const WRITABLE_ROLE_TRUTH_FILE_RE = /^roles\/(主要角色|次要角色|major|mi
 
 export const LEGACY_TRUTH_SHIM_FILES = new Set(["story_bible.md", "book_rules.md"]);
 
-export const RUNTIME_DIAGNOSTIC_TRUTH_FILE_RE = /^runtime\/(?:chapter-\d{4}\.(?:intent\.md|plan\.md|context\.json|rule-stack\.yaml|trace\.json|claims\.json|claim-brief\.md)|recovery\.json|tier2_current_arc\.md|volume-contracts\.json|volume-progress\.json|volume-dashboard\.md|volume-\d{3}\.(?:contract\.json|dashboard\.md))$/;
+export const RUNTIME_DIAGNOSTIC_TRUTH_FILE_RE = /^runtime\/(?:(?:chapter|episode)-\d{4}\.(?:intent\.md|plan\.md|context\.json|rule-stack\.yaml|trace\.json|claims\.json|claim-brief\.md)|recovery\.json|tier2_current_arc\.md|volume-contracts\.json|volume-progress\.json|volume-dashboard\.md|volume-\d{3}\.(?:contract\.json|dashboard\.md))$/;
 
 export function assertSafeTruthFileName(fileName: string): string {
   const trimmed = fileName.trim();

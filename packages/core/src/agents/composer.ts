@@ -52,6 +52,8 @@ import {
   compileChapterExecutionContract,
   renderChapterExecutionContract,
 } from "../utils/chapter-execution-contract.js";
+import type { EpisodeContextSnapshot } from "../pipeline/episode-context.js";
+import { attachEpisodeContextArtifacts } from "../pipeline/episode-context.js";
 
 export interface ComposeChapterInput {
   readonly book: BookConfig;
@@ -65,6 +67,7 @@ export interface ComposeChapterInput {
   readonly onContextCompression?: ContextCompressionCallback;
   readonly volumeAuditor?: Pick<VolumeAuditorAgent, "auditVolumeGate" | "name">;
   readonly claimValidator?: Pick<ClaimValidatorAgent, "validateCanonClaims" | "runPreWriteClaimGate" | "name">;
+  readonly episodeContextSnapshot?: EpisodeContextSnapshot;
 }
 
 export interface ContextBudget {
@@ -124,6 +127,7 @@ export async function composeGovernedChapter(input: ComposeChapterInput): Promis
     input.plan,
     input.book.language ?? "zh",
     input.outlineSectionSelector,
+    input.book.format === "screenplay",
   );
   const claimContext = await buildChapterClaimContext(input.bookDir, input.chapterNumber, input.plan, input.claimValidator);
   const volumeContext = await buildChapterVolumeContext(input.bookDir, input.chapterNumber, input.plan, input.volumeAuditor);
@@ -148,6 +152,9 @@ export async function composeGovernedChapter(input: ComposeChapterInput): Promis
   const contextPackage = budgeted.contextPackage;
 
   const ruleStack = buildGovernedRuleStack(input.plan, input.chapterNumber);
+  if (input.episodeContextSnapshot) {
+    attachEpisodeContextArtifacts(input.episodeContextSnapshot, contextPackage, ruleStack);
+  }
   const trace = buildGovernedTrace({
     chapterNumber: input.chapterNumber,
     plan: input.plan,
@@ -542,6 +549,36 @@ function renderContextEntries(
   ).join("\n\n");
 }
 
+function canonicalContextSource(source: string): string {
+  const hookMatch = source.match(/(?:runtime\/hook_debt|story\/pending_hooks\.md)#(.+)$/u);
+  if (hookMatch?.[1]) return `hook:${hookMatch[1]}`;
+  return source
+    .replace(/^runtime\/chapter_/u, "runtime/episode_")
+    .replace(/^chapter-/u, "episode-");
+}
+
+function dedupeContextEntries(
+  entries: ReadonlyArray<ContextPackage["selectedContext"][number]>,
+): ContextPackage["selectedContext"] {
+  const merged = new Map<string, ContextPackage["selectedContext"][number]>();
+  for (const entry of entries) {
+    const key = canonicalContextSource(entry.source);
+    const current = merged.get(key);
+    if (!current) {
+      merged.set(key, entry);
+      continue;
+    }
+    const currentExcerpt = current.excerpt ?? "";
+    const nextExcerpt = entry.excerpt ?? "";
+    merged.set(key, {
+      source: current.source,
+      reason: current.reason.length >= entry.reason.length ? current.reason : entry.reason,
+      excerpt: currentExcerpt.length >= nextExcerpt.length ? currentExcerpt : nextExcerpt,
+    });
+  }
+  return [...merged.values()];
+}
+
 function parseSelectedSources(raw: string): string[] {
   const trimmed = raw.trim()
     .replace(/^```(?:json)?\s*/i, "")
@@ -651,12 +688,19 @@ export class ComposerAgent extends BaseAgent {
     cache?: ContextCompilationCache,
   ): Promise<string> {
     const isEn = request.language === "en";
-    const protectedBlock = renderContextEntries(request.protectedEntries);
-    const stableEntries = [...request.semanticEntries, ...request.compressibleEntries]
+    const protectedEntries = dedupeContextEntries(request.protectedEntries);
+    const selectedEntries = dedupeContextEntries([
+      ...request.semanticEntries,
+      ...request.compressibleEntries,
+    ]);
+    const protectedBlock = renderContextEntries(protectedEntries);
+    const stableEntries = selectedEntries
       .filter((entry) => isStableContextSource(entry.source));
-    const dynamicSemanticEntries = request.semanticEntries
+    const dynamicSemanticEntries = selectedEntries
+      .filter((entry) => getContextSourceTier(entry.source) === "semantic")
       .filter((entry) => !isStableContextSource(entry.source));
-    const dynamicCompressibleEntries = request.compressibleEntries
+    const dynamicCompressibleEntries = selectedEntries
+      .filter((entry) => getContextSourceTier(entry.source) === "compressible")
       .filter((entry) => !isStableContextSource(entry.source));
     const stableSummary = stableEntries.length > 0 && cache
       ? await this.getOrCompileStableContext(request, stableEntries, cache)
@@ -812,6 +856,7 @@ async function collectSelectedContext(
   plan: PlanChapterOutput,
   language: "zh" | "en",
   outlineSectionSelector?: OutlineSectionSelector,
+  isScreenplay = false,
 ): Promise<ContextPackage["selectedContext"]> {
   const retrievalHints = deriveRetrievalHints(plan);
   const executionContract = compileChapterExecutionContract(plan.memo);
@@ -839,11 +884,11 @@ async function collectSelectedContext(
           "User's long-term authorial intent and direction — binding, overrides model defaults.",
         ),
       ),
-      maybeContextSource(
+      ...(isScreenplay ? [] : [maybeContextSource(
         storyDir,
         "audit_drift.md",
         "Carry forward audit drift guidance from the previous chapter without polluting hard state facts.",
-      ),
+      )]),
       maybeContextSource(
         storyDir,
         "current_state.md",

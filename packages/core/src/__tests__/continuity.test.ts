@@ -237,7 +237,7 @@ describe("ContinuityAuditor", () => {
       expect(systemPrompt).not.toContain("伏笔检查");
       expect(systemPrompt).not.toContain("大纲偏离检测");
 
-      expect(userPrompt).toContain("Review chapter 1.");
+      expect(userPrompt).toContain("Review episode 1.");
       expect(userPrompt).toContain("## Current State Card");
       expect(userPrompt).toContain("## Pending Hooks");
       expect(userPrompt).not.toContain("请审查第1章");

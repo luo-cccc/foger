@@ -573,7 +573,10 @@ async function resolveContiguousArtifactChapterProgress(bookDir: string): Promis
 }
 
 async function loadDurableArtifactChapterNumbers(bookDir: string): Promise<number[]> {
-  const chaptersDir = join(bookDir, "chapters");
+  const config = await readFile(join(bookDir, "book.json"), "utf-8")
+    .then((raw) => JSON.parse(raw) as Record<string, unknown>)
+    .catch(() => ({} as Record<string, unknown>));
+  const chaptersDir = join(bookDir, config.schemaVersion === "inkos-episode-v2" ? "episodes" : "chapters");
   const indexPath = join(chaptersDir, "index.json");
   const [indexState, fileChapters] = await Promise.all([
     readFile(indexPath, "utf-8")

@@ -91,7 +91,13 @@ const ProposeActionParams = Type.Object({
       Type.Literal("en"),
     ], { description: "Confirmed writing language." })),
     targetChapters: Type.Optional(Type.Number({
-      description: "Confirmed total chapter count.",
+      description: "Internal chapter alias for the total episode count.",
+    })),
+    targetEpisodes: Type.Optional(Type.Number({
+      description: "Confirmed total episode count. Defaults to 100.",
+    })),
+    episodeDurationSeconds: Type.Optional(Type.Number({
+      description: "Confirmed duration per episode in seconds. Defaults to 90.",
     })),
     chapterWordCount: Type.Optional(Type.Number({
       description: "Confirmed per-chapter length in the book's native unit.",
@@ -262,8 +268,10 @@ const SubAgentParams = Type.Object({
     Type.Literal("zh"),
     Type.Literal("en"),
   ], { description: "architect only: writing language. Default: zh" })),
-  targetChapters: Type.Optional(Type.Number({ description: "architect only: total chapter count. Default: 200" })),
-  chapterWordCount: Type.Optional(Type.Number({ description: "architect/writer: per-chapter length in the book's native unit (zh characters / en words). Default: 3000 zh, 2000 en" })),
+  targetChapters: Type.Optional(Type.Number({ description: "Internal chapter alias for total episode count." })),
+  targetEpisodes: Type.Optional(Type.Number({ description: "architect only: total episode count. Default: 100" })),
+  episodeDurationSeconds: Type.Optional(Type.Number({ description: "architect only: duration per episode in seconds. Default: 90" })),
+  chapterWordCount: Type.Optional(Type.Number({ description: "Internal compatibility field; not used as the screenplay quality metric." })),
   revise: Type.Optional(Type.Boolean({
     description: "architect only: true 表示在当前 active book 上重新生成架构稿，而不是新建书籍。no-book creation sessions cannot revise an existing book.",
   })),
@@ -307,8 +315,10 @@ const ArchitectCreateSubAgentParams = Type.Object({
     Type.Literal("zh"),
     Type.Literal("en"),
   ], { description: "Confirmed writing language. Default: zh" })),
-  targetChapters: Type.Optional(Type.Number({ description: "Confirmed total chapter count. Default: 200" })),
-  chapterWordCount: Type.Optional(Type.Number({ description: "Confirmed per-chapter length in the book's native unit. Default: 3000 zh, 2000 en" })),
+  targetChapters: Type.Optional(Type.Number({ description: "Internal chapter alias for total episode count." })),
+  targetEpisodes: Type.Optional(Type.Number({ description: "Confirmed total episode count. Default: 100" })),
+  episodeDurationSeconds: Type.Optional(Type.Number({ description: "Confirmed duration per episode in seconds. Default: 90" })),
+  chapterWordCount: Type.Optional(Type.Number({ description: "Internal compatibility field; not used as the screenplay quality metric." })),
 });
 
 function prepareSubAgentArguments(args: unknown): SubAgentParamsType {
@@ -341,8 +351,8 @@ export function createSubAgentTool(
   const sessionIsZh = (options.language ?? "zh") !== "en";
   return {
     name: "sub_agent",
-    description: options.architectCreateOnly
-      ? "Create a new long-form InkOS book foundation. This confirmation turn can only call agent='architect'; writing chapters happens after the session is bound to the created book."
+      description: options.architectCreateOnly
+       ? "Create a new InkOS comic-drama foundation. This confirmation turn can only call agent='architect'; writing episodes happens after the session is bound to the created book."
       : "Delegate a heavy operation to a specialised sub-agent. " +
         "Use agent='architect' to initialise a new book, 'writer' to write the next chapter, " +
         "'auditor' to audit quality, 'reviser' to revise a chapter, 'exporter' to export.",
@@ -355,7 +365,25 @@ export function createSubAgentTool(
       _signal?: AbortSignal,
       onUpdate?: AgentToolUpdateCallback,
     ): Promise<AgentToolResult<unknown>> {
-      const { agent, instruction, bookId, title, chapterNumber, genre, platform, language, targetChapters, chapterWordCount, revise, feedback, mode, format, approvedOnly } = params;
+      const {
+        agent,
+        instruction,
+        bookId,
+        title,
+        chapterNumber,
+        genre,
+        platform,
+        language,
+        targetChapters,
+        targetEpisodes,
+        episodeDurationSeconds,
+        chapterWordCount,
+        revise,
+        feedback,
+        mode,
+        format,
+        approvedOnly,
+      } = params;
 
       const progress = (msg: string) => {
         onUpdate?.(textResult(msg));
@@ -421,8 +449,14 @@ export function createSubAgentTool(
                 platform: normalizePlatformOrOther(createBookPayload?.platform ?? platform),
                 language: resolvedLanguage as any,
                 status: "outlining" as any,
-                targetChapters: createBookPayload?.targetChapters ?? targetChapters ?? 200,
-                chapterWordCount: createBookPayload?.chapterWordCount ?? chapterWordCount ?? defaultChapterLength(resolvedLanguage),
+                schemaVersion: "inkos-episode-v2" as const,
+                format: "screenplay" as const,
+                targetEpisodes: createBookPayload?.targetEpisodes ?? createBookPayload?.targetChapters ?? targetEpisodes ?? targetChapters ?? 100,
+                episodeDurationSeconds: createBookPayload?.episodeDurationSeconds ?? episodeDurationSeconds ?? 90,
+                targetChapters: createBookPayload?.targetEpisodes ?? createBookPayload?.targetChapters ?? targetEpisodes ?? targetChapters ?? 100,
+                chapterWordCount: createBookPayload?.chapterWordCount
+                  ?? chapterWordCount
+                  ?? (resolvedLanguage === "en" ? 2000 : 3000),
                 createdAt: now,
                 updatedAt: now,
               },

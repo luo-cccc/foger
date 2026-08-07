@@ -27,6 +27,7 @@ import { consolidateCommand } from "./commands/consolidate.js";
 import { createInteractCommand, type InteractCommandHooks } from "./commands/interact.js";
 import { createTuiCommand } from "./commands/tui.js";
 import { launchTui } from "./tui/app.js";
+import { seriesCommand } from "./commands/series.js";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json") as { version: string };
@@ -42,7 +43,7 @@ export function createProgram(hooks: ProgramHooks = {}): Command {
 
   program
     .name("inkos")
-    .description("InkOS — Multi-agent novel production system")
+    .description("InkOS - multi-agent comic-drama screenplay production system")
     .version(version)
     .enablePositionalOptions()
     .option("--service <service>", "Override LLM service for this CLI run")
@@ -85,6 +86,7 @@ export function createProgram(hooks: ProgramHooks = {}): Command {
     readInput: hooks.readInteractionInput,
   }));
   program.addCommand(createTuiCommand({ launchTui: hooks.launchTui }));
+  program.addCommand(seriesCommand);
 
   return program;
 }

@@ -209,6 +209,14 @@ export async function getLegacyMigrationHint(
   bookId: string,
 ): Promise<string | null> {
   const state = new StateManager(root);
+  try {
+    const rawBook = JSON.parse(await readFile(join(state.bookDir(bookId), "book.json"), "utf-8")) as { format?: unknown };
+    if (rawBook.format !== "screenplay") {
+      return `Book "${bookId}" is not an InkOS screenplay project: legacy novel project format is unsupported. Create a new comic-drama book instead.`;
+    }
+  } catch {
+    return `Book "${bookId}" is not an InkOS screenplay project: legacy novel project format is unsupported. Create a new comic-drama book instead.`;
+  }
   const stateDir = join(state.bookDir(bookId), "story", "state");
   try {
     const info = await stat(stateDir);
@@ -216,7 +224,7 @@ export async function getLegacyMigrationHint(
       return null;
     }
   } catch {
-    return `Book "${bookId}" uses legacy format (pre-v0.6). The next write will auto-migrate its state files.`;
+      return `Book "${bookId}" is not an InkOS screenplay project: legacy novel project format is unsupported. Create a new comic-drama book instead.`;
   }
-  return `Book "${bookId}" uses legacy format (pre-v0.6). The next write will auto-migrate its state files.`;
+  return `Book "${bookId}" is not an InkOS screenplay project: legacy novel project format is unsupported. Create a new comic-drama book instead.`;
 }

@@ -18,7 +18,7 @@ export interface ExportArtifact {
   readonly fileName: string;
   readonly chaptersExported: number;
   readonly totalWords: number;
-  readonly format: "txt" | "md" | "epub";
+  readonly format: "txt" | "md" | "epub" | "screenplay-md" | "screenplay-json" | "dialogue";
   readonly contentType: string;
   readonly payload: string | Buffer;
 }
@@ -125,7 +125,7 @@ export async function buildExportArtifact(
   state: ExportStateLike,
   bookId: string,
   options: {
-    readonly format?: "txt" | "md" | "epub";
+    readonly format?: "txt" | "md" | "epub" | "screenplay-md" | "screenplay-json" | "dialogue";
     readonly approvedOnly?: boolean;
     readonly outputPath?: string;
   },
@@ -143,9 +143,11 @@ export async function buildExportArtifact(
 
   const bookDir = state.bookDir(bookId);
   const chaptersDir = join(bookDir, "chapters");
+  const episodesDir = join(bookDir, "episodes");
   const projectRoot = dirname(dirname(bookDir));
   const outputPath = options.outputPath ?? join(projectRoot, `${bookId}_export.${format}`);
   const chapterFiles = buildChapterFileLookup(await readdir(chaptersDir));
+  const episodeFiles = buildChapterFileLookup(await readdir(episodesDir).catch(() => []));
   const totalWords = chapters.reduce((sum, chapter) => sum + chapter.wordCount, 0);
 
   if (format === "epub") {
@@ -168,6 +170,64 @@ export async function buildExportArtifact(
       format,
       contentType: "application/epub+zip",
       payload: await buildEpub(book.title, language, epubChapters),
+    };
+  }
+
+  if (format === "screenplay-json" || format === "dialogue") {
+    const scripts: unknown[] = [];
+    const dialogueLines: string[] = [];
+    for (const chapter of chapters) {
+      const jsonFile = (await readdir(episodesDir).catch(() => [] as string[]))
+        .find((file) => file.startsWith(String(chapter.number).padStart(4, "0"))
+          && file.endsWith(".json")
+          && !file.endsWith("_review.json"));
+      if (!jsonFile) continue;
+      const script = JSON.parse(await readFile(join(episodesDir, jsonFile), "utf-8")) as {
+        scenes?: Array<{ shots?: Array<{ dialogue?: Array<{ speaker?: string; text?: string }> }> }>;
+      };
+      if (format === "screenplay-json") {
+        scripts.push(script);
+      } else {
+        for (const scene of script.scenes ?? []) {
+          for (const shot of scene.shots ?? []) {
+            for (const line of shot.dialogue ?? []) {
+              if (line.speaker && line.text) dialogueLines.push(`${line.speaker}：${line.text}`);
+            }
+          }
+        }
+      }
+    }
+    return {
+      outputPath,
+      fileName: `${bookId}.${format === "screenplay-json" ? "json" : "dialogue.txt"}`,
+      chaptersExported: chapters.length,
+      totalWords,
+      format,
+      contentType: format === "screenplay-json" ? "application/json; charset=utf-8" : "text/plain; charset=utf-8",
+      payload: format === "screenplay-json"
+        ? `${JSON.stringify({ title: book.title, episodes: scripts }, null, 2)}\n`
+        : `${dialogueLines.join("\n")}\n`,
+    };
+  }
+
+  if (format === "screenplay-md") {
+    const parts: string[] = [`# ${book.title}\n\n---\n`];
+    for (const chapter of chapters) {
+      const episodeMatch = episodeFiles.get(chapter.number);
+      const chapterMatch = chapterFiles.get(chapter.number);
+      const match = episodeMatch ?? chapterMatch;
+      if (!match) continue;
+      parts.push(await readFile(join(episodeMatch ? episodesDir : chaptersDir, match), "utf-8"));
+      parts.push("\n\n---\n\n");
+    }
+    return {
+      outputPath,
+      fileName: `${bookId}.screenplay.md`,
+      chaptersExported: chapters.length,
+      totalWords,
+      format,
+      contentType: "text/markdown; charset=utf-8",
+      payload: parts.join(""),
     };
   }
 
@@ -197,7 +257,7 @@ export async function writeExportArtifact(
   state: ExportStateLike,
   bookId: string,
   options: {
-    readonly format?: "txt" | "md" | "epub";
+    readonly format?: "txt" | "md" | "epub" | "screenplay-md" | "screenplay-json" | "dialogue";
     readonly approvedOnly?: boolean;
     readonly outputPath?: string;
   },

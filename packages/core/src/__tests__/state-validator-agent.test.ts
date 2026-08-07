@@ -79,8 +79,7 @@ describe("StateValidatorAgent", () => {
     await agent.validate("Body.", 1, "old", "new state", "old hooks", "new hooks", "zh");
 
     const options = chatSpy.mock.calls[0]?.[1] as { maxTokens?: number } | undefined;
-    // Must not hardcode a small value like 2048 that starves thinking models
-    expect(options?.maxTokens).toBeUndefined();
+    expect(options?.maxTokens).toBe(2048);
   });
 
   it("treats missing truth updates as blocking even when the model says PASS", async () => {

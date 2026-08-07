@@ -2,14 +2,14 @@
   "name": "inkos",
   "version": "1.6.3",
   "private": true,
-  "description": "Story Creation AI Agent for long-form novel writing",
+  "description": "AI production system for serialized vertical drama scripts",
   "keywords": [
     "story-creation-ai-agent",
     "story-agent",
-    "ai-novel-writing",
-    "ai-writing-agent",
-    "novel-generator",
-    "long-form-fiction",
+    "ai-screenwriting",
+    "vertical-drama",
+    "episode-script",
+    "storyboard-script",
     "ai-storytelling",
     "litrpg",
     "progression-fantasy",
@@ -19,7 +19,7 @@
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Narcooo/inkos"
+    "url": "https://github.com/luo-cccc/foger.git"
   },
   "scripts": {
     "build": "pnpm -r build",

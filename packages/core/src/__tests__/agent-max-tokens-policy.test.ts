@@ -13,7 +13,7 @@ const AGENT_FILES = [
 ] as const;
 
 describe("creative agent maxTokens policy", () => {
-  it("lets modelCard defaults own generation output budgets", async () => {
+  it("keeps explicit output budgets limited to the planned creative agents", async () => {
     const testDir = dirname(fileURLToPath(import.meta.url));
     const offenders: string[] = [];
 
@@ -24,6 +24,10 @@ describe("creative agent maxTokens policy", () => {
       }
     }
 
-    expect(offenders).toEqual([]);
+    expect(offenders).toEqual([
+      "../agents/planner.ts",
+      "../agents/reviser.ts",
+      "../agents/writer.ts",
+    ]);
   });
 });

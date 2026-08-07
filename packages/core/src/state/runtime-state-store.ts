@@ -8,7 +8,11 @@ import {
   type RuntimeStateDelta,
 } from "../models/runtime-state.js";
 import type { Fact, StoredHook, StoredSummary } from "./memory-db.js";
-import { bootstrapStructuredStateFromMarkdown, parseCurrentStateFacts } from "./state-bootstrap.js";
+import {
+  bootstrapStructuredStateFromMarkdown,
+  normalizeHookId,
+  parseCurrentStateFacts,
+} from "./state-bootstrap.js";
 import { renderChapterSummariesProjection, renderCurrentStateProjection, renderHooksProjection } from "./state-projections.js";
 import { applyRuntimeStateDelta, type RuntimeStateSnapshot } from "./state-reducer.js";
 import { validateRuntimeState } from "./state-validator.js";
@@ -29,22 +33,39 @@ export interface NarrativeMemorySeed {
 }
 
 export async function loadRuntimeStateSnapshot(bookDir: string): Promise<RuntimeStateSnapshot> {
-  await bootstrapStructuredStateFromMarkdown({ bookDir });
   const stateDir = join(bookDir, "story", "state");
 
-  const [manifest, currentState, hooks, chapterSummaries] = await Promise.all([
-    readJson(join(stateDir, "manifest.json"), StateManifestSchema),
-    readJson(join(stateDir, "current_state.json"), CurrentStateStateSchema),
-    readJson(join(stateDir, "hooks.json"), HooksStateSchema),
-    readJson(join(stateDir, "chapter_summaries.json"), ChapterSummariesStateSchema),
-  ]);
-
-  const snapshot = {
-    manifest,
-    currentState,
-    hooks,
-    chapterSummaries,
+  const loadSnapshot = async (): Promise<RuntimeStateSnapshot> => {
+    const [manifest, currentState, hooks, chapterSummaries] = await Promise.all([
+      readJson(join(stateDir, "manifest.json"), StateManifestSchema),
+      readJson(join(stateDir, "current_state.json"), CurrentStateStateSchema),
+      readJson(join(stateDir, "hooks.json"), HooksStateSchema),
+      readJson(join(stateDir, "chapter_summaries.json"), ChapterSummariesStateSchema),
+    ]);
+    return { manifest, currentState, hooks, chapterSummaries };
   };
+
+  try {
+    const existing = await loadSnapshot();
+    const normalizedHookIds = existing.hooks.hooks.map((hook) => normalizeHookId(hook.hookId));
+    const hookIdsAreCanonical = normalizedHookIds.every(
+      (hookId, index) => hookId === existing.hooks.hooks[index]?.hookId,
+    );
+    const hookIdsAreUnique = new Set(normalizedHookIds).size === normalizedHookIds.length;
+    if (
+      validateRuntimeState(existing).length === 0
+      && hookIdsAreCanonical
+      && hookIdsAreUnique
+    ) {
+      return existing;
+    }
+  } catch {
+    // Missing or invalid structured state is rebuilt from durable projections.
+  }
+
+  await bootstrapStructuredStateFromMarkdown({ bookDir });
+
+  const snapshot = await loadSnapshot();
 
   const issues = validateRuntimeState(snapshot);
   if (issues.length > 0) {

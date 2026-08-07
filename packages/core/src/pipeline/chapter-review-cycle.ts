@@ -9,6 +9,7 @@ import type {
 } from "../models/chapter.js";
 import { hasCriticalIssue } from "./chapter-quality-gate.js";
 import { countChapterLength, isOutsideHardRange } from "../utils/length-metrics.js";
+import type { EpisodeContextSnapshot } from "./episode-context.js";
 
 export interface ChapterReviewCycleUsage {
   readonly promptTokens: number;
@@ -22,6 +23,7 @@ export interface ChapterReviewCycleControlInput {
   readonly chapterIntentData?: ChapterIntent;
   readonly contextPackage: ContextPackage;
   readonly ruleStack: RuleStack;
+  readonly episodeContextSnapshot?: EpisodeContextSnapshot;
 }
 
 export interface ChapterReviewCycleResult {
@@ -62,6 +64,7 @@ export interface ChapterReviewEvaluation {
 export interface ChapterReviewEvaluationOptions {
   readonly temperature?: number;
   readonly verificationIssues?: ReadonlyArray<AuditIssue>;
+  readonly episodeContextSnapshot?: EpisodeContextSnapshot;
 }
 
 const DEFAULT_MAX_REVIEW_ITERATIONS = 2;
@@ -91,13 +94,14 @@ interface ReviewAssessment {
 }
 
 export async function runChapterReviewCycle(params: {
-  readonly book: Pick<{ genre: string }, "genre">;
+  readonly book: { readonly genre: string; readonly episodeDurationSeconds?: number };
   readonly bookDir: string;
   readonly chapterNumber: number;
-  readonly initialOutput: Pick<WriteChapterOutput, "content" | "wordCount" | "postWriteErrors" | "postWriteWarnings">;
+  readonly initialOutput: Pick<WriteChapterOutput, "content" | "wordCount" | "postWriteErrors" | "postWriteWarnings" | "episodeScriptMetrics">;
   readonly reducedControlInput?: ChapterReviewCycleControlInput;
   readonly lengthSpec: LengthSpec;
   readonly initialUsage: ChapterReviewCycleUsage;
+  readonly episodeContextSnapshot?: EpisodeContextSnapshot;
   readonly createReviser: () => {
     reviseChapter: (
       bookDir: string,
@@ -113,6 +117,8 @@ export async function runChapterReviewCycle(params: {
         contextPackage?: ContextPackage;
         ruleStack?: RuleStack;
         lengthSpec?: LengthSpec;
+        targetDurationSeconds?: number;
+        episodeContextSnapshot?: EpisodeContextSnapshot;
       },
     ) => Promise<ReviseOutput>;
   };
@@ -120,6 +126,9 @@ export async function runChapterReviewCycle(params: {
     content: string,
     options?: ChapterReviewEvaluationOptions,
   ) => Promise<ChapterReviewEvaluation>;
+  readonly validateRevisionCandidate?: (content: string) => {
+    readonly wordCount: number;
+  };
   readonly normalizeDraftLengthIfNeeded: (chapterContent: string) => Promise<{
     content: string;
     wordCount: number;
@@ -144,6 +153,10 @@ export async function runChapterReviewCycle(params: {
   let auditCalls = 0;
   let revisionCalls = 0;
   let normalizationCalls = 0;
+  const screenplayCount = params.initialOutput.episodeScriptMetrics
+    ? params.initialOutput.episodeScriptMetrics.spokenCharacters
+      + params.initialOutput.episodeScriptMetrics.narrationCharacters
+    : undefined;
 
   // ---------------------------------------------------------------------------
   // Length normalization: dedicated step, only runs for clear hard-range drift.
@@ -154,7 +167,10 @@ export async function runChapterReviewCycle(params: {
     wordCount: number;
     applied: boolean;
   }> => {
-    const wordCount = countChapterLength(content, params.lengthSpec.countingMode);
+    const wordCount = screenplayCount ?? countChapterLength(content, params.lengthSpec.countingMode);
+    if (screenplayCount !== undefined) {
+      return { content, wordCount, applied: false };
+    }
     if (!isOutsideHardRange(wordCount, params.lengthSpec)) {
       return { content, wordCount, applied: false };
     }
@@ -166,7 +182,7 @@ export async function runChapterReviewCycle(params: {
 
   const normalizedBeforeAudit = await normalizeIfHardDrift(finalContent);
   finalContent = params.normalizePostWriteSurface?.(normalizedBeforeAudit.content) ?? normalizedBeforeAudit.content;
-  finalWordCount = countChapterLength(finalContent, params.lengthSpec.countingMode);
+  finalWordCount = screenplayCount ?? countChapterLength(finalContent, params.lengthSpec.countingMode);
   normalizeApplied = normalizeApplied || normalizedBeforeAudit.applied;
   const preAuditNormalizedWordCount = finalWordCount;
   params.assertChapterContentNotEmpty(finalContent, "draft generation");
@@ -188,8 +204,9 @@ export async function runChapterReviewCycle(params: {
       ? evaluation.auditResult
       : { ...evaluation.auditResult, overallScore: score };
     totalUsage = params.addUsage(totalUsage, auditResult.tokenUsage);
-    const wordCount = countChapterLength(content, params.lengthSpec.countingMode);
-    const lengthInRange = !isOutsideHardRange(wordCount, params.lengthSpec);
+    const wordCount = screenplayCount ?? countChapterLength(content, params.lengthSpec.countingMode);
+    const lengthInRange = screenplayCount !== undefined
+      || !isOutsideHardRange(wordCount, params.lengthSpec);
 
     return {
       auditResult,
@@ -377,7 +394,11 @@ export async function runChapterReviewCycle(params: {
         actionableIssues,
         "auto",
         params.book.genre,
-        { ...params.reducedControlInput, lengthSpec: params.lengthSpec },
+        {
+          ...params.reducedControlInput,
+          lengthSpec: params.lengthSpec,
+          targetDurationSeconds: params.book.episodeDurationSeconds ?? 90,
+        },
       );
       totalUsage = params.addUsage(totalUsage, reviseOutput.tokenUsage);
 
@@ -390,11 +411,26 @@ export async function runChapterReviewCycle(params: {
         break;
       }
 
+      let validatedRevision: { readonly wordCount: number } | undefined;
+      if (params.validateRevisionCandidate) {
+        try {
+          validatedRevision = params.validateRevisionCandidate(reviseOutput.revisedContent);
+        } catch (error) {
+          terminationReason = "no-material-progress";
+          params.logWarn({
+            zh: `修复轮次 ${iteration + 1} 产出的结构化剧本无效，已拒绝该候选：${error instanceof Error ? error.message : String(error)}`,
+            en: `repair iteration ${iteration + 1} produced an invalid structured screenplay; candidate rejected: ${error instanceof Error ? error.message : String(error)}`,
+          });
+          continue;
+        }
+      }
+
       params.assertChapterContentNotEmpty(reviseOutput.revisedContent, `repair iteration ${iteration + 1}`);
       const normalizedRevision = await normalizeIfHardDrift(reviseOutput.revisedContent);
       normalizeApplied = normalizeApplied || normalizedRevision.applied;
       const revisedContent = params.normalizePostWriteSurface?.(normalizedRevision.content) ?? normalizedRevision.content;
-      const revisedWordCount = countChapterLength(revisedContent, params.lengthSpec.countingMode);
+      const revisedWordCount = validatedRevision?.wordCount
+        ?? countChapterLength(revisedContent, params.lengthSpec.countingMode);
 
       if (revisedContent === finalContent) {
         terminationReason = "normalized-revision-unchanged";

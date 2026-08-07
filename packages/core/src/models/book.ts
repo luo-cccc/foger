@@ -55,6 +55,11 @@ export const BookConfigSchema = z.object({
   platform: PlatformSchema,
   genre: GenreSchema,
   status: BookStatusSchema,
+  /** InkOS now produces episodic screenplay scripts rather than novel prose. */
+  format: z.literal("screenplay").optional(),
+  schemaVersion: z.literal("inkos-episode-v2").optional(),
+  targetEpisodes: z.number().int().min(1).max(100).optional(),
+  episodeDurationSeconds: z.number().int().min(30).max(300).optional(),
   targetChapters: z.number().int().min(1).default(200),
   chapterWordCount: z.number().int().min(1000).default(3000),
   language: z.enum(["zh", "en"]).optional(),
@@ -68,6 +73,47 @@ export const BookConfigSchema = z.object({
 });
 
 export type BookConfig = z.infer<typeof BookConfigSchema>;
+
+/** Strict schema used by new creation/continuation entry points. */
+export const ScreenplayBookConfigSchema = BookConfigSchema.extend({
+  format: z.literal("screenplay"),
+  targetEpisodes: z.number().int().min(1).max(100),
+  episodeDurationSeconds: z.number().int().min(30).max(300),
+});
+export type ScreenplayBookConfig = z.infer<typeof ScreenplayBookConfigSchema>;
+
+export const EpisodeBookConfigSchema = BookConfigSchema.extend({
+  schemaVersion: z.literal("inkos-episode-v2"),
+  format: z.literal("screenplay"),
+  targetEpisodes: z.number().int().min(1).max(100),
+  episodeDurationSeconds: z.number().int().min(30).max(300),
+}).omit({ targetChapters: true, chapterWordCount: true });
+export type EpisodeBookConfig = z.infer<typeof EpisodeBookConfigSchema>;
+
+export class UnsupportedLegacyFormatError extends Error {
+  readonly code = "UNSUPPORTED_LEGACY_FORMAT" as const;
+
+  constructor(message = "This project uses the legacy novel/chapter format. Create a new InkOS episode project to continue.") {
+    super(message);
+    this.name = "UnsupportedLegacyFormatError";
+  }
+}
+
+export function assertEpisodeBookConfig(book: BookConfig): EpisodeBookConfig {
+  if (
+    book.schemaVersion !== "inkos-episode-v2"
+    || book.format !== "screenplay"
+    || book.targetEpisodes === undefined
+    || book.episodeDurationSeconds === undefined
+  ) {
+    throw new UnsupportedLegacyFormatError();
+  }
+  return EpisodeBookConfigSchema.parse(book);
+}
+
+export function assertScreenplayBookConfig(book: BookConfig): ScreenplayBookConfig {
+  return ScreenplayBookConfigSchema.parse(book);
+}
 
 export type ChapterReviewMode = "auto" | "manual";
 

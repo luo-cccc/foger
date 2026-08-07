@@ -3,13 +3,13 @@ import { executeCoreMutation, PipelineRunner, StateManager } from "@actalk/inkos
 import { buildPipelineConfig, findProjectRoot, loadConfig, log, logError, resolveBookId, resolveContext } from "../utils.js";
 
 export const composeCommand = new Command("compose")
-  .description("Compose chapter runtime artifacts");
+  .description("Compose episode runtime artifacts");
 
 composeCommand
-  .command("chapter")
-  .description("Generate context/rule-stack/trace artifacts for the next chapter")
+  .command("episode")
+  .description("Generate context/rule-stack/trace artifacts for the next episode")
   .argument("[book-id]", "Book ID (auto-detected if only one book)")
-  .option("--context <text>", "Chapter steering guidance")
+  .option("--context <text>", "Episode steering guidance")
   .option("--context-file <path>", "Read guidance from file")
   .option("--json", "Output JSON")
   .option("-q, --quiet", "Suppress console output")
@@ -38,7 +38,7 @@ composeCommand
       if (opts.json) {
         log(JSON.stringify(result, null, 2));
       } else {
-        log(`Composed chapter ${result.chapterNumber} for "${bookId}"`);
+        log(`Composed episode ${result.chapterNumber} for "${bookId}"`);
         log(`  Intent: ${result.intentPath}`);
         log(`  Context: ${result.contextPath}`);
         log(`  Rule stack: ${result.ruleStackPath}`);
@@ -48,7 +48,7 @@ composeCommand
       if (opts.json) {
         log(JSON.stringify({ error: String(e) }));
       } else {
-        logError(`Failed to compose chapter: ${e}`);
+        logError(`Failed to compose episode: ${e}`);
       }
       process.exit(1);
     }

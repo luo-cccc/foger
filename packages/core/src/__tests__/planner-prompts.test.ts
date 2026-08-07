@@ -8,25 +8,30 @@ import {
 } from "../agents/planner-prompts.js";
 
 describe("PLANNER_MEMO_SYSTEM_PROMPT", () => {
-  it("contains key mobile web-fiction craft phrases", () => {
-    expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("1 主线 + 1 支线");
-    expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("三连问");
+  it("contains the episode contract and removes novel-only hard rules", () => {
     expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("不要 YAML frontmatter");
-    expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("## 本章目标");
+    expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("## 本集目标");
     expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("## 关联线索");
     expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("不超过 50 字");
     expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("## 当前任务");
-    expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("## 卷级 KR 绑定");
+    expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("## 进入状态");
+    expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("## 因果升级");
+    expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("## 当集兑现");
+    expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("## 出去压力");
+    expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("## 结尾交接状态");
+    expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("## 信息权限");
+    expect(PLANNER_MEMO_SYSTEM_PROMPT).not.toContain("## 卷级 KR 绑定");
     expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("## 不要做");
-    expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("禁止写成 `[new] Hxxx`");
-    expect(PLANNER_MEMO_SYSTEM_PROMPT_EN).toContain("never write `[new] Hxxx`");
+    expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("open 只能记录真正独立的新问题");
+    expect(PLANNER_MEMO_SYSTEM_PROMPT_EN).toContain("open contains only genuinely independent new questions");
+    expect(PLANNER_MEMO_SYSTEM_PROMPT).not.toContain("3～5 章");
+    expect(PLANNER_MEMO_SYSTEM_PROMPT).not.toContain("揭 1 埋 2");
+    expect(PLANNER_MEMO_SYSTEM_PROMPT).not.toContain("独立内心反应");
   });
 
   it("explains attempted volume KR movement without treating it as volume-end completion", () => {
-    expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("有意义的失败尝试");
-    expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("不能算作卷尾 KR 完成");
-    expect(PLANNER_MEMO_SYSTEM_PROMPT_EN).toContain("meaningful failed attempt");
-    expect(PLANNER_MEMO_SYSTEM_PROMPT_EN).toContain("does not complete a volume-end KR");
+    expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("局部结果");
+    expect(PLANNER_MEMO_SYSTEM_PROMPT_EN).toContain("local dramatic result");
   });
 
   it("is not accidentally empty", () => {

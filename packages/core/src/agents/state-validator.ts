@@ -135,7 +135,7 @@ ${chapterContent}`;
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
-        { temperature: 0.1, stream: false, callPhase: "validate-state" },
+        { temperature: 0.1, stream: false, callPhase: "validate-state", maxTokens: 2048 },
       );
 
       return applyBlockingStateWarningPolicy(this.parseResult(response.content));

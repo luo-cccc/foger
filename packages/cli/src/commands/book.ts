@@ -24,16 +24,16 @@ import {
 import { loadConfig, buildPipelineConfig, findProjectRoot, resolveBookId, log, logError } from "../utils.js";
 
 export const bookCommand = new Command("book")
-  .description("Manage books");
+  .description("Manage comic-drama series");
 
 bookCommand
   .command("create")
-  .description("Create a new book with AI-generated foundation")
-  .requiredOption("--title <title>", "Book title")
+  .description("Create a new comic-drama series with AI-generated foundation")
+  .requiredOption("--title <title>", "Series title")
   .option("--genre <genre>", "Genre", "xuanhuan")
   .option("--platform <platform>", "Target platform", "tomato")
-  .option("--target-chapters <n>", "Target chapter count", "200")
-  .option("--chapter-words <n>", "Words per chapter", "3000")
+  .option("--episodes <n>", "Target episode count", "100")
+  .option("--duration <seconds>", "Target duration per episode", "90")
   .option("--brief <path>", "Path to creative brief file (.md/.txt) — Architect builds from your ideas instead of generating from scratch")
   .option("--lang <language>", "Writing language: zh (Chinese) or en (English). Defaults from genre.")
   .option("--json", "Output JSON")
@@ -58,14 +58,20 @@ bookCommand
 
       const config = await loadConfig();
       const now = new Date().toISOString();
+      const targetEpisodes = parseInt(opts.episodes ?? "100", 10);
+      const episodeDurationSeconds = parseInt(opts.duration ?? "90", 10);
       const book: BookConfig = BookConfigSchema.parse({
         id: bookId,
         title: opts.title,
         platform: normalizePlatformOrOther(opts.platform),
         genre: opts.genre,
         status: "outlining",
-        targetChapters: parseInt(opts.targetChapters, 10),
-        chapterWordCount: parseInt(opts.chapterWords, 10),
+        schemaVersion: "inkos-episode-v2",
+        format: "screenplay",
+        targetEpisodes,
+        episodeDurationSeconds,
+        targetChapters: targetEpisodes,
+        chapterWordCount: 3000,
         language: opts.lang ?? config.language,
         createdAt: now,
         updatedAt: now,
@@ -112,8 +118,8 @@ bookCommand
   .command("update")
   .description("Update book settings")
   .argument("[book-id]", "Book ID (auto-detected if only one book)")
-  .option("--chapter-words <n>", "Words per chapter")
-  .option("--target-chapters <n>", "Target chapter count")
+  .option("--duration <seconds>", "Target duration per episode")
+  .option("--episodes <n>", "Target episode count")
   .option("--status <status>", "Book status (outlining/active/paused/completed)")
   .option("--lang <language>", "Writing language: zh or en")
   .option("--json", "Output JSON")
@@ -124,8 +130,11 @@ bookCommand
       const state = new StateManager(root);
 
       const updates: Record<string, unknown> = {};
-      if (opts.chapterWords) updates.chapterWordCount = parseInt(opts.chapterWords, 10);
-      if (opts.targetChapters) updates.targetChapters = parseInt(opts.targetChapters, 10);
+      if (opts.duration) updates.episodeDurationSeconds = parseInt(opts.duration, 10);
+      if (opts.episodes) {
+        updates.targetEpisodes = parseInt(opts.episodes, 10);
+        updates.targetChapters = parseInt(opts.episodes, 10);
+      }
       if (opts.status) updates.status = opts.status;
       if (opts.lang) updates.language = opts.lang;
 
@@ -135,8 +144,8 @@ bookCommand
           log(JSON.stringify(book, null, 2));
         } else {
           log(`Book: ${book.title} (${bookId})`);
-          log(`  Words/chapter: ${book.chapterWordCount}`);
-          log(`  Target chapters: ${book.targetChapters}`);
+          log(`  Duration/episode: ${book.episodeDurationSeconds}s`);
+          log(`  Target episodes: ${book.targetEpisodes}`);
           log(`  Status: ${book.status}`);
           log(`  Genre: ${book.genre} | Platform: ${book.platform}`);
         }

@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { estimateTextTokens } from "../llm/provider.js";
 import { resolvePromptCompactionTarget, truncatePromptBlock } from "../utils/prompt-budget.js";
 import { buildNarrativeDriveContract } from "./narrative-drive-contract.js";
+import type { EpisodeContextSnapshot } from "../pipeline/episode-context.js";
 
 export interface AuditResult {
   readonly passed: boolean;
@@ -38,6 +39,12 @@ export interface AuditIssue {
   readonly description: string;
   readonly suggestion: string;
   readonly repairScope?: "local" | "structural" | "unknown";
+  readonly ruleClass?:
+    | "structural_invariant"
+    | "reviewed_invariant"
+    | "craft_default"
+    | "taste_option";
+  readonly evidenceRefs?: ReadonlyArray<string>;
 }
 
 type PromptLanguage = "zh" | "en";
@@ -45,6 +52,18 @@ type PromptLanguage = "zh" | "en";
 function normalizeRepairScope(value: unknown): AuditIssue["repairScope"] {
   if (value === "local" || value === "structural" || value === "unknown") return value;
   return undefined;
+}
+
+function isSelfRefutingCriticalIssue(issue: AuditIssue): boolean {
+  if (issue.severity !== "critical") return false;
+  const conclusion = `${issue.description}\n${issue.suggestion}`;
+  const tail = conclusion.slice(-180);
+  if (/(?:无\s*critical\s*偏离|无关键偏离|未违反任何(?:禁止事项|硬性规则)|no\s+critical\s+(?:issue|deviation)|does\s+not\s+(?:violate|constitute\s+a\s+violation))/iu.test(tail)) {
+    return true;
+  }
+  const saysCompliant = /(?:此条|当前短信|本集|该条)?\s*(?:合规|符合禁令|不构成违规|未违反)/iu.test(conclusion);
+  const hasActionableViolation = /(?:未落地|未完全落地|不符合|违反|冲突|缺少|缺乏|未能|越过|越界|不足|fails?\s+to|does\s+not\s+fully|violat(?:e|es|ed)|conflict|missing|insufficient)/iu.test(conclusion);
+  return saysCompliant && !hasActionableViolation;
 }
 
 const DIMENSION_LABELS: Record<number, { readonly zh: string; readonly en: string }> = {
@@ -146,8 +165,8 @@ function buildDimensionNote(
   // v10: Enhanced dimension notes with writing methodology awareness
   if (id === 7) {
     return language === "en"
-      ? "Check pacing rhythm: Do the recent 3-5 chapters form a complete mini-goal cycle (build-up → escalation → climax → aftermath)? If 5+ consecutive chapters pass without a climax (payoff/reward/reversal), flag as pacing stagnation. If the previous chapter was a climax/big reversal, does this chapter show change (relationships shifted, status changed, costs paid)? If it jumps straight to new build-up without showing impact, flag as 'post-climax impact missing'. Daily/transition scenes must carry at least one task: plant a hook, advance a relationship, set up contrast, or prepare the next cycle."
-      : "检查节奏波形：最近 3-5 章是否形成了完整的「蓄压→升级→爆发→后效」周期？如果连续 5 章没有爆发（兑现/回报/翻转），标记为节奏停滞。如果上一章是爆发/高潮/大反转，本章是否写出了改变？如果直接跳到新蓄压而没有展示前一波爆发的影响，标记为「高潮后影响缺失」。非冲突章节中的日常/过渡/对话段落，是否至少承担了一项任务：埋伏笔、推关系、建立反差、准备下一轮蓄压。纯水日常标记为流水账风险。";
+      ? "Check pacing rhythm: Do the recent 3-5 episodes form a complete mini-goal cycle (build-up -> escalation -> climax -> aftermath)? If 5+ consecutive episodes pass without a climax (payoff/reward/reversal), flag as pacing stagnation. If the previous episode was a climax/big reversal, does this episode show change (relationships shifted, status changed, costs paid)? If it jumps straight to new build-up without showing impact, flag as 'post-climax impact missing'. Daily/transition scenes must carry at least one task: plant a hook, advance a relationship, set up contrast, or prepare the next cycle."
+      : "检查节奏波形：最近 3-5 集是否形成了完整的「蓄压→升级→爆发→后效」周期？如果连续 5 集没有爆发（兑现/回报/翻转），标记为节奏停滞。如果上一集是爆发/高潮/大反转，本集是否写出了改变？如果直接跳到新蓄压而没有展示前一波爆发的影响，标记为「高潮后影响缺失」。非冲突集中的日常/过渡/对话段落，是否至少承担了一项任务：埋伏笔、推关系、建立反差、准备下一轮蓄压。纯水日常标记为流水账风险。";
   }
 
   if (id === 15) {
@@ -321,6 +340,7 @@ export class ContinuityAuditor extends BaseAgent {
       chapterMemo?: ChapterMemo;
       contextPackage?: ContextPackage;
       ruleStack?: RuleStack;
+      episodeContextSnapshot?: EpisodeContextSnapshot;
       truthFileOverrides?: {
         currentState?: string;
         ledger?: string;
@@ -350,7 +370,7 @@ export class ContinuityAuditor extends BaseAgent {
 
     const hasParentCanon = parentCanon !== "(文件不存在)";
 
-    // Load last chapter full text for fine-grained continuity checking
+    // Load the previous episode text for fine-grained continuity checking
     const previousChapter = await this.loadPreviousChapter(bookDir, chapterNumber);
 
     // Load genre profile and book rules
@@ -424,11 +444,13 @@ Set passed=true and overall_score=100 when all supplied issues are resolved and 
     const systemPromptBase = verificationMode
       ? verificationSystemPrompt
       : isEnglish
-      ? `You are a strict ${genreLabel} web-fiction structural editor. Audit the chapter for completion and structure, not for prose craft. ALL OUTPUT MUST BE IN ENGLISH.${protagonistBlock}${searchNote}
+      ? `You are a strict ${genreLabel} episodic screenplay editor. Audit the episode for production clarity, continuity, dramatic movement, and structure. ALL OUTPUT MUST BE IN ENGLISH.${protagonistBlock}${searchNote}
 
 ## Reviewer Scope (hard constraints)
 
 You audit completion and structure only. Your job is to decide whether the chapter delivers the plan, keeps characters and timelines intact, and moves the book forward. Wording, sentence rhythm, paragraph shape, punctuation, imagery, and other prose-surface choices are NOT yours — those belong to the Polisher pass that runs after you. If you notice prose-surface issues, you may flag them with severity "info" so the Polisher can see them, but they do not count toward passed / overall_score and they must never be critical.
+
+This is a 90-second comic-drama screenplay. Verify 1-3 scenes, 6-12 executable shots, visible/audible action, a concrete familiar payoff, sustained relationship pressure, a causally prepared reversal with consequences, and an ending emotional question. Novel-style internal exposition or unshootable prose is critical.
 
 You audit twelve structural reader-pain patterns: dragging / flat openings, blurry worldbuilding disconnected from reality, contradictory character setup, tangled POV, mainline drift or stagnation, weak conflict with missing payoff, pacing loss of control and abrupt transitions, character inconsistency across the arc, thin/one-note characters without contrast, stiff emotion expression and abrupt relationship jumps, imbalanced cheats/power gifts, and settings that never land in concrete action. Alongside these, keep the engineering dimensions listed below (OOC, timeline coherence, information boundary, hook debt, cross-chapter repetition, lexical fatigue, length band, title fatigue, paragraph shape).
 
@@ -468,11 +490,13 @@ overall_score calibration:
 - 65-74: Multiple issues hurt the reading experience, pacing or continuity has gaps
 - < 65: Structural breakdown, needs major rewrite
 Score holistically — do not let a single minor issue tank the score.`
-      : `你是一位严格的${gp.name}网络小说结构审稿编辑。你只审完成度 + 结构，不审文笔。${protagonistBlock}${searchNote}
+      : `你是一位严格的${gp.name}漫剧分镜结构审稿编辑。你审可制作性、连续性、戏剧推进和结构，不审小说文笔。${protagonistBlock}${searchNote}
 
 ## 审稿边界（硬约束）
 
 你不审文笔、不审排版、不审句式——这些归 Polisher。你发现的文笔问题只能以 severity="info" 标注供 Polisher 参考，不计入 reviewer 的 passed/overall_score，也绝不可标为 critical。
+
+这是约 90 秒的漫剧分镜稿。必须检查 1-3 个场景、6-12 个可执行镜头、所有内容可见或可听、熟悉爽点得到兑现、人物关系持续受压、反转有前置证据和后果、结尾留下明确情绪问题。小说式心理散文或无法制作的抽象描写属于 critical。
 
 你审 12 条结构类雷点：开篇拖沓/平淡、世界观模糊脱现实、人设矛盾、视角杂乱、主线偏离/停滞、冲突乏力爽点缺失、节奏失控过渡生硬、人设前后矛盾、人物单薄无反差、情感表达生硬/关系突兀、金手指失衡、设定无落地。同时保留工程维度（OOC、timeline 一致、信息越界、hook-debt、跨章重复、词汇疲劳、章节字数、标题疲劳、段落形状）。
 
@@ -607,7 +631,7 @@ overall_score 评分校准：
       : "";
 
     const renderUserPrompt = (): string => isEnglish
-      ? `Review chapter ${chapterNumber}.
+      ? `Review episode ${chapterNumber}.
 
 ## Current State Card
 ${currentState}
@@ -616,7 +640,7 @@ ${hooksBlock}${volumeSummariesBlock}${subplotBlock}${emotionalBlock}${matrixBloc
 
 ## Chapter Content Under Review
 ${chapterContent}`
-      : `请审查第${chapterNumber}章。
+      : `请审查第${chapterNumber}集漫剧分镜稿。
 
 ## 当前状态卡
 ${currentState}
@@ -681,6 +705,7 @@ ${chapterContent}`;
       temperature: options?.temperature ?? 0.3,
       stream: false,
       callPhase: "audit",
+      maxTokens: 3072,
     };
 
     const response = await this.chat(chatMessages, chatOptions);
@@ -834,13 +859,13 @@ ${selectedContext || "- none"}\n`;
       return {
         passed: Boolean(parsed.passed ?? false),
         issues: Array.isArray(parsed.issues)
-	          ? parsed.issues.map((i: Record<string, unknown>) => ({
-	              severity: (i.severity as string) ?? "warning",
-	              category: (i.category as string) ?? (language === "en" ? "Uncategorized" : "未分类"),
-	              description: (i.description as string) ?? "",
-	              suggestion: (i.suggestion as string) ?? "",
-	              repairScope: normalizeRepairScope(i.repair_scope ?? i.repairScope),
-	            }))
+          ? parsed.issues.map((i: Record<string, unknown>) => ({
+              severity: (i.severity as string) ?? "warning",
+              category: (i.category as string) ?? (language === "en" ? "Uncategorized" : "未分类"),
+              description: (i.description as string) ?? "",
+              suggestion: (i.suggestion as string) ?? "",
+              repairScope: normalizeRepairScope(i.repair_scope ?? i.repairScope),
+            })).filter((issue: AuditIssue) => !isSelfRefutingCriticalIssue(issue))
           : [],
         summary: String(parsed.summary ?? ""),
         overallScore,

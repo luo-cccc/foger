@@ -25,8 +25,8 @@ export interface BookCreateFormState {
   readonly title: string;
   readonly genre: string;
   readonly platform: string;
-  readonly targetChapters: string;
-  readonly chapterWordCount: string;
+  readonly targetEpisodes: string;
+  readonly episodeDurationSeconds: string;
   readonly brief: string;
 }
 
@@ -35,8 +35,8 @@ export interface BookCreatePayload {
   readonly genre: string;
   readonly platform: string;
   readonly language: "zh" | "en";
-  readonly targetChapters: number;
-  readonly chapterWordCount: number;
+  readonly targetEpisodes: number;
+  readonly episodeDurationSeconds: number;
   readonly blurb: string;
 }
 
@@ -89,8 +89,8 @@ interface PlatformCopy {
   readonly genreLabel: string;
   readonly genrePlaceholder: string;
   readonly platformLabel: string;
-  readonly targetChaptersLabel: string;
-  readonly chapterWordCountLabel: string;
+  readonly targetEpisodesLabel: string;
+  readonly episodeDurationSecondsLabel: string;
   readonly briefLabel: string;
   readonly briefPlaceholder: string;
   readonly createBook: string;
@@ -141,8 +141,8 @@ const PAGE_COPY: Record<"zh" | "en", PlatformCopy> = {
     genreLabel: "题材 / 类型",
     genrePlaceholder: "例如：都市悬疑、玄幻、科幻、女频情感",
     platformLabel: "目标平台",
-    targetChaptersLabel: "目标章数",
-    chapterWordCountLabel: "每章字数",
+    targetEpisodesLabel: "目标集数",
+    episodeDurationSecondsLabel: "每集时长（秒）",
     briefLabel: "故事简介 / 核心设定",
     briefPlaceholder: "写清世界观、主角、目标、核心冲突和第一阶段方向。例如：近未来港口城，主角是水货账房，想洗白却被旧账拖回港口旧案。",
     createBook: "创建书籍",
@@ -177,8 +177,8 @@ const PAGE_COPY: Record<"zh" | "en", PlatformCopy> = {
     genreLabel: "Genre",
     genrePlaceholder: "Example: mystery, urban fantasy, sci-fi, romance",
     platformLabel: "Target platform",
-    targetChaptersLabel: "Target chapters",
-    chapterWordCountLabel: "Words per chapter",
+    targetEpisodesLabel: "Target episodes",
+    episodeDurationSecondsLabel: "Duration per episode (seconds)",
     briefLabel: "Story brief / core premise",
     briefPlaceholder: "Include the world, protagonist, goal, core conflict, and first arc direction.",
     createBook: "Create book",
@@ -212,8 +212,8 @@ export function pickValidValue(current: string, available: ReadonlyArray<string>
   return available[0] ?? "";
 }
 
-export function defaultChapterWordsForLanguage(language: "zh" | "en"): string {
-  return language === "en" ? "2000" : "3000";
+export function defaultEpisodeDurationForLanguage(_language: "zh" | "en"): string {
+  return "90";
 }
 
 export function defaultBookCreateForm(language: "zh" | "en"): BookCreateFormState {
@@ -221,8 +221,8 @@ export function defaultBookCreateForm(language: "zh" | "en"): BookCreateFormStat
     title: "",
     genre: "",
     platform: platformOptionsForLanguage(language)[0]?.value ?? "other",
-    targetChapters: "200",
-    chapterWordCount: defaultChapterWordsForLanguage(language),
+    targetEpisodes: "100",
+    episodeDurationSeconds: defaultEpisodeDurationForLanguage(language),
     brief: "",
   };
 }
@@ -241,8 +241,8 @@ export function isBookCreateFormReady(form: BookCreateFormState): boolean {
     form.title.trim()
       && form.genre.trim()
       && form.brief.trim()
-      && parsePositiveInteger(form.targetChapters)
-      && parsePositiveInteger(form.chapterWordCount),
+      && parsePositiveInteger(form.targetEpisodes)
+      && parsePositiveInteger(form.episodeDurationSeconds),
   );
 }
 
@@ -250,9 +250,9 @@ export function buildBookCreatePayload(
   form: BookCreateFormState,
   language: "zh" | "en",
 ): BookCreatePayload {
-  const targetChapters = parsePositiveInteger(form.targetChapters);
-  const chapterWordCount = parsePositiveInteger(form.chapterWordCount);
-  if (!targetChapters || !chapterWordCount || !isBookCreateFormReady(form)) {
+  const targetEpisodes = parsePositiveInteger(form.targetEpisodes);
+  const episodeDurationSeconds = parsePositiveInteger(form.episodeDurationSeconds);
+  if (!targetEpisodes || !episodeDurationSeconds || !isBookCreateFormReady(form)) {
     throw new Error(language === "zh" ? "请先补齐建书表单。" : "Complete the book creation form first.");
   }
   return {
@@ -260,8 +260,8 @@ export function buildBookCreatePayload(
     genre: form.genre.trim(),
     platform: form.platform,
     language,
-    targetChapters,
-    chapterWordCount,
+    targetEpisodes,
+    episodeDurationSeconds,
     blurb: form.brief.trim(),
   };
 }
@@ -275,7 +275,7 @@ export function resolveDraftInstruction(input: string, _hasDraft: boolean): stri
 }
 
 // The story core that must be present to create. Length
-// (targetChapters/chapterWordCount) is a run parameter with editable defaults,
+// (targetEpisodes/episodeDurationSeconds) is a run parameter with editable defaults,
 // so it never gates creation — it's only shown in the basics stage. Mirrors
 // missingCoreDraftFields in core/interaction/project-tools.ts.
 export function canCreateFromDraft(draft?: BookCreationDraft): boolean {
@@ -303,8 +303,8 @@ const DRAFT_STAGE_LABELS: Record<"zh" | "en", Record<string, string>> = {
     genre: "题材",
     platform: "平台",
     language: "语言",
-    targetChapters: "目标章数",
-    chapterWordCount: "每章字数",
+    targetChapters: "目标集数",
+    chapterWordCount: "每集时长（秒）",
     worldPremise: "世界观",
     settingNotes: "设定补充",
     protagonist: "主角",
@@ -326,8 +326,8 @@ const DRAFT_STAGE_LABELS: Record<"zh" | "en", Record<string, string>> = {
     genre: "Genre",
     platform: "Platform",
     language: "Language",
-    targetChapters: "Target Chapters",
-    chapterWordCount: "Words per Chapter",
+    targetChapters: "Target Episodes",
+    chapterWordCount: "Duration per Episode (seconds)",
     worldPremise: "World",
     settingNotes: "Setting Notes",
     protagonist: "Protagonist",
@@ -607,8 +607,8 @@ export function BookCreate({ nav, theme, t }: { nav: Nav; theme: Theme; t: TFunc
         current.platform,
         platformOptionsForLanguage(projectLang).map((option) => option.value),
       ),
-      chapterWordCount: current.chapterWordCount || defaultChapterWordsForLanguage(projectLang),
-      targetChapters: current.targetChapters || "200",
+      episodeDurationSeconds: current.episodeDurationSeconds || "90",
+      targetEpisodes: current.targetEpisodes || "100",
     }));
   }, [projectLang]);
 
@@ -632,8 +632,8 @@ export function BookCreate({ nav, theme, t }: { nav: Nav; theme: Theme; t: TFunc
       title: draft.title?.trim() || current.title,
       genre: draft.genre?.trim() || current.genre,
       platform: pickValidValue(draft.platform ?? current.platform, platformValues),
-      targetChapters: draft.targetChapters ? String(draft.targetChapters) : current.targetChapters,
-      chapterWordCount: draft.chapterWordCount ? String(draft.chapterWordCount) : current.chapterWordCount,
+      targetEpisodes: draft.targetChapters ? String(draft.targetChapters) : current.targetEpisodes,
+      episodeDurationSeconds: draft.chapterWordCount ? String(draft.chapterWordCount) : current.episodeDurationSeconds,
       brief: draftBrief || current.brief,
     }));
   };
@@ -867,22 +867,22 @@ export function BookCreate({ nav, theme, t }: { nav: Nav; theme: Theme; t: TFunc
               </select>
             </label>
             <label className="space-y-2">
-              <span className="text-xs font-medium text-muted-foreground">{copy.targetChaptersLabel}</span>
+              <span className="text-xs font-medium text-muted-foreground">{copy.targetEpisodesLabel}</span>
               <input
                 type="number"
                 min={1}
-                value={form.targetChapters}
-                onChange={(event) => updateForm({ targetChapters: event.target.value })}
+                value={form.targetEpisodes}
+                onChange={(event) => updateForm({ targetEpisodes: event.target.value })}
                 className={`w-full ${c.input} rounded-md px-3 py-2.5 focus:outline-none text-sm`}
               />
             </label>
             <label className="space-y-2">
-              <span className="text-xs font-medium text-muted-foreground">{copy.chapterWordCountLabel}</span>
+              <span className="text-xs font-medium text-muted-foreground">{copy.episodeDurationSecondsLabel}</span>
               <input
                 type="number"
-                min={1000}
-                value={form.chapterWordCount}
-                onChange={(event) => updateForm({ chapterWordCount: event.target.value })}
+                min={30}
+                value={form.episodeDurationSeconds}
+                onChange={(event) => updateForm({ episodeDurationSeconds: event.target.value })}
                 className={`w-full ${c.input} rounded-md px-3 py-2.5 focus:outline-none text-sm`}
               />
             </label>

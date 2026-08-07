@@ -45,15 +45,22 @@ function buildBookConfig(input: {
   readonly language?: "zh" | "en";
   readonly chapterWordCount?: number;
   readonly targetChapters?: number;
+  readonly targetEpisodes?: number;
+  readonly episodeDurationSeconds?: number;
 }): BookConfig {
   const now = new Date().toISOString();
+  const targetEpisodes = input.targetEpisodes ?? input.targetChapters ?? 100;
   return {
     id: deriveBookIdFromTitle(input.title) || `book-${Date.now().toString(36)}`,
     title: input.title,
     platform: normalizePlatformOrOther(input.platform),
     genre: input.genre ?? "other",
     status: "outlining",
-    targetChapters: input.targetChapters ?? 200,
+    schemaVersion: "inkos-episode-v2",
+    format: "screenplay",
+    targetEpisodes,
+    episodeDurationSeconds: input.episodeDurationSeconds ?? 90,
+    targetChapters: targetEpisodes,
     chapterWordCount: input.chapterWordCount ?? defaultChapterLength(input.language === "en" ? "en" : "zh"),
     ...(input.language ? { language: input.language } : {}),
     createdAt: now,
@@ -104,7 +111,7 @@ export function buildChapterFileLookup(files: ReadonlyArray<string>): ReadonlyMa
 }
 
 async function exportBookToPath(state: StateLike, bookId: string, options: {
-  readonly format?: "txt" | "md" | "epub";
+  readonly format?: "txt" | "md" | "epub" | "screenplay-md" | "screenplay-json" | "dialogue";
   readonly approvedOnly?: boolean;
   readonly outputPath?: string;
 }) {

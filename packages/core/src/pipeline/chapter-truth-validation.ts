@@ -60,6 +60,27 @@ export async function validateChapterTruthPersistence(params: {
   let persistenceOutput = params.persistenceOutput;
   let auditResult = params.auditResult;
 
+  // EpisodeScript is the authoritative structured source. Its state and
+  // summary projections are produced by the deterministic episode reducer;
+  // avoid spending another model call re-describing the same JSON. If the
+  // reducer did not produce usable projections, fall through to the normal
+  // validator/recovery path.
+  const hasUsableDeterministicProjection = Boolean(
+    persistenceOutput.episodeScript
+    && persistenceOutput.updatedState.trim()
+    && persistenceOutput.updatedHooks.trim()
+    && persistenceOutput.updatedChapterSummaries?.trim(),
+  );
+  if (hasUsableDeterministicProjection) {
+    return {
+      validation: { passed: true, warnings: [] },
+      chapterStatus: null,
+      degradedIssues: [],
+      persistenceOutput,
+      auditResult,
+    };
+  }
+
   try {
     validation = applyBlockingStateWarningPolicy(await params.validator.validate(
       params.content,

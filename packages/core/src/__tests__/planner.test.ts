@@ -12,6 +12,42 @@ const VALID_BODY = `
 ## 当前任务
 主角进入七号门现场，比对锁芯刮痕与监控时间线，把"被动过手脚"从猜测钉成实证。
 
+## 本集爽点
+观众看到主角用一条可验证的证据逼退对手，满足调查题材中现场反制的期待。
+
+## 进入状态
+主角知道锁芯有异常但没有实证；对手掌握门禁权限；两人互不信任；主角带着记录仪进入七号门；取证动作尚未完成。
+
+## 当前目标
+主角要在监控清除前固定锁芯证据，因为这是唯一能改变对手主动权的时机。
+
+## 反对力量
+门禁管理员想抹掉记录，手里有封锁权限和时间优势，必须阻止主角取证。
+
+## 因果升级
+因为监控即将清除，主角选择拆下锁芯；管理员反锁现场并切断照明；主角仍取得刮痕样本，下一压力是公开指认管理员。
+
+## 关系压力
+主角与对手的互相利用关系被施压；对手拥有现场主动权，并隐瞒自己提前改过记录。
+
+## 反转铺垫
+观众先判断管理员只是奉命看守，前置证据是他反复避开同一段监控画面。
+
+## 本集反转
+锁芯刮痕证明管理员亲手动过门，而不是单纯执行命令。
+
+## 反转后果
+管理员失去可信度，主角获得指认筹码，但也失去继续潜伏的安全位置。
+
+## 当集兑现
+主角拿到锁芯实证并逼退管理员，代价是身份暴露和现场封锁升级。
+
+## 出去压力
+管理员会在天亮前公开指控主角盗窃；这是因为主角带走了能证明篡改的样本。
+
+## 结尾交接状态
+主角掌握锁芯实证；管理员掌握先发指控权；两人关系转为公开对立；主角仍在七号门内；下一步必须把证据送出。
+
 ## 读者此刻在等什么
 1) 读者在等七号门是否有异常实锤
 2) 本章完全兑现，钉成现场实证
@@ -35,6 +71,18 @@ const VALID_BODY = `
 
 ## 章尾必须发生的改变
 - 信息改变：主角掌握实证，可以面对幕后主使前先压住对手的退路
+
+## 方向性转折
+主角从暗中取证转为当面对手公开施压，前置实证迫使他放弃继续潜伏。
+
+## 信息权限
+主角和观众知道锁芯被动过手脚；对手只知道主角拿到了一部分证据；幕后主使仍未知。
+
+## 情绪钩子
+主角已经拿到实证，观众要追问对手会先背叛谁？
+
+## 结尾状态
+锁芯实证落入主角手中，主角与对手的关系从试探变成公开对立。
 
 ## 本章 hook 账
 advance:
@@ -207,7 +255,7 @@ describe("PlannerAgent.planChapter memo generation", () => {
     expect(result.plannerInputs).toContain(currentArcPath);
   });
 
-  it("does not hard-cap memo generation below the configured model output budget", async () => {
+  it("caps memo generation at the planner output budget", async () => {
     const chatSpy = vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue({
       content: validMemoRaw(1),
       usage: ZERO_USAGE,
@@ -222,7 +270,7 @@ describe("PlannerAgent.planChapter memo generation", () => {
     const callArgs = chatSpy.mock.calls[0]!;
     const options = callArgs[3] as { temperature?: number; maxTokens?: number } | undefined;
     expect(options).toEqual(expect.objectContaining({ temperature: 0.7 }));
-    expect(options).not.toHaveProperty("maxTokens");
+    expect(options?.maxTokens).toBe(4096);
   });
 
   it("passes per-chapter user context into the memo prompt as a high-priority instruction", async () => {
@@ -254,10 +302,6 @@ describe("PlannerAgent.planChapter memo generation", () => {
         usage: ZERO_USAGE,
       } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>)
       .mockResolvedValueOnce({
-        content: "still no memo sections",
-        usage: ZERO_USAGE,
-      } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>)
-      .mockResolvedValueOnce({
         content: validMemoRaw(4),
         usage: ZERO_USAGE,
       } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>);
@@ -268,11 +312,10 @@ describe("PlannerAgent.planChapter memo generation", () => {
       chapterNumber: 4,
     });
 
-    expect(chatSpy).toHaveBeenCalledTimes(3);
+    expect(chatSpy).toHaveBeenCalledTimes(2);
     expect(result.memo.chapter).toBe(4);
     expect(result.memo.isGoldenOpening).toBe(false);
     expect(diagnostics.map((diagnostic) => diagnostic.kind)).toEqual([
-      "planner-parse-retry",
       "planner-parse-retry",
     ]);
     expect(diagnostics[0]).toMatchObject({
@@ -281,7 +324,7 @@ describe("PlannerAgent.planChapter memo generation", () => {
       bookId: "book-plan-1",
       chapterNumber: 4,
       attempt: 1,
-      maxAttempts: 3,
+      maxAttempts: 2,
     });
 
     // Retry prompts must include the failure feedback
@@ -306,7 +349,6 @@ describe("PlannerAgent.planChapter memo generation", () => {
 
     expect(result.memo.body).toContain("## Planner warning");
     expect(diagnostics.map((diagnostic) => diagnostic.kind)).toEqual([
-      "planner-parse-retry",
       "planner-parse-retry",
       "planner-parse-retry",
       "planner-fallback",
@@ -355,6 +397,24 @@ describe("PlannerAgent.planChapter memo generation", () => {
 ## Current task
 Pin the Door 7 tampering from suspicion to live evidence.
 
+## Episode payoff
+The protagonist visibly outmaneuvers the gatekeeper with evidence the audience can verify.
+
+## Incoming state
+The protagonist suspects tampering, the gatekeeper controls access, trust is low, the recorder is ready, and evidence collection is unfinished.
+
+## Episode objective
+The protagonist must secure physical proof before the camera record is erased because this is the last available window.
+
+## Opposition
+The gatekeeper wants to erase the record and can seal the room, cut the lights, and control access.
+
+## Causal escalation
+Because deletion is imminent, the protagonist removes the lock; the gatekeeper seals the room; the scratches become proof and force a public confrontation.
+
+## Relationship pressure
+Their mutual-use arrangement breaks under leverage, secrecy, and the gatekeeper's control of the exit.
+
 ## What the reader is waiting for right now
 1) Reader expects to learn whether Door 7 is really compromised.
 2) This chapter pays it off in full — live evidence on stage.
@@ -378,6 +438,36 @@ n/a — pressure chapter, no transitional beats.
 
 ## Required end-of-chapter change
 - Information change: protagonist holds live evidence.
+
+## Outgoing pressure
+The opponent will publicly accuse the protagonist before dawn because the evidence now threatens the opponent's position.
+
+## Handoff state
+The protagonist holds the evidence, the opponent has first-mover authority, their relationship is openly adversarial, the protagonist remains inside Door 7, and must get the evidence out.
+
+## Directional turn
+The protagonist shifts from covert verification to direct pressure because the evidence can no longer stay hidden.
+
+## Reversal setup
+The audience expects a cautious administrator; repeated avoidance of the same camera frame seeds the contrary possibility.
+
+## Episode reversal
+The lock evidence proves the administrator personally altered Door 7 rather than merely following orders.
+
+## Reversal consequence
+The opponent loses credibility and the protagonist loses the safety of remaining anonymous.
+
+## Local dramatic result
+The protagonist secures live evidence and forces the opponent back, paying with exposure and a sealed exit.
+
+## Information permissions
+The protagonist and audience know the lock was tampered with; the opponent suspects partial evidence; the mastermind remains unknown.
+
+## Emotional hook
+Will the opponent betray the protagonist before the evidence can be made public?
+
+## End state
+The evidence is secured and the relationship changes from cautious cooperation to open opposition.
 
 ## Hook ledger for this chapter
 advance:

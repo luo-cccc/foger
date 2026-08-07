@@ -11,10 +11,10 @@ describe("narrative drive contract", () => {
 
     expect(foundation).toContain("新颖设定 x 熟悉爽点 x 高压关系 x 因果反转 x 情绪钩子");
     expect(foundation).toContain("不是要求每章机械集齐五项");
-    expect(planner).toContain("每章选择至少两项作为主驱动");
-    expect(planner).toContain("反转若在上一章已发生，本章就写后果");
-    expect(writer).toContain("不擅自增加新反转或新 hook");
-    expect(auditor).toContain("只按 chapter memo");
+    expect(planner).toContain("不是单集打卡");
+    expect(planner).toContain("若翻面已在上一集发生，本集就写后果");
+    expect(writer).toContain("不擅自增加新反转或新 Hook");
+    expect(auditor).toContain("只按 episode memo");
     expect(auditor).toContain("不因没有新反转扣分");
   });
 

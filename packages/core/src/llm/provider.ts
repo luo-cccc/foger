@@ -531,6 +531,14 @@ function resolvePromptPreflightLimit(explicitLimit?: number): number | undefined
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+function resolveOutputTokenLimit(requested: number): number {
+  const raw = process.env.INKOS_MAX_OUTPUT_TOKENS_PER_CALL?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return requested;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return requested;
+  return Math.min(requested, parsed);
+}
+
 function normalizeSuccessfulUsage(
   result: LLMResponse,
   promptAssembly: LLMPromptAssemblyTelemetry,
@@ -910,6 +918,11 @@ async function withTransientLLMRetry<T>(
 }
 
 function shouldUseNativeCustomTransport(client: LLMClient): boolean {
+  if (client.service === "deepseek" && client.provider === "openai") {
+    // DeepSeek's OpenAI-compatible endpoint accepts provider-specific extras
+    // (notably thinking.type=disabled) that pi-ai cannot forward generically.
+    return true;
+  }
   if (client.service === "minimax" && client.provider === "openai") {
     return true;
   }
@@ -948,6 +961,12 @@ function buildCustomHeaders(client: LLMClient): Record<string, string> {
 }
 
 function defaultOpenAIChatExtra(client: LLMClient, model: string): Record<string, unknown> {
+  if (client.service === "deepseek" && /^deepseek-v4-(?:flash|pro)$/i.test(model)) {
+    // DeepSeek V4 exposes hidden reasoning by default. InkOS's screenplay
+    // pipeline needs bounded, production-oriented output unless reasoning is
+    // explicitly requested through llm.extra.
+    return { thinking: { type: "disabled" } };
+  }
   if (client.service !== "minimax") return {};
   // MiniMax OpenAI 兼容端点（issue #329）：
   // - reasoning_split: true 让 thinking 拆分到 reasoning_content / reasoning_details，
@@ -1653,7 +1672,7 @@ export async function chatCompletion(
       model,
       options?.temperature ?? effectiveClient.defaults.temperature,
     ),
-    maxTokens: options?.maxTokens ?? effectiveClient.defaults.maxTokens,
+    maxTokens: resolveOutputTokenLimit(options?.maxTokens ?? effectiveClient.defaults.maxTokens),
     extra: {
       ...effectiveClient.defaults.extra,
       ...options?.extra,

@@ -52,7 +52,10 @@ export function collectStaleHookDebt(params: {
 
 export function evaluateHookAdmission(params: {
   readonly candidate: HookAdmissionCandidate;
-  readonly activeHooks: ReadonlyArray<HookRecord>;
+  readonly activeHooks: ReadonlyArray<Pick<
+    HookRecord,
+    "hookId" | "type" | "expectedPayoff" | "payoffTiming" | "notes"
+  >>;
 }): HookAdmissionDecision {
   const candidateType = normalizeHookFamily(params.candidate.type);
   if (!candidateType) {

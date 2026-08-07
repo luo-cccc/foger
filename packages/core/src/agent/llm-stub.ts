@@ -178,33 +178,55 @@ const CHAPTER_MEMO = [
   "## 当前任务",
   "林越在码头找到烧焦账页与裂开铅封，把师父失踪从猜测推进成可验证的旧账篡改线索。",
   "",
-  "## 读者此刻在等什么",
-  "1. 读者在等烧毁账页为何重新出现。",
-  "2. 本章部分兑现来源问题，并把调查推进到旧账篡改证据。",
+  "## 本集爽点",
+  "林越拿到可验证物证，并让乔心在公开压力下表明立场。",
   "",
-  "## 该兑现的 / 暂不掀的",
-  "- 该兑现：烧毁账页重新出现 → 林越拿到烧焦账页、裂开铅封和半张清单。",
-  "- 暂不掀：师父失踪的幕后主使 → 只确认旧账被改，暂不揭示操盘者。",
+  "## 进入状态",
+  "林越知道账页被烧毁，乔心掌握行会封条和举报权；林越在雨夜码头寻找账页上的地址。",
   "",
-  "## 日常/过渡承担什么任务",
-  "不适用 - 本章为码头取证与对峙场景，无日常过渡。",
+  "## 当前目标",
+  "林越要取得物证并迫使乔心表态，因为行会封锁将在天亮前完成。",
   "",
-  "## 关键抉择过三连问",
-  "- 主角本章最关键的一次选择：林越留下证据继续追查。",
-  "  - 为什么这么做？证据证明师父失踪不是偶然。",
-  "  - 符合当前利益吗？符合，他需要先保住可验证物证。",
-  "  - 符合他的人设吗？符合，他相信记录和证据。",
-  "- 对手/配角本章最关键的一次选择：乔心公开叫出巡夜人的名字，阻止冲突升级。",
-  "  - 为什么这么做？她要保住线索和林越。",
-  "  - 符合当前利益吗？符合。",
-  "  - 符合她的人设吗？符合。",
+  "## 反对力量",
+  "乔心与行会伙计要夺回账页，筹码是封条、举报权和人数优势。",
   "",
-  "## 章尾必须发生的改变",
-  "- 信息改变：林越保留半张清单和裂开铅封，确认旧账被人篡改。",
-  "- 关系改变：乔心从旁观者变成提供线索的协助者。",
-  "- 目标改变：林越决定继续追查师父失踪与旧账篡改。",
+  "## 因果升级",
+  "因为烧焦账页露出带血印记，林越拨出铅封并藏起账页；伙计封住仓门，乔心亮出行会封条；物证被确认且乔心被迫对立；林越必须在天亮前决定是否公开地址。",
   "",
-  "## 本章 hook 账",
+  "## 关系压力",
+  "林越与乔心从互相利用转为被迫对立；乔心掌握先手举报权，林越隐瞒地址。",
+  "",
+  "## 方向性转折",
+  "林越从暗中取证转为公开逼问乔心，前置证据迫使他放弃继续潜伏。",
+  "",
+  "## 反转铺垫",
+  "观众以为乔心会暗中帮助林越；她早先避开巡夜人的目光，暗示她另有行会约束。",
+  "",
+  "## 本集反转",
+  "乔心亮出行会封条，揭示她已被迫成为监视者。",
+  "",
+  "## 反转后果",
+  "林越失去唯一安全退路，乔心获得公开举报的先手。",
+  "",
+  "## 当集兑现",
+  "林越拿到半张清单和裂开铅封，确认旧账被篡改；代价是匿名保护失效。",
+  "",
+  "## 出去压力",
+  "天亮前会启动公开举报；这是封条被折断、乔心被迫选边直接产生的后果。",
+  "",
+  "## 结尾交接状态",
+  "林越带伤持有账页和断裂封条，知道地址藏在封条内；乔心拥有举报先手，两人必须在天亮前决定是否公开。",
+  "",
+  "## 信息权限",
+  "林越和观众知道地址载体；乔心只怀疑账页仍有秘密；伙计误以为账页留在仓门内；债务人的最终身份未知。",
+  "",
+  "## 情绪钩子",
+  "乔心会真的举报林越，还是在等他先交出地址？",
+  "",
+  "## 结尾状态",
+  "林越持有物证，乔心从旁观者变成被迫对立者，追查进入公开风险阶段。",
+  "",
+  "## 本集 Hook ledger",
   "open:",
   "- 无",
   "advance:",
@@ -212,12 +234,8 @@ const CHAPTER_MEMO = [
   "resolve:",
   "- 无",
   "defer:",
-  "- forged-notices \"伪造债务通知\" → 本章只确认旧账异常，暂不揭示系统规模",
+  "- forged-notices \"伪造债务通知\" → 本集只确认旧账异常，暂不揭示系统规模",
   "- courier-network \"信使网络\" → 乔心只提供单次线索，后续再推进证人网络",
-  "",
-  "## 卷级 KR 绑定",
-  "- 绑定：KR1",
-  "- 推进方式：林越用烧焦账页、裂开铅封和半张清单把调查推进到可验证证据。",
   "",
   "## 不要做",
   "- 不要直接揭示师父失踪的幕后主使。",
@@ -339,7 +357,10 @@ const FOUNDATION_SECTIONS = [
 
 function renderStubFoundation(prompt: string): string {
   const targetChapters = extractTargetChapters(prompt);
-  const plan = buildFoundationScalePlan(targetChapters);
+  const plan = buildFoundationScalePlan(
+    targetChapters,
+    /(?:目标集数|episode duration|100-episode|漫剧)/iu.test(prompt) ? { unit: "episodes" } : {},
+  );
   const volumeMap = [
     "# Volume Map",
     "",
@@ -392,7 +413,7 @@ function renderStubFoundation(prompt: string): string {
 }
 
 function extractTargetChapters(prompt: string): number {
-  const match = prompt.match(/(?:Target chapters|目标章数)\s*[：:]\s*(\d+)/iu);
+  const match = prompt.match(/(?:Target chapters|目标章数|目标集数|Planned series length)\s*[：:]?\s*(\d+)/iu);
   return match?.[1] ? Number.parseInt(match[1], 10) : 12;
 }
 
@@ -436,13 +457,132 @@ function looksLikeStateValidatorPrompt(joined: string): boolean {
 }
 
 function looksLikeWriterPrompt(joined: string): boolean {
-  return /(?:Write chapter \d+|请续写第\d+章)/i.test(joined)
-    && /PRE_WRITE_CHECK|CHAPTER_CONTENT|写作自检/.test(joined);
+  return /(?:Write (?:chapter|episode) \d+|请(?:续写第\d+章|创作第\d+集))/i.test(joined)
+    && /PRE_WRITE_CHECK|CHAPTER_CONTENT|EPISODE_SCRIPT_JSON|写作自检/.test(joined);
 }
 
 function renderStubChapterDraft(prompt: string): string {
-  const chapterMatch = prompt.match(/(?:Write chapter\s*|请续写第)\s*(\d+)\s*(?:章)?/iu);
+  const chapterMatch = prompt.match(/(?:Write (?:chapter|episode)\s*|请(?:续写第|创作第))\s*(\d+)\s*(?:章|集)?/iu);
   const chapterNumber = chapterMatch?.[1] ? Number.parseInt(chapterMatch[1], 10) : undefined;
+  if (/EPISODE_SCRIPT_JSON/i.test(prompt)) {
+    const episode = chapterNumber ?? 1;
+    const stateAt = (stateEpisode: number) => ({
+      knowledge: [stateEpisode === 1
+        ? "主角知道账页被人为烧毁"
+        : `主角掌握第 ${stateEpisode - 1} 集取得的可验证物证`],
+      power: [stateEpisode === 1
+        ? "乔心掌握行会封条和公开举报权"
+        : `乔心掌握第 ${stateEpisode} 集的先手举报权，主角持有上一集物证`],
+      relationship: [stateEpisode === 1
+        ? "主角与乔心仍有互相利用的旧盟约"
+        : `主角与乔心处于第 ${stateEpisode} 集开始时的被迫对立关系`],
+      physical: [stateEpisode === 1
+        ? "主角在雨夜码头，手部被铅封划伤"
+        : `主角带伤进入第 ${stateEpisode} 集的追查地点`],
+      activeAction: [stateEpisode === 1
+        ? "主角正在寻找账页上的地址"
+        : `主角正在执行第 ${stateEpisode} 集的物证转移行动`],
+    });
+    const script = {
+      episode,
+      title: `潮湿的账页 ${episode}`,
+      estimatedDurationSeconds: 90,
+      openingHook: "烧焦的账页在雨水里自行翻开，露出一枚带血的印记。",
+      reversal: "观众以为乔心来帮主角，但她亮出行会封条，揭示她已被迫成为监视者，代价是主角失去唯一安全退路。",
+      emotionalHook: "乔心会真的背叛他，还是在等他先开口？",
+      endState: "主角拿到可验证物证，乔心的立场从旁观者变成被迫对立者，追查进入公开风险阶段。",
+      ...(/"seriesResolution"/u.test(prompt) ? {
+        seriesResolution: {
+          mainConflict: "主角公开物证，行会伪造债务的主线冲突得到裁决。",
+          protagonistDesire: "主角完成查明旧账并恢复受害者姓名的核心愿望。",
+          characterArcs: [{ character: "主角", outcome: "从独自追查转为公开承担证词后果。" }],
+          relationships: [{ parties: "主角与乔心", outcome: "两人结束互相试探，选择共同公开证据。" }],
+        },
+      } : {}),
+      contract: {
+        incomingState: stateAt(episode),
+        objective: {
+          character: "主角",
+          desiredChange: "拿到可验证物证并迫使乔心表态",
+          whyNow: "行会封锁将在天亮前完成",
+        },
+        opposition: {
+          actorOrConstraint: "乔心与行会伙计",
+          goal: "夺回账页并阻止地址公开",
+          leverage: "封条、举报权和人数优势",
+        },
+        causalEscalation: [{
+          becauseOf: "烧焦账页露出带血印记",
+          choice: "主角拨出铅封并把账页藏入袖口",
+          countermove: "伙计封住仓门，乔心亮出行会封条",
+          stateChange: `第 ${episode} 集物证被确认，乔心取得新的举报筹码`,
+          nextPressure: `主角必须在第 ${episode + 1} 集开始前转移物证`,
+        }],
+        localDramaticResult: {
+          goalOutcome: "部分成功",
+          stateChange: `主角取得第 ${episode} 份物证，乔心获得新的反制筹码`,
+          costPaid: `主角暴露第 ${episode} 个追查落点并失去当前退路`,
+        },
+        outgoingPressure: {
+          startedDecisionDangerOrQuestion: `第 ${episode + 1} 集的公开举报程序即将启动`,
+          whyItFollows: `第 ${episode} 集封条被折断，迫使乔心立即上报`,
+        },
+        handoffState: stateAt(episode + 1),
+        informationPermissions: [{
+          subject: "账页地址",
+          audience: "观众已看见地址载体，乔心只知道账页存在",
+          known: ["主角", "观众"],
+          suspected: ["乔心"],
+          mistaken: ["行会伙计以为账页仍在仓门内"],
+          unknown: ["地址对应的最终债务人"],
+        }],
+      },
+      scenes: [{
+        id: "S1",
+        location: "雨夜码头",
+        time: "夜/外景",
+        purpose: "以物证逼出关系选择并改变追查处境",
+        shots: Array.from({ length: 6 }, (_, index) => ({
+          id: `S1-${String(index + 1).padStart(2, "0")}`,
+          shotSize: index === 0 ? "远景" : index === 5 ? "特写" : "近景",
+          camera: index === 0 ? "俯拍缓慢推进" : "固定机位",
+          durationSeconds: 15,
+          visual: [
+            "雨水冲开油布，烧焦账页贴在石阶上。",
+            "主角用鞋尖拨出裂开的铅封，手指停在血迹旁。",
+            "两个行会伙计堵住仓门，封条在灯下反光。",
+            "乔心站进雨幕，抬手亮出同样的封条。",
+            "主角把账页塞进袖口，伙计抓住他的肩。",
+            "乔心的封条被主角折断，断面露出藏在里面的地址。",
+          ][index],
+          action: [
+            "主角没有立刻伸手，先观察巡夜脚步。",
+            "主角捡起铅封，泥水顺着指缝流下。",
+            "伙计抬手拦路，主角退到积水边。",
+            "乔心与主角隔着雨帘对视。",
+            "主角借力撞开铁盒，护住袖口。",
+            "主角掰断封条，乔心的呼吸停了一拍。",
+          ][index],
+          dialogue: index === 2
+            ? [{ speaker: "伙计", text: "东西交出来，今晚还能算你捡到。" }]
+            : index === 3
+              ? [{ speaker: "乔心", text: "你再往前一步，我就只能报你的名字。" }]
+              : index === 5
+                ? [{ speaker: "主角", text: "那就一起报。" }]
+                : [],
+          sound: index === 5 ? "封条断裂声，雨声骤停" : "雨声与远处吊机声",
+        })),
+      }],
+    };
+    return [
+      "=== PRE_WRITE_CHECK ===",
+      "当前任务：用物证逼出关系选择并改变追查处境。",
+      "本集结束必须发生的改变：物证到手，乔心立场翻转，追查进入公开风险。",
+      "不要做：不要用总结代替可见动作，不要无代价解决冲突。",
+      "=== EPISODE_SCRIPT_JSON ===",
+      JSON.stringify(script),
+    ].join("\n");
+  }
   if (!chapterNumber) return CHAPTER_DRAFT;
 
   const configuredVolumeEnd = Number.parseInt(
@@ -468,7 +608,7 @@ function renderStubChapterDraft(prompt: string): string {
 }
 
 function looksLikePlannerMemoPrompt(joined: string): boolean {
-  return /产生一份\s*chapter_memo|produce a chapter_memo|职责是为下一章产生|job is to produce.*chapter_memo/is.test(joined);
+  return /产生一份\s*(?:chapter|episode)_memo|produce an? (?:chapter|episode)_memo|职责是为下一[章集]产生|job is to produce.*(?:chapter|episode)_memo/is.test(joined);
 }
 
 /**

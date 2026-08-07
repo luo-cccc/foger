@@ -33,7 +33,7 @@ const GENRE: GenreProfile = {
 };
 
 describe("buildWriterSystemPrompt", () => {
-  it("includes writing methodology blocks in governed mode", () => {
+  it("includes screenplay governance blocks in governed mode", () => {
     const prompt = buildWriterSystemPrompt(
       BOOK,
       GENRE,
@@ -49,30 +49,67 @@ describe("buildWriterSystemPrompt", () => {
     );
 
     expect(prompt).toContain("## 输入治理契约");
-    expect(prompt).toContain("卷纲是默认规划");
-    // v10: compact craft card replaces full methodology modules
-    expect(prompt).toContain("写作铁律");
-    expect(prompt).toContain("盐溶于汤");
-    expect(prompt).toContain("黄金三章写作纪律");
+    expect(prompt).toContain("本集剧情决策来自已编译的 episode memo");
+    expect(prompt).toContain("已选上下文只提供事实证据");
+    expect(prompt).toContain("漫剧核心规则");
+    expect(prompt).toContain("漫剧执行合同");
+    expect(prompt).toContain("EPISODE_SCRIPT_JSON");
     expect(prompt).toContain("## 叙事驱动执行");
-    expect(prompt).toContain("不擅自增加新反转或新 hook");
+    expect(prompt).toContain("不擅自增加新反转或新 Hook");
   });
 
-  it("injects cross-theme prose-execution rules: simile restraint + dramatize the climax (zh)", () => {
+  it("injects the structured comic-drama execution contract (zh)", () => {
     const prompt = buildWriterSystemPrompt(
       BOOK, GENRE, null, "", "", "", undefined, 5, "creative", "zh", "governed",
     );
-    expect(prompt).toContain("明喻节制");
-    expect(prompt).toContain("高潮必须演出");
-    expect(prompt).toContain("不许概述");
+    expect(prompt).toContain("漫剧执行合同");
+    expect(prompt).toContain("EPISODE_SCRIPT_JSON");
+    expect(prompt).toContain("并严格写入 EpisodeScript JSON");
+    expect(prompt).toContain("不得输出小说散文");
   });
 
-  it("injects cross-theme prose-execution rules into the English prompt", () => {
+  it("uses the configured episode duration in screenplay constraints", () => {
+    const prompt = buildWriterSystemPrompt(
+      { ...BOOK, format: "screenplay", episodeDurationSeconds: 105 },
+      GENRE,
+      null,
+      "",
+      "",
+      "",
+      undefined,
+      5,
+      "creative",
+      "zh",
+      "governed",
+    );
+    expect(prompt).toContain("目标 105 秒");
+    expect(prompt).toContain("90-120 秒");
+  });
+
+  it("requires explicit series resolution evidence in the final episode", () => {
+    const prompt = buildWriterSystemPrompt(
+      { ...BOOK, format: "screenplay", targetEpisodes: 20, episodeDurationSeconds: 90 },
+      GENRE,
+      null,
+      "",
+      "",
+      "",
+      undefined,
+      20,
+      "creative",
+      "zh",
+      "governed",
+    );
+    expect(prompt).toContain('"seriesResolution"');
+    expect(prompt).toContain("主线冲突、主角核心欲望、主要角色弧线和核心关系");
+  });
+
+  it("injects the structured comic-drama execution contract in English", () => {
     const prompt = buildWriterSystemPrompt(
       { ...BOOK }, { ...GENRE, language: "en" }, null, "", "", "", undefined, 5, "creative", "en", "governed",
     );
-    expect(prompt).toContain("Simile restraint");
-    expect(prompt).toContain("Play out the climax");
+    expect(prompt).toContain("Screenplay execution contract");
+    expect(prompt).toContain("EPISODE_SCRIPT_JSON");
     expect(prompt).toContain("## Narrative Drive Execution");
   });
 
@@ -145,8 +182,8 @@ describe("buildWriterSystemPrompt", () => {
       "governed",
     );
 
-    expect(prompt).toContain("## 核心规则");
-    expect(prompt).toContain("## 硬性禁令");
+    expect(prompt).toContain("## 漫剧核心规则");
+    expect(prompt).toContain("## 漫剧执行合同");
     expect(prompt).toContain("Do not reveal the mastermind");
     expect(prompt).toContain("Keep the prose restrained");
   });
@@ -191,7 +228,7 @@ describe("buildWriterSystemPrompt", () => {
     expect(prompt).toContain("写作方法论参考（完整版）");
   });
 
-  it("injects the creative constitution and six pillars of immersion as prose (zh)", () => {
+  it("keeps screenplay prompts focused on executable visual beats (zh)", () => {
     const prompt = buildWriterSystemPrompt(
       BOOK,
       GENRE,
@@ -206,23 +243,12 @@ describe("buildWriterSystemPrompt", () => {
       "governed",
     );
 
-    // Constitution and pillars appear as prose section headings.
-    expect(prompt).toContain("## 创作宪法");
-    expect(prompt).toContain("## 代入感六支柱");
-    // Constitution prose beats — verify a few load-bearing phrases ship.
-    expect(prompt).toContain("盐溶于汤");
-    expect(prompt).toContain("全员智商在线");
-    expect(prompt).toContain("拒绝流水账");
-    // Pillar prose beats — ensure six-pillar content is present.
-    expect(prompt).toContain("基础信息标签化");
-    expect(prompt).toContain("可视化熟悉感");
-    expect(prompt).toContain("五感钩子");
-    // Must NOT be rendered as a numbered checklist — writer must internalise.
-    expect(prompt).not.toContain("1. 基础信息标签化");
-    expect(prompt).not.toContain("- 基础信息标签化");
+    expect(prompt).toContain("每个镜头都必须可制作");
+    expect(prompt).toContain("心理活动必须外化");
+    expect(prompt).not.toContain("## 创作宪法");
   });
 
-  it("injects the creative constitution and six pillars of immersion as prose (en)", () => {
+  it("keeps screenplay prompts focused on executable visual beats (en)", () => {
     const prompt = buildWriterSystemPrompt(
       { ...BOOK, language: "en" },
       { ...GENRE, language: "en", name: "General" },
@@ -237,14 +263,12 @@ describe("buildWriterSystemPrompt", () => {
       "governed",
     );
 
-    expect(prompt).toContain("## Creative Constitution");
-    expect(prompt).toContain("## Six Pillars of Immersion");
-    expect(prompt).toContain("salt in soup");
-    expect(prompt).toContain("Refuse chronicle drift");
-    expect(prompt).toContain("core tag plus one contrasting detail");
+    expect(prompt).toContain("Make every shot producible");
+    expect(prompt).toContain("Convert inner thought into behavior");
+    expect(prompt).not.toContain("## Creative Constitution");
   });
 
-  it("injects golden opening discipline into zh writer system prompt for ch<=3", () => {
+  it("keeps the opening hook contract available to every episode", () => {
     for (const ch of [1, 2, 3]) {
       const prompt = buildWriterSystemPrompt(
         BOOK,
@@ -259,12 +283,12 @@ describe("buildWriterSystemPrompt", () => {
         "zh",
         "governed",
       );
-      expect(prompt).toContain("黄金三章写作纪律");
-      expect(prompt).toContain(`第 ${ch} 章`);
+      expect(prompt).toContain("openingHook");
+      expect(prompt).toContain("前 3-5 秒");
     }
   });
 
-  it("injects golden opening discipline into en writer system prompt for ch<=3", () => {
+  it("keeps the opening hook contract available in English", () => {
     for (const ch of [1, 2, 3]) {
       const prompt = buildWriterSystemPrompt(
         BOOK,
@@ -279,12 +303,12 @@ describe("buildWriterSystemPrompt", () => {
         "en",
         "governed",
       );
-      expect(prompt).toContain("Golden Opening Discipline");
-      expect(prompt).toContain(`Chapter ${ch}`);
+      expect(prompt).toContain("openingHook");
+      expect(prompt).toContain("first 3-5 seconds");
     }
   });
 
-  it("omits golden opening discipline for ch>=4 in both languages", () => {
+  it("does not reintroduce novel golden-chapter prose for later episodes", () => {
     const zh = buildWriterSystemPrompt(
       BOOK, GENRE, null, "# Book Rules", "# Genre Body", "# Style Guide",
       undefined, 4, "creative", "zh", "governed",
@@ -342,5 +366,25 @@ describe("buildWriterSystemPrompt", () => {
 
     expect(prompt).toContain("English Variance Brief");
     expect(prompt).toContain("resistance-bearing exchange");
+  });
+
+  it("defaults invalid episode duration to 90 seconds", () => {
+    const prompt = buildWriterSystemPrompt(
+      { ...BOOK, episodeDurationSeconds: undefined },
+      GENRE,
+      null,
+      "",
+      "",
+      "",
+      undefined,
+      5,
+      "creative",
+      "en",
+      "governed",
+    );
+
+    expect(prompt).toContain("about 90 seconds");
+    expect(prompt).not.toContain("undefined seconds");
+    expect(prompt).not.toContain("NaN");
   });
 });

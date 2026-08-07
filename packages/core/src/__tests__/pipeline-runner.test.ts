@@ -2006,10 +2006,9 @@ describe("PipelineRunner", () => {
     }
   });
 
-  it("adds hook-ledger 揭1埋1 violations from the memo to the audit result", async () => {
-    // End-to-end companion to the unit-level hook-ledger-validator tests: prove
-    // a memo that resolves a hook without opening one actually surfaces the
-    // "揭 1 埋 1" critical through runPostWriteChecks into the audit result.
+  it("does not force a replacement Hook when a memo resolves one", async () => {
+    // Forward pull is governed by local payoff and outgoing pressure; resolving
+    // a Hook alone is not a structural failure.
     const { root, runner, state, bookId } = await createRunnerFixture({
       inputGovernanceMode: "v2",
       writingReviewRetries: 0,
@@ -2032,14 +2031,13 @@ describe("PipelineRunner", () => {
           chapter: input.chapterNumber,
           goal: planned.intent.goal,
           isGoldenOpening: false,
-          // resolve 1 hook, open 0 → 揭 1 埋 1 violation.
+          // resolve 1 hook, open 0 is valid under the episode contract.
           body: '## 本章 hook 账\nadvance:\n- H007 "胖虎借条" → planted\nresolve:\n- H003 "杂役腰牌" → 林秋主动摘下\n',
           threadRefs: [],
         },
       };
     });
-    // Draft echoes both committed hooks so only the 揭1埋1 critical remains
-    // (no separate evidence warnings muddy the assertion).
+    // Draft echoes both committed hooks so no ledger warning is emitted.
     vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(
       createWriterOutput({
         chapterNumber: 1,
@@ -2054,12 +2052,8 @@ describe("PipelineRunner", () => {
     try {
       const result = await runner.writeNextChapter(bookId);
 
-      expect(result.auditResult.passed).toBe(false);
-      expect(result.auditResult.issues).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ category: expect.stringContaining("揭 1 埋 1"), severity: "critical" }),
-        ]),
-      );
+      expect(result.auditResult.passed).toBe(true);
+      expect(result.auditResult.issues.some((issue) => issue.category.includes("揭 1 埋 1"))).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -5211,7 +5205,7 @@ describe("PipelineRunner", () => {
       expect(foundation.mock.calls[0]?.[1]).not.toContain("第1章");
       expect(saveChapter.mock.calls[0]?.[3]).toBe("en");
       expect(chapterFile).toContain("# Chapter 1: Prelude");
-      expect(chapterSummaries).toContain("# Chapter Summaries");
+      expect(chapterSummaries).toContain("# Episode Summaries");
       expect(chapterSummaries).not.toContain("# 章节摘要");
       expect(subplotBoard).toContain("# Subplot Board");
       expect(subplotBoard).not.toContain("# 支线进度板");

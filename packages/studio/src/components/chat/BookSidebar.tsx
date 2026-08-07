@@ -104,7 +104,7 @@ function ArtifactView({ bookId }: { readonly bookId: string }) {
     setFrontmatter(null);
     setBody(null);
     if (isChapter) {
-      fetchJson<{ content: string }>(`/books/${bookId}/chapters/${artifactChapter}`)
+      fetchJson<{ content: string }>(`/books/${bookId}/episodes/${artifactChapter}`)
         .then((data) => setContent(data.content ?? ""))
         .catch(() => setContent(null))
         .finally(() => setLoading(false));
@@ -131,7 +131,7 @@ function ArtifactView({ bookId }: { readonly bookId: string }) {
     setSaving(true);
     try {
       if (isChapter) {
-        await fetchJson(`/books/${bookId}/chapters/${artifactChapter}`, {
+        await fetchJson(`/books/${bookId}/episodes/${artifactChapter}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ content: editContent }),

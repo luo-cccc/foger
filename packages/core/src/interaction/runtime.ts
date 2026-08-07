@@ -24,6 +24,8 @@ export interface InteractionRuntimeTools {
     readonly language?: "zh" | "en";
     readonly chapterWordCount?: number;
     readonly targetChapters?: number;
+    readonly targetEpisodes?: number;
+    readonly episodeDurationSeconds?: number;
     readonly blurb?: string;
     readonly worldPremise?: string;
     readonly settingNotes?: string;
@@ -36,7 +38,7 @@ export interface InteractionRuntimeTools {
     readonly currentFocus?: string;
   }) => Promise<unknown>;
   readonly exportBook?: (bookId: string, options: {
-    readonly format?: "txt" | "md" | "epub";
+    readonly format?: "txt" | "md" | "epub" | "screenplay-md" | "screenplay-json" | "dialogue";
     readonly approvedOnly?: boolean;
     readonly outputPath?: string;
   }) => Promise<unknown>;
@@ -388,6 +390,8 @@ async function handleDraftLifecycleRequest(params: {
         language: request.language ?? effectiveDraft?.language,
         chapterWordCount: request.chapterWordCount ?? effectiveDraft?.chapterWordCount,
         targetChapters: request.targetChapters ?? effectiveDraft?.targetChapters,
+        targetEpisodes: request.targetEpisodes,
+        episodeDurationSeconds: request.episodeDurationSeconds,
         blurb: request.blurb ?? effectiveDraft?.blurb,
         worldPremise: request.worldPremise ?? effectiveDraft?.worldPremise,
         settingNotes: request.settingNotes ?? effectiveDraft?.settingNotes,

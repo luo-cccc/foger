@@ -14,6 +14,7 @@ const NORMALIZED_TRUTH_FILES = new Set([
   "current_state.md",
   "pending_hooks.md",
   "chapter_summaries.md",
+  "episode_summaries.md",
 ]);
 
 export function normalizeTruthFileName(fileName: string): string {
@@ -39,6 +40,7 @@ export function classifyTruthAuthority(fileName: string): TruthAuthority {
     case "pending_hooks.md":
       return "runtime-truth";
     case "chapter_summaries.md":
+    case "episode_summaries.md":
     default:
       return "memory";
   }

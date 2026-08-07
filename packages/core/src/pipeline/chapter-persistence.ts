@@ -1,6 +1,7 @@
 import type { AuditIssue, AuditResult } from "../agents/continuity.js";
 import type { ChapterMeta, ChapterReviewTelemetry } from "../models/chapter.js";
 import type { LengthTelemetry } from "../models/length-governance.js";
+import type { EpisodeScriptMetrics } from "../models/episode-script.js";
 import { buildStateDegradedReviewNote } from "./chapter-state-recovery.js";
 import { resolveChapterReviewStatus } from "./chapter-quality-gate.js";
 import { buildChapterRecoveryState } from "./chapter-recovery-policy.js";
@@ -23,6 +24,7 @@ export async function persistChapterArtifacts(params: {
   readonly finalWordCount: number;
   readonly lengthWarnings: ReadonlyArray<string>;
   readonly lengthTelemetry?: LengthTelemetry;
+  readonly episodeScriptMetrics?: EpisodeScriptMetrics;
   readonly degradedIssues: ReadonlyArray<AuditIssue>;
   readonly tokenUsage?: ChapterPersistenceUsage;
   readonly reviewTelemetry?: ChapterReviewTelemetry;
@@ -54,6 +56,7 @@ export async function persistChapterArtifacts(params: {
     : undefined;
   const entry: ChapterMeta = {
     number: params.chapterNumber,
+    episodeNumber: params.chapterNumber,
     title: params.chapterTitle,
     status: params.status,
     wordCount: params.finalWordCount,
@@ -68,6 +71,7 @@ export async function persistChapterArtifacts(params: {
         )
       : undefined,
     lengthTelemetry: params.lengthTelemetry,
+    episodeScriptMetrics: params.episodeScriptMetrics,
     tokenUsage: params.tokenUsage,
     reviewTelemetry: params.reviewTelemetry,
     ...(params.operationId ? { operationId: params.operationId } : {}),

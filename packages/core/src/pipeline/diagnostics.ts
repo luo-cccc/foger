@@ -4,7 +4,8 @@ export type PipelineDiagnosticKind =
   | "planner-fallback"
   | "canon-fallback"
   | "content-policy-fallback"
-  | "resync-analyzer-fallback";
+  | "resync-analyzer-fallback"
+  | "call-budget-exceeded";
 
 export interface PipelineDiagnostic {
   readonly kind: PipelineDiagnosticKind;
@@ -15,6 +16,7 @@ export interface PipelineDiagnostic {
   readonly timestamp: string;
   readonly bookId?: string;
   readonly chapterNumber?: number;
+  readonly episodeNumber?: number;
   readonly attempt?: number;
   readonly maxAttempts?: number;
   readonly details?: Readonly<Record<string, string | number | boolean | null>>;

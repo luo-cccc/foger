@@ -144,6 +144,9 @@ describe("architect agent — BookConfig construction", () => {
     expect(bookConfig.genre).toBe("xuanhuan");
     expect(bookConfig.platform).toBe("tomato");
     expect(bookConfig.language).toBe("zh");
+    expect(bookConfig.format).toBe("screenplay");
+    expect(bookConfig.targetEpisodes).toBe(100);
+    expect(bookConfig.episodeDurationSeconds).toBe(90);
     expect(bookConfig.targetChapters).toBe(100);
     expect(bookConfig.chapterWordCount).toBe(4000);
     expect(bookConfig.status).toBe("outlining");
@@ -157,7 +160,7 @@ describe("architect agent — BookConfig construction", () => {
     expect(bookConfig.genre).toBe("general");
     expect(bookConfig.platform).toBe("other");
     expect(bookConfig.language).toBe("en"); // inferred from the English instruction
-    expect(bookConfig.targetChapters).toBe(200);
+    expect(bookConfig.targetChapters).toBe(100);
     expect(bookConfig.chapterWordCount).toBe(2000); // English native default (words)
   });
 

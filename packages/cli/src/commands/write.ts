@@ -43,9 +43,7 @@ writeCommand
       notifyLanguage = language;
       notifyBookName = book.title ?? bookId;
       const migrationHint = await getLegacyMigrationHint(root, bookId);
-      if (migrationHint && !opts.json) {
-        log(`[migration] ${migrationHint}`);
-      }
+      if (migrationHint) throw new Error(migrationHint);
       const config = await loadConfig();
 
       const pipeline = new PipelineRunner(buildPipelineConfig(config, root, {

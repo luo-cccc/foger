@@ -85,6 +85,8 @@ export type CoreMutationCommand =
       readonly updates: {
         readonly chapterWordCount?: unknown;
         readonly targetChapters?: unknown;
+        readonly targetEpisodes?: unknown;
+        readonly episodeDurationSeconds?: unknown;
         readonly status?: unknown;
         readonly language?: unknown;
       };
@@ -476,6 +478,12 @@ export async function executeCoreMutation(
           : {}),
         ...(command.updates.targetChapters !== undefined
           ? { targetChapters: command.updates.targetChapters }
+          : {}),
+        ...(command.updates.targetEpisodes !== undefined
+          ? { targetEpisodes: command.updates.targetEpisodes }
+          : {}),
+        ...(command.updates.episodeDurationSeconds !== undefined
+          ? { episodeDurationSeconds: command.updates.episodeDurationSeconds }
           : {}),
         ...(command.updates.status !== undefined ? { status: command.updates.status } : {}),
         ...(command.updates.language !== undefined ? { language: command.updates.language } : {}),

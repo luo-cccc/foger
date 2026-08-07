@@ -559,7 +559,7 @@ describe("CLI integration", () => {
         "create",
         "--title",
         "Bad Numbers",
-        "--chapter-words",
+        "--duration",
         "abc",
       ], {
         env: failingLlmEnv,
@@ -612,6 +612,9 @@ describe("CLI integration", () => {
           platform: "other",
           genre: "urban",
           status: "active",
+          format: "screenplay",
+          targetEpisodes: 20,
+          episodeDurationSeconds: 90,
           targetChapters: 20,
           chapterWordCount: 2000,
           language: "zh",
@@ -621,21 +624,23 @@ describe("CLI integration", () => {
 
         const output = run([
           "book", "update", bookId,
-          "--chapter-words", "2600",
-          "--target-chapters", "30",
+          "--duration", "95",
+          "--episodes", "30",
           "--status", "paused",
           "--lang", "en",
           "--json",
         ]);
         expect(JSON.parse(output)).toMatchObject({
           id: bookId,
-          chapterWordCount: 2600,
+          episodeDurationSeconds: 95,
+          targetEpisodes: 30,
           targetChapters: 30,
           status: "paused",
           language: "en",
         });
         await expect(state.loadBookConfig(bookId)).resolves.toMatchObject({
-          chapterWordCount: 2600,
+          episodeDurationSeconds: 95,
+          targetEpisodes: 30,
           targetChapters: 30,
           status: "paused",
           language: "en",
@@ -776,7 +781,7 @@ describe("CLI integration", () => {
       await writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n\n", "utf-8");
 
       const output = run(["status", "legacy-status-hint"]);
-      expect(output).toContain("legacy format");
+      expect(output).toContain("legacy novel project format is unsupported");
     });
 
     it("reports persisted chapter file count instead of runtime progress when state runs ahead", async () => {
@@ -977,7 +982,7 @@ describe("CLI integration", () => {
       const { stdout, stderr } = runStderr(["write", "next", "legacy-write-hint"], {
         env: failingLlmEnv,
       });
-      expect(`${stdout}\n${stderr}`).toContain("legacy format");
+      expect(`${stdout}\n${stderr}`).toContain("legacy novel project format is unsupported");
     });
 
     it("fails rewrite before deleting chapters when the rollback snapshot is missing", async () => {
@@ -1020,7 +1025,7 @@ describe("CLI integration", () => {
       await expect(readFile(join(chaptersDir, "0002_ch2.md"), "utf-8")).resolves.toContain("Content 2");
     });
 
-    it("keeps next chapter at 2 after rewrite 2 trims later chapters, even if regeneration fails", async () => {
+    it("restores later chapters when rewrite regeneration fails", async () => {
       const state = new StateManager(projectDir);
       const bookId = "rewrite-cli";
       const bookDir = join(projectDir, "books", bookId);
@@ -1083,8 +1088,10 @@ describe("CLI integration", () => {
       expect(`${stdout}\n${stderr}`).not.toContain("resolved to 3");
 
       const next = await state.getNextChapterNumber(bookId);
-      expect(next).toBe(2);
-      await expect(readFile(join(storyDir, "current_state.md"), "utf-8")).resolves.toBe("State at ch1");
+      expect(next).toBe(4);
+      await expect(readFile(join(storyDir, "current_state.md"), "utf-8")).resolves.toBe("State at ch3");
+      await expect(readFile(join(chaptersDir, "0002_ch2.md"), "utf-8")).resolves.toContain("Content 2");
+      await expect(readFile(join(chaptersDir, "0003_ch3.md"), "utf-8")).resolves.toContain("Content 3");
     });
   });
 
@@ -1304,7 +1311,7 @@ describe("CLI integration", () => {
     });
 
     it("loads a pre-planned intent and returns the generated intent path in JSON mode", async () => {
-      const output = run(["compose", "chapter", "cli-book", "--json"]);
+      const output = run(["compose", "episode", "cli-book", "--json"]);
       const data = JSON.parse(output);
 
       expect(data.bookId).toBe("cli-book");
@@ -1313,8 +1320,8 @@ describe("CLI integration", () => {
       await expect(stat(join(projectDir, "books", "cli-book", data.intentPath))).resolves.toBeTruthy();
     });
 
-    it("runs compose chapter and returns runtime artifact paths in JSON mode", async () => {
-      const output = run(["compose", "chapter", "cli-book", "--json"]);
+    it("runs compose episode and returns runtime artifact paths in JSON mode", async () => {
+      const output = run(["compose", "episode", "cli-book", "--json"]);
       const data = JSON.parse(output);
 
       expect(data.bookId).toBe("cli-book");
@@ -1329,7 +1336,7 @@ describe("CLI integration", () => {
     });
 
     it("re-plans from outline when compose runs without a new context (Phase 1: persisted plans disabled)", async () => {
-      const output = run(["compose", "chapter", "cli-book", "--json"]);
+      const output = run(["compose", "episode", "cli-book", "--json"]);
       const data = JSON.parse(output);
       const intentMarkdown = await readFile(join(projectDir, "books", "cli-book", data.intentPath), "utf-8");
 

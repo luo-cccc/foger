@@ -1,24 +1,38 @@
-import {
-  ChapterSummariesStateSchema,
-  CurrentStateStateSchema,
-  HooksStateSchema,
-  RuntimeStateDeltaSchema,
-  StateManifestSchema,
-  type HookRecord,
-  type ChapterSummariesState,
-  type CurrentStateState,
-  type HooksState,
-  type RuntimeStateDelta,
-  type StateManifest,
+/** Legacy persistence adapter. The reducer implementation is Episode-native;
+ * this module converts the durable v2 field names at the boundary. */
+import type {
+  ChapterSummariesState,
+  HookRecord,
+  RuntimeStateDelta,
 } from "../models/runtime-state.js";
-import { evaluateHookAdmission } from "../utils/hook-governance.js";
-import { resolveHookPayoffTiming } from "../utils/hook-lifecycle.js";
-import { validateRuntimeState } from "./state-validator.js";
+import {
+  applyEpisodeRuntimeStateDelta,
+  type EpisodeRuntimeStateDelta,
+  type EpisodeRuntimeStateSnapshot,
+} from "./episode-state-reducer.js";
+
+export type { EpisodeRuntimeStateSnapshot, EpisodeRuntimeStateDelta } from "./episode-state-reducer.js";
 
 export interface RuntimeStateSnapshot {
-  readonly manifest: StateManifest;
-  readonly currentState: CurrentStateState;
-  readonly hooks: HooksState;
+  readonly manifest: {
+    readonly schemaVersion: 2;
+    readonly language: "zh" | "en";
+    readonly lastAppliedChapter: number;
+    readonly projectionVersion: number;
+    readonly migrationWarnings: string[];
+  };
+  readonly currentState: {
+    readonly chapter: number;
+    readonly facts: Array<{
+      readonly subject: string;
+      readonly predicate: string;
+      readonly object: string;
+      readonly validFromChapter: number;
+      readonly validUntilChapter: number | null;
+      readonly sourceChapter: number;
+    }>;
+  };
+  readonly hooks: { readonly hooks: HookRecord[] };
   readonly chapterSummaries: ChapterSummariesState;
 }
 
@@ -27,277 +41,142 @@ export function applyRuntimeStateDelta(params: {
   readonly delta: RuntimeStateDelta;
   readonly allowReapply?: boolean;
 }): RuntimeStateSnapshot {
-  const snapshot = {
-    manifest: StateManifestSchema.parse(params.snapshot.manifest),
-    currentState: CurrentStateStateSchema.parse(params.snapshot.currentState),
-    hooks: HooksStateSchema.parse(params.snapshot.hooks),
-    chapterSummaries: ChapterSummariesStateSchema.parse(params.snapshot.chapterSummaries),
-  };
-  const delta = RuntimeStateDeltaSchema.parse(params.delta);
-  const allowReapply = params.allowReapply ?? false;
+  const next = applyEpisodeRuntimeStateDelta({
+    snapshot: toEpisodeSnapshot(params.snapshot),
+    delta: toEpisodeDelta(params.delta),
+    allowReapply: params.allowReapply,
+  });
+  return fromEpisodeSnapshot(next);
+}
 
-  if (allowReapply ? delta.chapter < snapshot.manifest.lastAppliedChapter : delta.chapter <= snapshot.manifest.lastAppliedChapter) {
-    throw new Error(`delta chapter ${delta.chapter} goes backwards`);
-  }
-
-  if (delta.chapterSummary && delta.chapterSummary.chapter !== delta.chapter) {
-    throw new Error(`chapter summary ${delta.chapterSummary.chapter} does not match delta chapter ${delta.chapter}`);
-  }
-
-  if (isEmptyRuntimeStateDelta(delta)) {
-    throw new Error("runtime state delta is empty; refusing to advance structured state");
-  }
-
-  if (
-    delta.chapterSummary
-    && snapshot.chapterSummaries.rows.some((row) => row.chapter === delta.chapterSummary?.chapter)
-    && !allowReapply
-  ) {
-    throw new Error(`duplicate summary row for chapter ${delta.chapterSummary.chapter}`);
-  }
-
-  const hooks = applyHookOps(snapshot.hooks, delta);
-  const currentState = applyCurrentStatePatch(
-    snapshot.currentState,
-    snapshot.manifest.language,
-    delta,
-  );
-  const chapterSummaries = applySummaryDelta(snapshot.chapterSummaries, delta, allowReapply);
-
-  const next: RuntimeStateSnapshot = {
+function toEpisodeSnapshot(snapshot: RuntimeStateSnapshot): EpisodeRuntimeStateSnapshot {
+  return {
     manifest: {
-      ...snapshot.manifest,
-      lastAppliedChapter: delta.chapter,
+      schemaVersion: 2,
+      language: snapshot.manifest.language,
+      lastAppliedEpisode: snapshot.manifest.lastAppliedChapter,
+      projectionVersion: snapshot.manifest.projectionVersion,
+      migrationWarnings: [...snapshot.manifest.migrationWarnings],
     },
-    currentState,
-    hooks,
-    chapterSummaries,
-  };
-
-  const issues = validateRuntimeState(next);
-  if (issues.length > 0) {
-    throw new Error(issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
-  }
-
-  return next;
-}
-
-function isEmptyRuntimeStateDelta(delta: RuntimeStateDelta): boolean {
-  const hookOps = delta.hookOps;
-  return !delta.currentStatePatch
-    && hookOps.upsert.length === 0
-    && hookOps.mention.length === 0
-    && hookOps.resolve.length === 0
-    && hookOps.defer.length === 0
-    && delta.newHookCandidates.length === 0
-    && !delta.chapterSummary
-    && delta.subplotOps.length === 0
-    && delta.emotionalArcOps.length === 0
-    && delta.characterMatrixOps.length === 0;
-}
-
-function applyHookOps(hooksState: HooksState, delta: RuntimeStateDelta): HooksState {
-  const hooksById = new Map(hooksState.hooks.map((hook) => [hook.hookId, { ...hook }]));
-  const mentionedHookIds = new Set(delta.hookOps.mention);
-  const deferredHookIds = new Set(delta.hookOps.defer);
-  const resolvedHookIds = new Set(delta.hookOps.resolve);
-
-  for (const hook of delta.hookOps.upsert) {
-    const sameHook = hooksById.get(hook.hookId);
-    if (sameHook) {
-      // Model output sometimes repeats a mentioned/deferred hook in upsert and
-      // stamps the current chapter into lastAdvancedChapter. Mention/defer are
-      // explicitly non-advancing operations, so they cannot refresh hook age.
-      if (mentionedHookIds.has(hook.hookId)) {
-        continue;
-      }
-      const normalizedHook = deferredHookIds.has(hook.hookId)
-        ? { ...hook, lastAdvancedChapter: sameHook.lastAdvancedChapter }
-        : hook;
-      hooksById.set(sameHook.hookId, mergeHookRecord(sameHook, normalizedHook));
-      continue;
-    }
-
-    const admission = evaluateHookAdmission({
-      candidate: {
-        type: hook.type,
-        expectedPayoff: hook.expectedPayoff,
-        notes: hook.notes,
-      },
-      activeHooks: [...hooksById.values()].filter((candidate) => candidate.status !== "resolved"),
-    });
-
-    if (!admission.admit && admission.reason === "duplicate_family") {
-      const matchedHookId = admission.matchedHookId;
-      const existing = matchedHookId ? hooksById.get(matchedHookId) : undefined;
-      if (!existing) {
-        throw new Error(`duplicate active hook family: ${hook.hookId} overlaps ${admission.matchedHookId}`);
-      }
-      hooksById.set(existing.hookId, mergeDuplicateHookFamily(existing, hook));
-      continue;
-    }
-
-    hooksById.set(hook.hookId, { ...hook });
-  }
-
-  for (const hookId of delta.hookOps.resolve) {
-    const existing = hooksById.get(hookId);
-    if (!existing) {
-      // Hook may have been cleared by a previous settlement or not yet created — skip gracefully
-      continue;
-    }
-    hooksById.set(hookId, {
-      ...existing,
-      status: "resolved",
-      lastAdvancedChapter: Math.max(existing.lastAdvancedChapter, delta.chapter),
-    });
-  }
-
-  for (const hookId of delta.hookOps.defer) {
-    const existing = hooksById.get(hookId);
-    if (!existing || existing.status === "resolved" || resolvedHookIds.has(hookId)) {
-      continue;
-    }
-    hooksById.set(hookId, {
-      ...existing,
-      status: "deferred",
-    });
-  }
-
-  return {
-    hooks: [...hooksById.values()].sort((left, right) => (
-      left.startChapter - right.startChapter
-      || left.lastAdvancedChapter - right.lastAdvancedChapter
-      || left.hookId.localeCompare(right.hookId)
-    )),
+    currentState: {
+      episode: snapshot.currentState.chapter,
+      facts: snapshot.currentState.facts.map((fact) => ({
+        subject: fact.subject,
+        predicate: fact.predicate,
+        object: fact.object,
+        validFromEpisode: fact.validFromChapter,
+        validUntilEpisode: fact.validUntilChapter,
+        sourceEpisode: fact.sourceChapter,
+      })),
+    },
+    hooks: {
+      hooks: snapshot.hooks.hooks.map(toEpisodeHook),
+    },
+    episodeSummaries: {
+      rows: snapshot.chapterSummaries.rows.map((row) => ({
+        ...row,
+        episode: row.chapter,
+        episodeType: row.chapterType,
+      })),
+    },
   };
 }
 
-function mergeDuplicateHookFamily(existing: HookRecord, incoming: HookRecord): HookRecord {
-  return mergeHookRecord(existing, incoming);
-}
-
-function mergeHookRecord(existing: HookRecord, incoming: HookRecord): HookRecord {
-  const expectedPayoff = preferRicherText(existing.expectedPayoff, incoming.expectedPayoff);
-  const notes = preferRicherText(existing.notes, incoming.notes);
-  const advanced = Math.max(existing.lastAdvancedChapter, incoming.lastAdvancedChapter);
-  const progressed = advanced > existing.lastAdvancedChapter;
-
+function toEpisodeDelta(delta: RuntimeStateDelta): EpisodeRuntimeStateDelta {
   return {
-    ...existing,
-    startChapter: Math.min(existing.startChapter, incoming.startChapter),
-    type: preferRicherText(existing.type, incoming.type),
-    status: mergeHookStatus(existing.status, incoming.status, progressed),
-    lastAdvancedChapter: advanced,
-    expectedPayoff,
-    payoffTiming: resolveHookPayoffTiming({
-      payoffTiming: incoming.payoffTiming ?? existing.payoffTiming,
-      expectedPayoff,
-      notes,
-    }),
-    notes,
+    ...delta,
+    episode: delta.chapter,
+    hookOps: {
+      upsert: delta.hookOps.upsert.map(toEpisodeHook),
+      mention: [...delta.hookOps.mention],
+      resolve: [...delta.hookOps.resolve],
+      defer: [...delta.hookOps.defer],
+    },
+    episodeSummary: delta.chapterSummary
+      ? { ...delta.chapterSummary, episode: delta.chapterSummary.chapter, episodeType: delta.chapterSummary.chapterType }
+      : undefined,
   };
 }
 
-function mergeHookStatus(
-  existing: HookRecord["status"],
-  incoming: HookRecord["status"],
-  progressed: boolean,
-): HookRecord["status"] {
-  if (existing === "resolved" || incoming === "resolved") return "resolved";
-  if (progressed || existing === "progressing" || incoming === "progressing") return "progressing";
-  return existing;
-}
-
-function preferRicherText(primary: string, fallback: string): string {
-  const left = primary.trim();
-  const right = fallback.trim();
-
-  if (!left) return right;
-  if (!right) return left;
-  if (left === right) return left;
-  return right.length > left.length ? right : left;
-}
-
-function applyCurrentStatePatch(
-  currentState: CurrentStateState,
-  language: "zh" | "en",
-  delta: RuntimeStateDelta,
-): CurrentStateState {
-  if (!delta.currentStatePatch) {
-    return {
-      chapter: delta.chapter,
-      facts: [...currentState.facts],
-    };
-  }
-
-  const nextFacts = [...currentState.facts];
-  const labels = language === "en"
-    ? {
-      currentLocation: ["Current Location", "当前位置"],
-      protagonistState: ["Protagonist State", "主角状态"],
-      currentGoal: ["Current Goal", "当前目标"],
-      currentConstraint: ["Current Constraint", "当前限制"],
-      currentAlliances: ["Current Alliances", "Current Relationships", "当前敌我"],
-      currentConflict: ["Current Conflict", "当前冲突"],
-    }
-    : {
-      currentLocation: ["当前位置", "Current Location"],
-      protagonistState: ["主角状态", "Protagonist State"],
-      currentGoal: ["当前目标", "Current Goal"],
-      currentConstraint: ["当前限制", "Current Constraint"],
-      currentAlliances: ["当前敌我", "Current Alliances", "Current Relationships"],
-      currentConflict: ["当前冲突", "Current Conflict"],
-    };
-
-  for (const [patchKey, aliases] of Object.entries(labels) as Array<[
-    keyof typeof labels,
-    string[],
-  ]>) {
-    const value = delta.currentStatePatch[patchKey]?.trim();
-    if (!value) continue;
-
-    for (let index = nextFacts.length - 1; index >= 0; index -= 1) {
-      const predicate = nextFacts[index]?.predicate ?? "";
-      if (aliases.some((alias) => alias.toLowerCase() === predicate.toLowerCase())) {
-        nextFacts.splice(index, 1);
-      }
-    }
-
-    nextFacts.push({
-      subject: "protagonist",
-      predicate: aliases[0]!,
-      object: value,
-      validFromChapter: delta.chapter,
-      validUntilChapter: null,
-      sourceChapter: delta.chapter,
-    });
-  }
-
+function fromEpisodeSnapshot(snapshot: EpisodeRuntimeStateSnapshot): RuntimeStateSnapshot {
   return {
-    chapter: delta.chapter,
-    facts: nextFacts.sort((left, right) => (
-      left.predicate.localeCompare(right.predicate)
-      || left.object.localeCompare(right.object)
-    )),
+    manifest: {
+      schemaVersion: 2,
+      language: snapshot.manifest.language,
+      lastAppliedChapter: snapshot.manifest.lastAppliedEpisode,
+      projectionVersion: snapshot.manifest.projectionVersion,
+      migrationWarnings: [...snapshot.manifest.migrationWarnings],
+    },
+    currentState: {
+      chapter: snapshot.currentState.episode,
+      facts: snapshot.currentState.facts.map((fact) => ({
+        subject: fact.subject,
+        predicate: fact.predicate,
+        object: fact.object,
+        validFromChapter: fact.validFromEpisode,
+        validUntilChapter: fact.validUntilEpisode,
+        sourceChapter: fact.sourceEpisode,
+      })),
+    },
+    hooks: {
+      hooks: snapshot.hooks.hooks.map(fromEpisodeHook),
+    },
+    chapterSummaries: {
+      rows: snapshot.episodeSummaries.rows.map((row) => ({
+        ...row,
+        chapter: row.episode,
+        chapterType: row.episodeType,
+      })),
+    } satisfies ChapterSummariesState,
   };
 }
 
-function applySummaryDelta(
-  state: ChapterSummariesState,
-  delta: RuntimeStateDelta,
-  allowReapply = false,
-): ChapterSummariesState {
-  if (!delta.chapterSummary) {
-    return {
-      rows: [...state.rows].sort((left, right) => left.chapter - right.chapter),
-    };
-  }
-
+function toEpisodeHook(hook: HookRecord): import("./episode-state-reducer.js").EpisodeHookRecord {
   return {
-    rows: [
-      ...(allowReapply ? state.rows.filter((row) => row.chapter !== delta.chapterSummary!.chapter) : state.rows),
-      delta.chapterSummary,
-    ].sort((left, right) => left.chapter - right.chapter),
+    hookId: hook.hookId,
+    hookKind: hook.hookKind,
+    startEpisode: hook.startChapter,
+    type: hook.type,
+    status: hook.status,
+    lastAdvancedEpisode: hook.lastAdvancedChapter,
+    expectedPayoff: hook.expectedPayoff,
+    payoffTiming: hook.payoffTiming,
+    notes: hook.notes,
+    audienceQuestion: hook.audienceQuestion,
+    seedEpisode: hook.seedEpisode,
+    targetPayoffEpisode: hook.targetPayoffEpisode,
+    pressureSource: hook.pressureSource,
+    dependsOn: hook.dependsOn,
+    paysOffInArc: hook.paysOffInArc,
+    coreHook: hook.coreHook,
+    halfLifeEpisodes: hook.halfLifeChapters,
+    advancedCount: hook.advancedCount,
+    promoted: hook.promoted,
+  };
+}
+
+function fromEpisodeHook(
+  hook: import("./episode-state-reducer.js").EpisodeHookRecord,
+): HookRecord {
+  return {
+    hookId: hook.hookId,
+    hookKind: hook.hookKind,
+    startChapter: hook.startEpisode,
+    type: hook.type,
+    status: hook.status,
+    lastAdvancedChapter: hook.lastAdvancedEpisode,
+    expectedPayoff: hook.expectedPayoff,
+    payoffTiming: hook.payoffTiming,
+    notes: hook.notes,
+    audienceQuestion: hook.audienceQuestion,
+    seedEpisode: hook.seedEpisode,
+    targetPayoffEpisode: hook.targetPayoffEpisode,
+    pressureSource: hook.pressureSource,
+    dependsOn: hook.dependsOn,
+    paysOffInArc: hook.paysOffInArc,
+    coreHook: hook.coreHook,
+    halfLifeChapters: hook.halfLifeEpisodes,
+    advancedCount: hook.advancedCount,
+    promoted: hook.promoted,
   };
 }

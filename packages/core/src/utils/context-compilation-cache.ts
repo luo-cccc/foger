@@ -68,14 +68,24 @@ export function createContextCompilationCache(
     },
     set(key, value): void {
       if (!value.trim()) return;
+      const existing = entries.get(key);
+      if (existing?.value === value) {
+        existing.lastUsedAt = Date.now();
+        return;
+      }
       entries.set(key, { value, lastUsedAt: Date.now() });
       writes += 1;
-      persist();
-
-      if (entries.size <= Math.max(1, maxEntries)) return;
-      const oldest = [...entries.entries()]
-        .sort((left, right) => left[1].lastUsedAt - right[1].lastUsedAt)[0];
-      if (oldest) entries.delete(oldest[0]);
+      if (entries.size > Math.max(1, maxEntries)) {
+        let oldestKey: string | undefined;
+        let oldestAt = Number.POSITIVE_INFINITY;
+        for (const [candidateKey, entry] of entries) {
+          if (entry.lastUsedAt < oldestAt) {
+            oldestAt = entry.lastUsedAt;
+            oldestKey = candidateKey;
+          }
+        }
+        if (oldestKey !== undefined) entries.delete(oldestKey);
+      }
       persist();
     },
     clear(): void {

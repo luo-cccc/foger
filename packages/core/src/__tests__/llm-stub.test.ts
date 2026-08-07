@@ -135,6 +135,25 @@ describe("llm-stub", () => {
     expect(parsed.preWriteCheck).toContain("章尾必须发生的改变");
   });
 
+  it("returns a structured episode contract for screenplay writer prompts", () => {
+    const response = stubChatCompletion(
+      [
+        {
+          role: "system",
+          content: "Write episode 12 as a production-oriented screenplay. Output PRE_WRITE_CHECK and EPISODE_SCRIPT_JSON.",
+        },
+        { role: "user", content: "请创作第12集漫剧分镜稿。" },
+      ],
+      "stub-model",
+    );
+
+    const parsed = parseCreativeOutput(12, response.content, "zh_chars");
+    expect(parsed.episodeScript?.episode).toBe(12);
+    expect(parsed.episodeScript?.contract.causalEscalation[0]?.becauseOf).toBeTruthy();
+    expect(parsed.episodeScriptMetrics?.estimatedDurationSeconds).toBe(90);
+    expect(parsed.preWriteCheck).toContain("本集结束必须发生的改变");
+  });
+
   it("adds deterministic volume resolution evidence only to the volume-end chapter", () => {
     const writerPrompt = "Output PRE_WRITE_CHECK first, then CHAPTER_CONTENT.\n# Volume Contract\n- chapters: 1-20";
     const regular = stubChatCompletion(
@@ -157,14 +176,14 @@ describe("llm-stub", () => {
     expect(volumeEnd.content).toContain("permanently lost the safety of anonymity");
   });
 
-  it("returns a valid chapter memo for planner prompts", () => {
+  it("returns a valid episode memo for planner prompts", () => {
     const response = stubChatCompletion(
       [
         {
           role: "system",
-          content: "你是创作总编，职责是为下一章产生一份 chapter_memo。你不写正文。",
+          content: "你是这部漫剧的创作总编，职责是为下一集产生一份 episode_memo。你不写分镜正文。",
         },
-        { role: "user", content: "请规划第1章。" },
+        { role: "user", content: "请规划第1集。" },
       ],
       "stub-model",
     );
@@ -172,7 +191,10 @@ describe("llm-stub", () => {
     const memo = parseMemo(response.content, 1, true);
     expect(memo.goal).toContain("旧账篡改物证");
     expect(memo.body).toContain("## 当前任务");
-    expect(memo.body).toContain("## 章尾必须发生的改变");
+    expect(memo.body).toContain("## 当集兑现");
+    expect(memo.body).toContain("## 出去压力");
+    expect(memo.body).toContain("## 本集 Hook ledger");
+    expect(memo.body).not.toContain("## 章尾必须发生的改变");
     expect(memo.threadRefs).toContain("mentor-ledger");
   });
 

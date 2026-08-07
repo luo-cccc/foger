@@ -161,7 +161,11 @@ export class ArchitectAgent extends BaseAgent {
       { role: "user", content: userMessage },
     ], { temperature: 0.8, stream: false, callPhase: "architect" });
 
-    return this.parseSectionsWithRepair(response.content, resolvedLanguage, book.targetChapters);
+    return this.parseSectionsWithRepair(
+      response.content,
+      resolvedLanguage,
+      book.targetEpisodes ?? book.targetChapters,
+    );
   }
 
   private buildRevisePrompt(reviseFrom: {
@@ -214,14 +218,19 @@ ${reviseFrom.userFeedback || "（无）"}
     powerBlock: string,
     eraBlock: string,
   ): string {
-    const scaleGuidance = renderFoundationScaleGuidance(book.targetChapters, "zh");
+    const scaleGuidance = renderFoundationScaleGuidance(
+      book.targetEpisodes ?? book.targetChapters,
+      "zh",
+      { unit: "episodes" },
+    );
     return `你是这本书的总架构师。你的唯一输出是**散文密度的基础设定**——不是表格、不是 schema、不是条目化 bullet。v6 以后这本书的"灵气"从哪里来？从你这里来。你的散文密度决定了后面 planner 能不能读出"稀疏 memo"，writer 能不能写出活人，reviewer 能不能校准硬伤。${contextBlock}${reviewFeedbackBlock}
 
 ## 书籍元信息
 - 平台：${book.platform}
 - 题材：${gp.name}（${book.genre}）
-- 目标章数：${book.targetChapters}章
-- 每章字数：${book.chapterWordCount}字
+- 目标集数：${book.targetEpisodes ?? book.targetChapters}集
+- 每集时长：约${book.episodeDurationSeconds ?? 90}秒
+- 北极星：新颖设定 × 熟悉爽点 × 高压关系 × 高频反转 × 情绪钩子
 - 标题：${book.title}
 
 ${scaleGuidance}
@@ -425,14 +434,19 @@ ${gp.eraResearch ? `## 年代限制
     powerBlock: string,
     eraBlock: string,
   ): string {
-    const scaleGuidance = renderFoundationScaleGuidance(book.targetChapters, "en");
+    const scaleGuidance = renderFoundationScaleGuidance(
+      book.targetEpisodes ?? book.targetChapters,
+      "en",
+      { unit: "episodes" },
+    );
     return `You are the architect of this book. Your only job is to produce **prose-density foundation design** — not tables, not schema, not bullet lists. The book's aura comes from your prose density: Phase 3 planner reads sparse memos out of your volume_map only if it was written to chapter-level prose; the writer only produces living characters because your role sheets carry contrast details; the reviewer only catches hard errors because your story_frame set the tonal anchors.${contextBlock}${reviewFeedbackBlock}
 
 ## Book metadata
 - Platform: ${book.platform}
 - Genre: ${gp.name} (${book.genre})
-- Target chapters: ${book.targetChapters}
-- Chapter length: ${book.chapterWordCount}
+- Target episodes: ${book.targetEpisodes ?? book.targetChapters}
+- Episode duration: about ${book.episodeDurationSeconds ?? 90} seconds
+- North star: novel premise x familiar payoffs x high-pressure relationships x frequent causal reversals x emotional hooks
 - Title: ${book.title}
 
 ${scaleGuidance}
@@ -479,7 +493,7 @@ The two layers must be causally linked, not parallel universes — every foregro
 The world's operating rules. 3-5 unbreakable laws written as prose, not bullets. Sensory texture: wet or dry, fast or slow, noisy or quiet — give the writer an anchor. **This paragraph also absorbs the narrative prose that used to live in book_rules (narrative perspective, core conflict driver, book-specific rules).** Write them all here once. Do not repeat them in book_rules.
 
 ## 04_Endgame_Direction_and_Book_Objective
-What the last chapter roughly feels like. The final shot: where, doing what, around whom, thinking what. A distant target for every planner call downstream.
+What the last episode roughly feels like. The final shot: where, doing what, around whom, thinking what. A distant target for every planner call downstream.
 
 **End this paragraph with a one-sentence Book Objective** (the root of the recursive OKR outline): when this book is done, the protagonist must reach a **verifiable end-state** (e.g., "rise from errand disciple to sect elder and publicly vindicate the parental case", "go from undocumented migrant worker to running three fur-trade companies and personally putting the ex-husband in prison"). Do NOT use vague words like "grow stronger" or "take revenge" — write a concrete state an outside observer can check "achieved / not achieved". This Book Objective is the root of the full-book OKR outline; volume_map will decompose it per volume below.
 
@@ -504,15 +518,15 @@ Recursive OKR outline that decomposes the Book Objective (root O set at the end 
 - **Objective (volume-level goal)**: a **verifiable state** the protagonist must reach by volume end, one sentence, logically chained to the Book Objective (e.g., if Book O = "become sect elder and vindicate the parental case", then Vol 1 O = "move from errand disciple into the registered disciple roster and recover the first lead pointing to the truth")
 - **Key Results (3 items, quantifiable / observable)**: three concrete sub-achievements whose completion can be checked by an outside observer (e.g., KR1 = "take over the pharmacy garden steward seat", KR2 = "lock in a stable alliance with Lingan Peak", KR3 = "uncover the first half-page fragment of the parental case file"). No vague KRs like "gets stronger" / "matures".
 
-Supporting characters' stage changes (master dies end of vol 2, opponent breaks bad in vol 3) go as notes under the relevant KR. Stage only — full arc lives in roles. **The 3 KRs per volume are the direct input for the planner. All three must fit inside the chapter range assigned by the whole-book scale contract; use that contract's delivery cadence instead of a fixed 3-5 chapters per KR.**
+Supporting characters' stage changes (master dies end of vol 2, opponent breaks bad in vol 3) go as notes under the relevant KR. Stage only — full arc lives in roles. **The 3 KRs per volume are the direct input for the planner. All three must fit inside the episode range assigned by the whole-book scale contract; use that contract's delivery cadence instead of a fixed episode count per KR.**
 
 ## 04_Volume_End_Mandatory_Changes
-Each volume's last chapter must contain an irreversible event. Prose, one paragraph per volume. **Write what must happen, not which chapter**.
+Each volume's last episode must contain an irreversible event. Prose, one paragraph per volume. **Write what must happen, not which episode**.
 
 ## 05_Rhythm_Principles (concrete + universal)
-**This is the single home for rhythm principles — no separate rhythm_principles section exists.** Output 6 rhythm principles. **At least 3 must be concretized for this book** (e.g., "every 5 chapters in the first 30, hit one small payoff"); the rest may stay as universal rules (e.g., "no deus ex machina", "plant the foreshadow 3-5 chapters before the climax"). A mix of concrete + universal is valid. Bad: "rhythm must balance tension and release". Good: "every 5 chapters in the first 30 carries a small payoff landing in the last 300 chars of the chapter". Cover (order flexible, substitutions of equal weight are allowed): (1) climax spacing, (2) breath frequency, (3) hook density, (4) information release pacing, (5) payoff rhythm, (6) relationship advancement — each 2-3 sentences.
+**This is the single home for rhythm principles — no separate rhythm_principles section exists.** Output 6 rhythm principles. **At least 3 must be concretized for this book** (e.g., "within each 10-episode arc, land one local payoff before the midpoint and one irreversible turn at the end"); the rest may stay as universal rules (e.g., "no deus ex machina", "plant evidence before a reversal"). A mix of concrete + universal is valid. Bad: "rhythm must balance tension and release". Good: "each 10-episode arc carries a local payoff before its midpoint and a consequence-bearing turn at the end". Cover (order flexible, substitutions of equal weight are allowed): (1) climax spacing, (2) breath frequency, (3) hook density, (4) information release pacing, (5) payoff rhythm, (6) relationship advancement — each 2-3 sentences.
 
-If the external instructions specify content proportions (for example politics/romance 50/50 or career/relationship weighting), this paragraph must turn that into a full-book rhythm promise: which volumes lean toward which line, which line must be visible in every 3-5 chapter mini-cycle, and which line carries fallout after climaxes. Do not merely say "keep it balanced."
+If the external instructions specify content proportions (for example politics/romance 50/50 or career/relationship weighting), this paragraph must turn that into a full-book rhythm promise: which volumes lean toward which line, which line must be visible in every short episode run, and which line carries fallout after climaxes. Do not merely say "keep it balanced."
 
 === SECTION: roles ===
 
@@ -762,7 +776,12 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
     const effectiveVolumeMapRaw = volumeMap || legacyVolumeOutline;
     const effectiveVolumeMap = targetChapters === undefined
       ? effectiveVolumeMapRaw
-      : normalizeFoundationVolumeContracts(effectiveVolumeMapRaw, targetChapters, language);
+      : normalizeFoundationVolumeContracts(
+          effectiveVolumeMapRaw,
+          targetChapters,
+          language,
+          { unit: "episodes" },
+        );
     if (!effectiveStoryFrame) missing.push("story_frame");
     if (!effectiveVolumeMap) missing.push("volume_map");
     if (roles.length === 0 && !usingLegacyOutlineNames) missing.push("roles");
@@ -1101,7 +1120,11 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
           : "- 本题材无数值系统");
 
     const isSeries = options?.importMode === "series";
-    const scaleGuidance = renderFoundationScaleGuidance(book.targetChapters, resolvedLanguage);
+    const scaleGuidance = renderFoundationScaleGuidance(
+      book.targetEpisodes ?? book.targetChapters,
+      resolvedLanguage,
+      { unit: "episodes" },
+    );
 
     const continuationDirective = resolvedLanguage === "en"
       ? (isSeries
@@ -1122,8 +1145,9 @@ Naturally extend the existing arc. Advance existing conflicts, pay off planted h
 - Title: ${book.title}
 - Platform: ${book.platform}
 - Genre: ${gp.name} (${book.genre})
-- Target chapters: ${book.targetChapters}
-- Chapter length: ${book.chapterWordCount}
+- Target episodes: ${book.targetEpisodes ?? book.targetChapters}
+- Episode duration: about ${book.episodeDurationSeconds ?? 90} seconds
+- North star: novel premise x familiar payoffs x high-pressure relationships x frequent causal reversals x emotional hooks
 
 ${scaleGuidance}
 
@@ -1146,7 +1170,9 @@ All output MUST be written in English.`
 - 标题：${book.title}
 - 平台：${book.platform}
 - 题材：${gp.name}（${book.genre}）
-- 目标章数：${book.targetChapters}章
+- 目标集数：${book.targetEpisodes ?? book.targetChapters}集
+- 每集时长：约${book.episodeDurationSeconds ?? 90}秒
+- 北极星：新颖设定 × 熟悉爽点 × 高压关系 × 高频反转 × 情绪钩子
 
 ${scaleGuidance}
 
@@ -1171,7 +1197,11 @@ ${continuationDirective}
       { role: "user", content: userMessage },
     ], { temperature: 0.5, stream: false, callPhase: "architect-import" });
 
-    return this.parseSectionsWithRepair(response.content, resolvedLanguage, book.targetChapters);
+    return this.parseSectionsWithRepair(
+      response.content,
+      resolvedLanguage,
+      book.targetEpisodes ?? book.targetChapters,
+    );
   }
 
   // -------------------------------------------------------------------------

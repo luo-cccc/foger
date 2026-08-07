@@ -1,5 +1,6 @@
 import { BaseAgent, type AgentContext } from "./base.js";
 import type { BookConfig } from "../models/book.js";
+import { assertEpisodeBookConfig } from "../models/book.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import type { BookRules } from "../models/book-rules.js";
 import { buildWriterSystemPrompt } from "./writer-prompts.js";
@@ -37,7 +38,8 @@ import {
 } from "../utils/governed-working-set.js";
 import { extractPOVFromOutline, filterMatrixByPOV, filterHooksByPOV } from "../utils/pov-filter.js";
 import { parseCreativeOutput } from "./writer-parser.js";
-import { buildRuntimeStateArtifacts, saveRuntimeStateSnapshot, type RuntimeStateArtifacts } from "../state/runtime-state-store.js";
+import { buildRuntimeStateArtifacts, type RuntimeStateArtifacts } from "../state/runtime-state-store.js";
+import { deriveEpisodeRuntimeDelta } from "../state/episode-runtime.js";
 import type { RuntimeStateSnapshot } from "../state/state-reducer.js";
 import {
   estimateTextTokens,
@@ -56,7 +58,11 @@ import {
 import { getContextSourceTier } from "../utils/context-assembly.js";
 import { resolvePromptCompactionTarget, truncatePromptBlock } from "../utils/prompt-budget.js";
 import { readFile, writeFile, mkdir, readdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import type { EpisodeScript, EpisodeScriptMetrics } from "../models/episode-script.js";
+import type { EpisodeHandoffCapsule } from "../pipeline/episode-handoff.js";
+import type { EpisodePerformanceReport } from "../pipeline/episode-performance.js";
+import type { EpisodeReviewEvidence } from "../pipeline/episode-review-evidence.js";
 
 const LEGACY_WRITER_CONTEXT_BUDGET = {
   storyBible: 14_000,
@@ -70,12 +76,16 @@ const LEGACY_WRITER_CONTEXT_BUDGET = {
   parentCanon: 12_000,
   volumeOutline: 12_000,
 } as const;
+
+const SCREENPLAY_MAX_OUTPUT_TOKENS = 8192;
+const SCREENPLAY_REPAIR_INPUT_TOKENS = 4096;
 import {
   readStoryFrame,
   readVolumeMap,
   readCharacterContext,
   readCurrentStateWithFallback,
 } from "../utils/outline-paths.js";
+import type { EpisodeContextSnapshot } from "../pipeline/episode-context.js";
 
 export interface WriteChapterInput {
   readonly book: BookConfig;
@@ -90,6 +100,7 @@ export interface WriteChapterInput {
   readonly lengthSpec?: LengthSpec;
   readonly wordCountOverride?: number;
   readonly temperatureOverride?: number;
+  readonly episodeContextSnapshot?: EpisodeContextSnapshot;
 }
 
 export interface SettleChapterStateInput {
@@ -116,6 +127,11 @@ export interface WriteChapterOutput {
   readonly title: string;
   readonly content: string;
   readonly wordCount: number;
+  readonly episodeScript?: EpisodeScript;
+  readonly episodeScriptMetrics?: EpisodeScriptMetrics;
+  readonly episodeHandoffCapsule?: EpisodeHandoffCapsule;
+  readonly episodePerformanceReport?: EpisodePerformanceReport;
+  readonly episodeReviewEvidence?: EpisodeReviewEvidence;
   readonly preWriteCheck: string;
   readonly postSettlement: string;
   readonly runtimeStateDelta?: RuntimeStateDelta;
@@ -183,6 +199,21 @@ export class WriterAgent extends BaseAgent {
 
   async writeChapter(input: WriteChapterInput): Promise<WriteChapterOutput> {
     const { book, bookDir, chapterNumber } = input;
+
+    // Episode v2 must never silently fall back to the legacy novel prompt. A
+    // missing planner/composer artifact is a pipeline fault, not permission to
+    // invent a different creative contract.
+    if (book.schemaVersion === "inkos-episode-v2") {
+      assertEpisodeBookConfig(book);
+      const missing = [
+        ["chapterMemo", input.chapterMemo],
+        ["contextPackage", input.contextPackage],
+        ["ruleStack", input.ruleStack],
+      ].filter(([, value]) => value === undefined).map(([name]) => name);
+      if (missing.length > 0) {
+        throw new Error(`EPISODE_CONTEXT_INCOMPLETE: missing ${missing.join(", ")}`);
+      }
+    }
 
     const placeholder = "(文件尚未创建)";
     const [
@@ -255,6 +286,7 @@ export class WriterAgent extends BaseAgent {
           ruleStack: input.ruleStack,
           externalContext: input.externalContext,
           lengthSpec: resolvedLengthSpec,
+          targetDurationSeconds: book.episodeDurationSeconds ?? 90,
           language: book.language ?? genreProfile.language,
           varianceBrief: englishVarianceBrief?.text,
           selectedEvidenceBlock: this.joinGovernedEvidenceBlocks(governedMemoryBlocks),
@@ -284,6 +316,7 @@ export class WriterAgent extends BaseAgent {
             hooks: povFilteredHooks,
             recentChapters,
             lengthSpec: resolvedLengthSpec,
+            targetDurationSeconds: book.episodeDurationSeconds ?? 90,
             externalContext: input.externalContext,
             chapterSummaries: filteredSummaries,
             subplotBoard: filteredSubplots,
@@ -333,16 +366,75 @@ export class WriterAgent extends BaseAgent {
       en: `Phase 1: creative writing for chapter ${chapterNumber}`,
     });
 
-    const creativeResponse = await this.chat(
+    let creativeResponse = await this.chat(
       [
         { role: "system", content: creativeSystemPrompt },
         { role: "user", content: creativeUserPrompt },
       ],
-      { temperature: creativeTemperature, promptSources: creativePromptSources },
+      {
+        temperature: creativeTemperature,
+        maxTokens: book.format === "screenplay" ? SCREENPLAY_MAX_OUTPUT_TOKENS : undefined,
+        promptSources: creativePromptSources,
+      },
     );
-    const creativeUsage = creativeResponse.usage;
+    let creativeUsage = creativeResponse.usage;
 
-    const creative = parseCreativeOutput(chapterNumber, creativeResponse.content, resolvedLengthSpec.countingMode);
+    let creative: ReturnType<typeof parseCreativeOutput>;
+    try {
+      creative = parseCreativeOutput(
+        chapterNumber,
+        creativeResponse.content,
+        resolvedLengthSpec.countingMode,
+        book.episodeDurationSeconds ?? 90,
+      );
+    } catch (error) {
+      // Screenplay output is a strict machine contract. Give the model one
+      // bounded repair attempt with the parser error, then fail the episode
+      // without ever persisting free-form prose as a script.
+      if (book.format !== "screenplay") throw error;
+      const repairResponse = await this.chat(
+        [
+          { role: "system", content: creativeSystemPrompt },
+          {
+            role: "user",
+            content: [
+              "Your previous response did not satisfy the EpisodeScript JSON contract.",
+              `Parser feedback: ${error instanceof Error ? error.message : String(error)}`,
+              "Return only PRE_WRITE_CHECK and a corrected EPISODE_SCRIPT_JSON object. Do not add prose.",
+              "Previous response:",
+              truncatePromptBlock(
+                creativeResponse.content,
+                SCREENPLAY_REPAIR_INPUT_TOKENS,
+                "\n[previous response truncated for repair]",
+              ),
+            ].join("\n\n"),
+          },
+        ],
+        {
+          temperature: Math.min(creativeTemperature, 0.4),
+          maxTokens: SCREENPLAY_MAX_OUTPUT_TOKENS,
+          promptSources: creativePromptSources,
+        },
+      );
+      creativeResponse = repairResponse;
+      creativeUsage = {
+        promptTokens: creativeUsage.promptTokens + repairResponse.usage.promptTokens,
+        completionTokens: creativeUsage.completionTokens + repairResponse.usage.completionTokens,
+        totalTokens: creativeUsage.totalTokens + repairResponse.usage.totalTokens,
+      };
+      creative = parseCreativeOutput(
+        chapterNumber,
+        creativeResponse.content,
+        resolvedLengthSpec.countingMode,
+        book.episodeDurationSeconds ?? 90,
+      );
+    }
+
+    if (book.format === "screenplay" && !creative.episodeScript) {
+      throw new Error(
+        "Screenplay writer output did not contain a valid EpisodeScript JSON contract; legacy chapter text was rejected.",
+      );
+    }
 
     // Phase 4: soft-check that PRE_WRITE_CHECK aligns with the chapter memo.
     // Memo was already parse-validated in the planner, so this only warns —
@@ -381,42 +473,64 @@ export class WriterAgent extends BaseAgent {
         })
       : characterMatrix;
 
-    const settleResult = await this.settle({
-      book,
-      genreProfile,
-      bookRules,
-      chapterNumber,
-      title: creative.title,
-      content: creative.content,
-      currentState,
-      ledger: genreProfile.numericalSystem ? ledger : "",
-      hooks: filteredHooksForSettlement,
-      chapterSummaries: input.contextPackage ? filterSummaries(chapterSummaries, chapterNumber) : chapterSummaries,
-      subplotBoard: filteredSubplotsForSettlement,
-      emotionalArcs: filteredArcsForSettlement,
-      characterMatrix: filteredMatrixForSettlement,
-      volumeOutline,
-      selectedEvidenceBlock: governedMemoryBlocks
-        ? this.joinGovernedEvidenceBlocks(governedMemoryBlocks)
-        : undefined,
-      chapterIntent: input.chapterIntent,
-      contextPackage: input.contextPackage,
-      ruleStack: input.ruleStack,
-      validationFeedback: undefined,
-      originalHooks: hooks,
-      originalSubplots: subplotBoard,
-      originalEmotionalArcs: emotionalArcs,
-      originalCharacterMatrix: characterMatrix,
-    });
+    const settleResult = creative.episodeScript
+      ? this.deriveScreenplaySettlement({
+          script: creative.episodeScript,
+          title: creative.title,
+          chapterNumber,
+          metrics: creative.episodeScriptMetrics,
+          chapterMemo: input.chapterMemo,
+          hooksMarkdown: hooks,
+          ledgerMarkdown: genreProfile.numericalSystem ? ledger : "",
+          subplotBoard,
+          emotionalArcs,
+          characterMatrix,
+        })
+      : await this.settle({
+          book,
+          genreProfile,
+          bookRules,
+          chapterNumber,
+          title: creative.title,
+          content: creative.content,
+          currentState,
+          ledger: genreProfile.numericalSystem ? ledger : "",
+          hooks: filteredHooksForSettlement,
+          chapterSummaries: input.contextPackage ? filterSummaries(chapterSummaries, chapterNumber) : chapterSummaries,
+          subplotBoard: filteredSubplotsForSettlement,
+          emotionalArcs: filteredArcsForSettlement,
+          characterMatrix: filteredMatrixForSettlement,
+          volumeOutline,
+          selectedEvidenceBlock: governedMemoryBlocks
+            ? this.joinGovernedEvidenceBlocks(governedMemoryBlocks)
+            : undefined,
+          chapterIntent: input.chapterIntent,
+          contextPackage: input.contextPackage,
+          ruleStack: input.ruleStack,
+          validationFeedback: undefined,
+          originalHooks: hooks,
+          originalSubplots: subplotBoard,
+          originalEmotionalArcs: emotionalArcs,
+          originalCharacterMatrix: characterMatrix,
+        });
     const settlement = settleResult.settlement;
     const settleUsage = settleResult.usage;
+    const baseRuntimeStateDelta = settlement.runtimeStateDelta
+      ? this.normalizeRuntimeStateDeltaChapter(settlement.runtimeStateDelta, chapterNumber)
+      : undefined;
+    const resolvedRuntimeStateDelta = creative.episodeScript && baseRuntimeStateDelta
+      ? this.enrichEpisodeRuntimeStateDelta(baseRuntimeStateDelta, creative.episodeScript, creative.title, chapterNumber,
+        creative.episodeScriptMetrics)
+      : baseRuntimeStateDelta;
+    // Build the durable snapshot only after screenplay-derived summary fields
+    // have been merged. Building it earlier would persist the settler's
+    // incomplete legacy summary and silently drop payoff/relationship data.
     const runtimeStateArtifacts = await this.buildRuntimeStateArtifactsIfPresent(
       bookDir,
-      settlement.runtimeStateDelta,
+      resolvedRuntimeStateDelta,
       resolvedLanguage,
       chapterNumber,
     );
-    const resolvedRuntimeStateDelta = runtimeStateArtifacts?.resolvedDelta ?? settlement.runtimeStateDelta;
     const priorHookIds = new Set(parsePendingHooksMarkdown(hooks).map((hook) => hook.hookId));
     const hookHealthIssues = resolvedRuntimeStateDelta
       && (runtimeStateArtifacts?.snapshot ?? settlement.runtimeStateSnapshot)
@@ -433,12 +547,16 @@ export class WriterAgent extends BaseAgent {
     // ── Post-write validation (regex + rule-based, zero LLM cost) ──
     const surfaceNormalizedContent = normalizePostWriteSurface(creative.content, resolvedLanguage);
     const surfaceNormalizedWordCount = countChapterLength(surfaceNormalizedContent, resolvedLengthSpec.countingMode);
-    const ruleViolations = [
-      ...validatePostWrite(surfaceNormalizedContent, genreProfile, bookRules, resolvedLanguage),
-      ...detectCrossChapterRepetition(surfaceNormalizedContent, fingerprintChapters, resolvedLanguage),
-      ...detectParagraphLengthDrift(surfaceNormalizedContent, fingerprintChapters, resolvedLanguage),
-    ];
-    const aiTellIssues = analyzeAITells(surfaceNormalizedContent, resolvedLanguage).issues;
+    const ruleViolations = creative.episodeScript
+      ? []
+      : [
+          ...validatePostWrite(surfaceNormalizedContent, genreProfile, bookRules, resolvedLanguage),
+          ...detectCrossChapterRepetition(surfaceNormalizedContent, fingerprintChapters, resolvedLanguage),
+          ...detectParagraphLengthDrift(surfaceNormalizedContent, fingerprintChapters, resolvedLanguage),
+        ];
+    const aiTellIssues = creative.episodeScript
+      ? []
+      : analyzeAITells(surfaceNormalizedContent, resolvedLanguage).issues;
 
     const postWriteErrors = ruleViolations.filter(v => v.severity === "error");
     const postWriteWarnings = ruleViolations.filter(v => v.severity === "warning");
@@ -483,9 +601,11 @@ export class WriterAgent extends BaseAgent {
       title: creative.title,
       content: surfaceNormalizedContent,
       wordCount: surfaceNormalizedWordCount,
+      ...(creative.episodeScript ? { episodeScript: creative.episodeScript } : {}),
+      ...(creative.episodeScriptMetrics ? { episodeScriptMetrics: creative.episodeScriptMetrics } : {}),
       preWriteCheck: creative.preWriteCheck,
       postSettlement: settlement.postSettlement,
-      runtimeStateDelta: resolvedRuntimeStateDelta,
+      runtimeStateDelta: runtimeStateArtifacts?.resolvedDelta ?? resolvedRuntimeStateDelta,
       runtimeStateSnapshot: runtimeStateArtifacts?.snapshot ?? settlement.runtimeStateSnapshot,
       updatedState: runtimeStateArtifacts?.currentStateMarkdown ?? settlement.updatedState,
       updatedLedger: settlement.updatedLedger,
@@ -562,9 +682,28 @@ export class WriterAgent extends BaseAgent {
       originalCharacterMatrix: characterMatrix,
     });
     const settlement = settleResult.settlement;
+    const baseRuntimeStateDelta = settlement.runtimeStateDelta
+      ? this.normalizeRuntimeStateDeltaChapter(settlement.runtimeStateDelta, input.chapterNumber)
+      : undefined;
+    let episodeScript: EpisodeScript | undefined;
+    if (input.book.format === "screenplay") {
+      try {
+        episodeScript = parseCreativeOutput(
+          input.chapterNumber,
+          input.content,
+          resolvedLanguage === "en" ? "en_words" : "zh_chars",
+          input.book.episodeDurationSeconds ?? 90,
+        ).episodeScript;
+      } catch {
+        // State repair must still be able to settle a legacy or damaged draft.
+      }
+    }
+    const resolvedRuntimeStateDelta = episodeScript && baseRuntimeStateDelta
+      ? this.enrichEpisodeRuntimeStateDelta(baseRuntimeStateDelta, episodeScript, input.title, input.chapterNumber)
+      : baseRuntimeStateDelta;
     const runtimeStateArtifacts = await this.buildRuntimeStateArtifactsIfPresent(
       input.bookDir,
-      settlement.runtimeStateDelta,
+      resolvedRuntimeStateDelta,
       resolvedLanguage,
       input.chapterNumber,
       input.allowReapply,
@@ -580,13 +719,13 @@ export class WriterAgent extends BaseAgent {
       ),
       preWriteCheck: "",
       postSettlement: settlement.postSettlement,
-      runtimeStateDelta: runtimeStateArtifacts?.resolvedDelta ?? settlement.runtimeStateDelta,
+      runtimeStateDelta: runtimeStateArtifacts?.resolvedDelta ?? resolvedRuntimeStateDelta ?? settlement.runtimeStateDelta,
       runtimeStateSnapshot: runtimeStateArtifacts?.snapshot ?? settlement.runtimeStateSnapshot,
       updatedState: runtimeStateArtifacts?.currentStateMarkdown ?? settlement.updatedState,
       updatedLedger: settlement.updatedLedger,
       updatedHooks: runtimeStateArtifacts?.hooksMarkdown ?? settlement.updatedHooks,
-      chapterSummary: settlement.runtimeStateDelta
-        ? this.renderDeltaSummaryRow(settlement.runtimeStateDelta)
+      chapterSummary: resolvedRuntimeStateDelta
+        ? this.renderDeltaSummaryRow(resolvedRuntimeStateDelta)
         : settlement.chapterSummary,
       updatedChapterSummaries: runtimeStateArtifacts?.chapterSummariesMarkdown,
       updatedSubplots: settlement.updatedSubplots,
@@ -831,17 +970,41 @@ export class WriterAgent extends BaseAgent {
     options: { readonly persistTruth?: boolean } = {},
   ): Promise<void> {
     const chaptersDir = join(bookDir, "chapters");
+    const episodesDir = join(bookDir, "episodes");
     const storyDir = join(bookDir, "story");
-    await mkdir(chaptersDir, { recursive: true });
+    const runtimeDir = join(storyDir, "runtime");
+    await mkdir(storyDir, { recursive: true });
+    if (output.episodeScript) {
+      await mkdir(episodesDir, { recursive: true });
+      await mkdir(runtimeDir, { recursive: true });
+    } else {
+      await mkdir(chaptersDir, { recursive: true });
+    }
 
     const paddedNum = String(output.chapterNumber).padStart(4, "0");
     const filename = `${paddedNum}_${this.sanitizeFilename(output.title)}.md`;
-    const existingChapterFiles = await readdir(chaptersDir).catch(() => []);
-    await Promise.all(
-      existingChapterFiles
-        .filter((file) => file.startsWith(`${paddedNum}_`) && file.endsWith(".md") && file !== filename)
-        .map((file) => rm(join(chaptersDir, file), { force: true })),
-    );
+    const episodeMarkdownFilename = `${paddedNum}_${this.sanitizeFilename(output.title)}.md`;
+    const episodeJsonFilename = `${paddedNum}_${this.sanitizeFilename(output.title)}.json`;
+    const operations: Array<{ readonly path: string; readonly content?: string }> = [];
+    if (output.episodeScript) {
+      const existingEpisodeFiles = await readdir(episodesDir).catch(() => []);
+      for (const file of existingEpisodeFiles) {
+        if (
+          file.startsWith(`${paddedNum}_`)
+          && file !== episodeMarkdownFilename
+          && file !== episodeJsonFilename
+        ) {
+          operations.push({ path: join(episodesDir, file) });
+        }
+      }
+    } else {
+      const existingChapterFiles = await readdir(chaptersDir).catch(() => []);
+      for (const file of existingChapterFiles) {
+        if (file.startsWith(`${paddedNum}_`) && file.endsWith(".md") && file !== filename) {
+          operations.push({ path: join(chaptersDir, file) });
+        }
+      }
+    }
 
     const trimmedTitle = output.title.trim();
     const titleIsChapterNumber = language === "en"
@@ -850,11 +1013,9 @@ export class WriterAgent extends BaseAgent {
     const heading = language === "en"
       ? `# Chapter ${output.chapterNumber}${titleIsChapterNumber ? "" : `: ${trimmedTitle}`}`
       : `# 第${output.chapterNumber}章${titleIsChapterNumber ? "" : ` ${trimmedTitle}`}`;
-    const chapterContent = [
-      heading,
-      "",
-      output.content,
-    ].join("\n");
+    const chapterContent = output.episodeScript
+      ? output.content
+      : [heading, "", output.content].join("\n");
     const persistTruth = options.persistTruth ?? true;
     const runtimeStateArtifacts = persistTruth
       ? await this.resolveRuntimeStateArtifactsForOutput(bookDir, output, language)
@@ -873,33 +1034,156 @@ export class WriterAgent extends BaseAgent {
         ? this.isMeaningfulRuntimeSnapshot(output.runtimeStateSnapshot)
         : false;
 
-    const writes: Array<Promise<void>> = [
-      writeFile(join(chaptersDir, filename), chapterContent, "utf-8"),
-    ];
+    if (!output.episodeScript) {
+      operations.push({ path: join(chaptersDir, filename), content: chapterContent });
+    }
+    if (output.episodeScript) {
+      operations.push(
+        { path: join(episodesDir, episodeMarkdownFilename), content: output.content },
+        {
+          path: join(episodesDir, episodeJsonFilename),
+          content: `${JSON.stringify(output.episodeScript, null, 2)}\n`,
+        },
+      );
+      if (output.episodeHandoffCapsule) {
+        operations.push({
+          path: join(runtimeDir, `episode-${paddedNum}-handoff.json`),
+          content: `${JSON.stringify(output.episodeHandoffCapsule, null, 2)}\n`,
+        });
+      }
+      if (output.episodePerformanceReport) {
+        operations.push({
+          path: join(runtimeDir, `episode-${paddedNum}.performance.json`),
+          content: `${JSON.stringify(output.episodePerformanceReport, null, 2)}\n`,
+        });
+      }
+      if (output.episodeReviewEvidence) {
+        const evidence = {
+          ...output.episodeReviewEvidence,
+          reviewedArtifacts: output.episodeReviewEvidence.reviewedArtifacts.map((artifact, index) =>
+            index === 0 ? { ...artifact, artifact: `episodes/${episodeJsonFilename}` } : artifact,
+          ),
+        };
+        operations.push({
+          path: join(episodesDir, `${paddedNum}_review.json`),
+          content: `${JSON.stringify(evidence, null, 2)}\n`,
+        });
+      }
+    }
     if (persistTruth && shouldWriteState) {
-      writes.push(writeFile(join(storyDir, "current_state.md"), nextStateMarkdown, "utf-8"));
+      operations.push({ path: join(storyDir, "current_state.md"), content: nextStateMarkdown });
     }
     if (persistTruth && shouldWriteHooks) {
-      writes.push(writeFile(join(storyDir, "pending_hooks.md"), nextHooksMarkdown, "utf-8"));
+      operations.push({ path: join(storyDir, "pending_hooks.md"), content: nextHooksMarkdown });
     }
 
     if (persistTruth && runtimeStateArtifacts?.chapterSummariesMarkdown) {
-      writes.push(
-        writeFile(join(storyDir, "chapter_summaries.md"), runtimeStateArtifacts.chapterSummariesMarkdown, "utf-8"),
-      );
+      operations.push({
+        path: join(storyDir, "chapter_summaries.md"),
+        content: runtimeStateArtifacts.chapterSummariesMarkdown,
+      });
     }
 
     if (persistTruth && shouldSaveRuntimeSnapshot && (runtimeStateArtifacts?.snapshot ?? output.runtimeStateSnapshot)) {
-      writes.push(saveRuntimeStateSnapshot(bookDir, runtimeStateArtifacts?.snapshot ?? output.runtimeStateSnapshot!));
-    }
-
-    if (persistTruth && numericalSystem) {
-      writes.push(
-        writeFile(join(storyDir, "particle_ledger.md"), output.updatedLedger, "utf-8"),
+      const snapshot = runtimeStateArtifacts?.snapshot ?? output.runtimeStateSnapshot!;
+      const stateDir = join(storyDir, "state");
+      await mkdir(stateDir, { recursive: true });
+      operations.push(
+        { path: join(stateDir, "manifest.json"), content: `${JSON.stringify(snapshot.manifest, null, 2)}\n` },
+        { path: join(stateDir, "current_state.json"), content: `${JSON.stringify(snapshot.currentState, null, 2)}\n` },
+        { path: join(stateDir, "hooks.json"), content: `${JSON.stringify(snapshot.hooks, null, 2)}\n` },
+        { path: join(stateDir, "chapter_summaries.json"), content: `${JSON.stringify(snapshot.chapterSummaries, null, 2)}\n` },
       );
     }
 
-    await Promise.all(writes);
+    if (persistTruth && numericalSystem) {
+      operations.push({ path: join(storyDir, "particle_ledger.md"), content: output.updatedLedger });
+    }
+
+    if (persistTruth) {
+      const summaryProjection = runtimeStateArtifacts?.chapterSummariesMarkdown
+        ?? await readFile(join(storyDir, "chapter_summaries.md"), "utf-8").catch(() => "");
+      if (summaryProjection) {
+        operations.push({ path: join(storyDir, "episode_summaries.md"), content: summaryProjection });
+      }
+    }
+    await this.commitFileTransaction(operations);
+  }
+
+  private deriveScreenplaySettlement(params: {
+    readonly script: EpisodeScript;
+    readonly title: string;
+    readonly chapterNumber: number;
+    readonly metrics?: EpisodeScriptMetrics;
+    readonly chapterMemo?: ChapterMemo;
+    readonly hooksMarkdown: string;
+    readonly ledgerMarkdown: string;
+    readonly subplotBoard: string;
+    readonly emotionalArcs: string;
+    readonly characterMatrix: string;
+  }): {
+    readonly settlement: ReturnType<typeof parseSettlementOutput> & {
+      readonly runtimeStateDelta: RuntimeStateDelta;
+      readonly runtimeStateSnapshot?: RuntimeStateSnapshot;
+    };
+    readonly usage: TokenUsage;
+  } {
+    const existingHooks = parsePendingHooksMarkdown(params.hooksMarkdown);
+    const delta = deriveEpisodeRuntimeDelta({
+      script: params.script,
+      title: params.title,
+      episode: params.chapterNumber,
+      metrics: params.metrics,
+      memo: params.chapterMemo,
+      existingHooks,
+    });
+    return {
+      settlement: {
+        postSettlement: "deterministic-episode-settlement",
+        runtimeStateDelta: delta,
+        updatedState: "",
+        updatedLedger: params.ledgerMarkdown,
+        updatedHooks: params.hooksMarkdown,
+        chapterSummary: this.renderDeltaSummaryRow(delta),
+        updatedSubplots: params.subplotBoard,
+        updatedEmotionalArcs: params.emotionalArcs,
+        updatedCharacterMatrix: params.characterMatrix,
+      },
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    };
+  }
+
+  /** Apply all saveChapter mutations together and restore prior bytes on failure. */
+  private async commitFileTransaction(
+    operations: ReadonlyArray<{ readonly path: string; readonly content?: string }>,
+  ): Promise<void> {
+    const originals = new Map<string, string | null>();
+    for (const operation of operations) {
+      if (originals.has(operation.path)) continue;
+      originals.set(operation.path, await readFile(operation.path, "utf-8").catch(() => null));
+    }
+    const applied: string[] = [];
+    try {
+      for (const operation of operations) {
+        await mkdir(dirname(operation.path), { recursive: true });
+        applied.push(operation.path);
+        if (operation.content === undefined) {
+          await rm(operation.path, { force: true });
+        } else {
+          await writeFile(operation.path, operation.content, "utf-8");
+        }
+      }
+    } catch (error) {
+      for (const path of [...applied].reverse()) {
+        const previous = originals.get(path);
+        if (previous === null || previous === undefined) {
+          await rm(path, { force: true }).catch(() => undefined);
+        } else {
+          await writeFile(path, previous, "utf-8").catch(() => undefined);
+        }
+      }
+      throw error;
+    }
   }
 
   private isMeaningfulTruthUpdate(content: string | undefined, placeholder: string): boolean {
@@ -919,6 +1203,7 @@ export class WriterAgent extends BaseAgent {
     readonly hooks: string;
     readonly recentChapters: string;
     readonly lengthSpec: LengthSpec;
+    readonly targetDurationSeconds: number;
     readonly externalContext?: string;
     readonly chapterSummaries: string;
     readonly subplotBoard: string;
@@ -985,10 +1270,14 @@ export class WriterAgent extends BaseAgent {
 本书是番外作品。以下正典约束不可违反，角色不得引用超出其信息边界的信息。
 ${parentCanon}\n`
       : "";
-    const lengthRequirementBlock = this.buildLengthRequirementBlock(params.lengthSpec, params.language ?? "zh");
+    const lengthRequirementBlock = this.buildLengthRequirementBlock(
+      params.lengthSpec,
+      params.language ?? "zh",
+      params.targetDurationSeconds,
+    );
 
     if (params.language === "en") {
-      return `Write chapter ${params.chapterNumber}.
+      return `Write episode ${params.chapterNumber} as a production-oriented screenplay.
 ${contextBlock}
 ## Current State
 ${currentState}
@@ -1003,11 +1292,11 @@ ${params.recentChapters || "(This is the first chapter, no previous text)"}
 ${storyBible}
 
 ${lengthRequirementBlock}
-- Output PRE_WRITE_CHECK first, then the chapter
-- Output only PRE_WRITE_CHECK, CHAPTER_TITLE, and CHAPTER_CONTENT blocks`;
+- Output PRE_WRITE_CHECK first, then EPISODE_SCRIPT_JSON
+- Output only PRE_WRITE_CHECK and EPISODE_SCRIPT_JSON blocks`;
     }
 
-    return `请续写第${params.chapterNumber}章。
+    return `请创作第${params.chapterNumber}集漫剧分镜稿。
 ${contextBlock}
 ## 当前状态卡
 ${currentState}
@@ -1022,8 +1311,8 @@ ${params.recentChapters || "(这是第一章，无前文)"}
 ${storyBible}
 
 ${lengthRequirementBlock}
-- 先输出写作自检表，再写正文
-      - 只需输出 PRE_WRITE_CHECK、CHAPTER_TITLE、CHAPTER_CONTENT 三个区块`;
+- 先输出写作自检表，再输出 EPISODE_SCRIPT_JSON
+- 只需输出 PRE_WRITE_CHECK、EPISODE_SCRIPT_JSON 两个区块`;
   }
 
   private capLegacyContext(label: string, content: string, maxChars: number): string {
@@ -1038,6 +1327,7 @@ ${lengthRequirementBlock}
     readonly ruleStack: RuleStack;
     readonly externalContext?: string;
     readonly lengthSpec: LengthSpec;
+    readonly targetDurationSeconds: number;
     readonly language?: "zh" | "en";
     readonly varianceBrief?: string;
     readonly selectedEvidenceBlock?: string;
@@ -1066,7 +1356,11 @@ ${lengthRequirementBlock}
       ? params.ruleStack.sections.diagnostic.join(", ")
       : "none";
 
-    const lengthRequirementBlock = this.buildLengthRequirementBlock(params.lengthSpec, params.language ?? "zh");
+    const lengthRequirementBlock = this.buildLengthRequirementBlock(
+      params.lengthSpec,
+      params.language ?? "zh",
+      params.targetDurationSeconds,
+    );
     const varianceBlock = params.varianceBrief
       ? `\n${params.varianceBrief}\n`
       : "";
@@ -1077,7 +1371,7 @@ ${lengthRequirementBlock}
     const briefNarrative = renderMemoAsNarrativeBlock(params.chapterMemo, params.chapterIntentData, language);
 
     if (params.language === "en") {
-      return `Write chapter ${params.chapterNumber}.
+      return `Write episode ${params.chapterNumber} as a production-oriented screenplay.
 
 ${chapterContextBlock}
 
@@ -1095,11 +1389,11 @@ ${selectedEvidenceBlock}
 
 ${varianceBlock}
 ${lengthRequirementBlock}
-- Output PRE_WRITE_CHECK first, then the chapter
-- Output only PRE_WRITE_CHECK, CHAPTER_TITLE, and CHAPTER_CONTENT blocks`;
+- Output PRE_WRITE_CHECK first, then EPISODE_SCRIPT_JSON
+- Output only PRE_WRITE_CHECK and EPISODE_SCRIPT_JSON blocks`;
     }
 
-    return `请续写第${params.chapterNumber}章。
+    return `请创作第${params.chapterNumber}集漫剧分镜稿。
 
 ${chapterContextBlock}
 
@@ -1117,23 +1411,23 @@ ${selectedEvidenceBlock}
 
 ${varianceBlock}
 ${lengthRequirementBlock}
-- 先输出写作自检表，再写正文
-- 只需输出 PRE_WRITE_CHECK、CHAPTER_TITLE、CHAPTER_CONTENT 三个区块`;
+- 先输出写作自检表，再输出 EPISODE_SCRIPT_JSON
+- 只需输出 PRE_WRITE_CHECK、EPISODE_SCRIPT_JSON 两个区块`;
   }
 
   private buildChapterContextBlock(externalContext: string | undefined, language: "zh" | "en"): string {
     const trimmed = externalContext?.trim();
     if (!trimmed) return "";
     if (language === "en") {
-      return `## Per-chapter user instruction (highest priority)
+      return `## Per-episode user instruction (highest priority)
 ${trimmed}
 
-Obey this direct instruction for the current chapter. If it specifies a chapter title, use that title exactly in CHAPTER_TITLE. Keep continuity, but do not replace this instruction with the outline fallback.`;
+Obey this direct instruction for the current episode. If it specifies an episode title, use it exactly in EpisodeScript.title. Keep continuity, but do not replace this instruction with an outline fallback.`;
     }
-    return `## 本章用户指令（最高优先级）
+    return `## 本集用户指令（最高优先级）
 ${trimmed}
 
-这是用户对当前章节的直接指令。若其中指定章节标题，CHAPTER_TITLE 必须原样使用该标题。保持连续性，但不要用卷纲兜底替换这条指令。`;
+这是用户对当前剧集的直接指令。若其中指定剧集标题，EpisodeScript.title 必须原样使用。保持连续性，但不要用篇章计划兜底替换这条指令。`;
   }
 
   private joinGovernedEvidenceBlocks(blocks: ReturnType<typeof buildGovernedMemoryEvidenceBlocks> | undefined): string | undefined {
@@ -1240,18 +1534,31 @@ ${overrides}
     }
   }
 
-  private buildLengthRequirementBlock(lengthSpec: LengthSpec, language: "zh" | "en"): string {
+  private buildLengthRequirementBlock(
+    _lengthSpec: LengthSpec,
+    language: "zh" | "en",
+    targetDurationSeconds: number,
+  ): string {
+    const normalizedDuration = Number.isFinite(targetDurationSeconds)
+      && targetDurationSeconds >= 60
+      && targetDurationSeconds <= 120
+      ? targetDurationSeconds
+      : 90;
+    const softMin = Math.max(60, normalizedDuration - 15);
+    const softMax = Math.min(120, normalizedDuration + 15);
     if (language === "en") {
-      return `Requirements:
-- Target length: ${lengthSpec.target} words
-- Acceptable range: ${lengthSpec.softMin}-${lengthSpec.softMax} words
-- Hard range: ${lengthSpec.hardMin}-${lengthSpec.hardMax} words`;
+      return `Episode timing requirements:
+- Target duration: about ${normalizedDuration} seconds
+- Soft range: ${softMin}-${softMax} seconds
+- Hard range: 60-120 seconds
+- Use shot durationSeconds as the authoritative timing value.`;
     }
 
-    return `要求：
-- 目标字数：${lengthSpec.target}字
-- 允许区间：${lengthSpec.softMin}-${lengthSpec.softMax}字
-- 硬区间：${lengthSpec.hardMin}-${lengthSpec.hardMax}字`;
+    return `剧集时长要求：
+- 目标时长：约 ${normalizedDuration} 秒
+- 允许区间：${softMin}-${softMax} 秒
+- 硬区间：60-120 秒
+- 以每个镜头的 durationSeconds 作为最终时长依据。`;
   }
 
   private async loadRecentChapters(
@@ -1340,6 +1647,13 @@ ${overrides}
       summary.hookActivity,
       summary.mood,
       summary.chapterType,
+      summary.payoff ?? "",
+      summary.reversal ?? "",
+      summary.relationshipChange ?? "",
+      summary.emotionalHook ?? "",
+      summary.endingQuestion ?? "",
+      summary.estimatedDurationSeconds ?? "",
+      summary.shotCount ?? "",
     ].map((value) => String(value).replace(/\|/g, "\\|").trim()).join(" | ");
 
     return `| ${row} |`;
@@ -1392,6 +1706,43 @@ ${overrides}
             chapter: authoritativeChapterNumber,
           }
         : undefined,
+    };
+  }
+
+  private enrichEpisodeRuntimeStateDelta(
+    delta: RuntimeStateDelta,
+    script: EpisodeScript,
+    title: string,
+    chapterNumber: number,
+    metrics?: EpisodeScriptMetrics,
+  ): RuntimeStateDelta {
+    const summary = delta.chapterSummary;
+    return {
+      ...delta,
+      chapter: chapterNumber,
+      chapterSummary: {
+        chapter: chapterNumber,
+        title,
+        characters: summary?.characters ?? "",
+        events: summary?.events ?? script.endState,
+        stateChanges: summary?.stateChanges ?? script.endState,
+        hookActivity: summary?.hookActivity ?? "",
+        mood: summary?.mood ?? "",
+        chapterType: summary?.chapterType ?? "episode",
+        payoff: summary?.payoff
+          ?? [
+            script.contract.localDramaticResult.goalOutcome,
+            script.contract.localDramaticResult.stateChange,
+            `代价：${script.contract.localDramaticResult.costPaid}`,
+          ].join("；"),
+        reversal: script.reversal,
+        relationshipChange: summary?.relationshipChange
+          ?? script.contract.handoffState.relationship.join("；"),
+        emotionalHook: script.emotionalHook,
+        endingQuestion: script.emotionalHook,
+        estimatedDurationSeconds: metrics?.estimatedDurationSeconds ?? script.estimatedDurationSeconds,
+        shotCount: metrics?.shotCount ?? script.scenes.reduce((sum, scene) => sum + scene.shots.length, 0),
+      },
     };
   }
 
@@ -1459,8 +1810,8 @@ ${overrides}
     } catch {
       // File doesn't exist yet — start with header
       existing = language === "en"
-        ? "# Chapter Summaries\n\n| Chapter | Title | Characters | Key Events | State Changes | Hook Activity | Mood | Chapter Type |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n"
-        : "# 章节摘要\n\n| 章节 | 标题 | 出场人物 | 关键事件 | 状态变化 | 伏笔动态 | 情绪基调 | 章节类型 |\n|------|------|----------|----------|----------|----------|----------|----------|\n";
+        ? "# Episode Summaries\n\n| Episode | Title | Characters | Key Events | State Changes | Hook Activity | Mood | Episode Type | Payoff | Reversal | Relationship Change | Emotional Hook | Ending Question | Duration (s) | Shots |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        : "# 剧集摘要\n\n| 集 | 标题 | 出场人物 | 关键事件 | 状态变化 | 伏笔动态 | 情绪基调 | 剧集类型 | 爽点 | 反转 | 关系变化 | 情绪钩子 | 结尾问题 | 时长（秒） | 镜头数 |\n|---|------|----------|----------|----------|----------|----------|----------|------|------|----------|----------|----------|----------|------|\n";
     }
 
     // Extract only the data row(s) from the summary (skip header lines)
@@ -1469,7 +1820,9 @@ ${overrides}
       .filter((line) =>
         line.startsWith("|")
         && !line.startsWith("| 章节")
+        && !line.startsWith("| 集")
         && !line.startsWith("| Chapter")
+        && !line.startsWith("| Episode")
         && !line.startsWith("|--")
         && !line.startsWith("| ---"),
       )
@@ -1621,7 +1974,7 @@ ${overrides}
       return false;
     });
 
-    // Skip only the last chapter (its full text is already in context via loadRecentChapters)
+    // Skip only the latest episode (its full text is already in context via loadRecentChapters)
     const filteredRows = matchedRows.filter((row) => {
       const chNumMatch = row.match(/\|\s*(\d+)\s*\|/);
       if (!chNumMatch) return true;

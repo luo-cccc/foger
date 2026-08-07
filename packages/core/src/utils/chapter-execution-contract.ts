@@ -40,6 +40,23 @@ export interface ChapterExecutionContract {
   readonly mustAvoid: ReadonlyArray<ChapterExecutionDirective>;
   readonly hookActions: ReadonlyArray<ChapterExecutionHookAction>;
   readonly deferredHooks: ReadonlyArray<ChapterDeferredHook>;
+  /** Episode-only contract fields. These are compiled from planner sections so
+   * the writer receives the causal and handoff commitments, not just legacy
+   * chapter directives. */
+  readonly incomingState?: string;
+  readonly objective?: string;
+  readonly opposition?: string;
+  readonly causalEscalation?: string;
+  readonly relationshipPressure?: string;
+  readonly reversalSetup?: string;
+  readonly reversalTurn?: string;
+  readonly reversalConsequence?: string;
+  readonly localDramaticResult?: string;
+  readonly outgoingPressure?: string;
+  readonly handoffState?: string;
+  readonly informationPermissions?: string;
+  readonly emotionalHook?: string;
+  readonly endState?: string;
   readonly fingerprint: string;
 }
 
@@ -61,6 +78,8 @@ export function compileChapterExecutionContract(memo: ChapterMemo): ChapterExecu
   const doNot = extractSection(memo.body, SECTION_HEADINGS.doNot);
   const volumeMovementSection = extractSection(memo.body, SECTION_HEADINGS.volumeMovement);
   const ledger = parseHookLedger(memo.body);
+  const episodeValue = (value: string | undefined, headings: ReadonlyArray<string>): string | undefined =>
+    value?.trim() || extractSection(memo.body, headings);
 
   const mustLand: ChapterExecutionDirective[] = [];
   for (const text of sectionItems(currentTask)) {
@@ -104,6 +123,20 @@ export function compileChapterExecutionContract(memo: ChapterMemo): ChapterExecu
     mustAvoid: dedupeDirectives(mustAvoid),
     hookActions: dedupeHookActions(hookActions),
     deferredHooks: dedupeDeferredHooks(deferredHooks),
+    incomingState: episodeValue(memo.incomingState, ["## 进入状态", "## Incoming state"]),
+    objective: episodeValue(memo.objective, ["## 当前目标", "## Episode objective"]),
+    opposition: episodeValue(memo.opposition, ["## 反对力量", "## Opposition"]),
+    causalEscalation: episodeValue(memo.causalEscalation, ["## 因果升级", "## Causal escalation"]),
+    relationshipPressure: episodeValue(memo.relationshipPressure, ["## 关系压力", "## Relationship pressure"]),
+    reversalSetup: episodeValue(memo.reversalSetup, ["## 反转铺垫", "## Reversal setup"]),
+    reversalTurn: episodeValue(memo.reversalTurn, ["## 本集反转", "## Episode reversal", "## Reversal turn"]),
+    reversalConsequence: episodeValue(memo.reversalConsequence, ["## 反转后果", "## Reversal consequence"]),
+    localDramaticResult: episodeValue(memo.localDramaticResult, ["## 当集兑现", "## Local dramatic result"]),
+    outgoingPressure: episodeValue(memo.outgoingPressure, ["## 出去压力", "## Outgoing pressure"]),
+    handoffState: episodeValue(memo.handoffState, ["## 结尾交接状态", "## Handoff state"]),
+    informationPermissions: episodeValue(memo.informationPermissions, ["## 信息权限", "## Information permissions"]),
+    emotionalHook: episodeValue(memo.emotionalHook, ["## 情绪钩子", "## Emotional hook"]),
+    endState: episodeValue(memo.endState, ["## 结尾状态", "## End state"]),
   };
   return {
     ...base,
@@ -158,6 +191,29 @@ export function renderChapterExecutionContract(
     for (const item of contract.deferredHooks.slice(0, 8)) {
       lines.push(`- [defer:${item.hookId}] ${truncate(item.description)}`);
     }
+  }
+
+  const episodeSections: ReadonlyArray<[string, string | undefined]> = isEnglish
+    ? [
+        ["Incoming state", contract.incomingState], ["Objective", contract.objective],
+        ["Opposition", contract.opposition], ["Causal escalation", contract.causalEscalation],
+        ["Relationship pressure", contract.relationshipPressure], ["Reversal setup", contract.reversalSetup],
+        ["Episode reversal", contract.reversalTurn], ["Reversal consequence", contract.reversalConsequence],
+        ["Local dramatic result", contract.localDramaticResult], ["Outgoing pressure", contract.outgoingPressure],
+        ["Handoff state", contract.handoffState], ["Information permissions", contract.informationPermissions],
+        ["Emotional hook", contract.emotionalHook], ["End state", contract.endState],
+      ]
+    : [
+        ["进入状态", contract.incomingState], ["当前目标", contract.objective],
+        ["反对力量", contract.opposition], ["因果升级", contract.causalEscalation],
+        ["关系压力", contract.relationshipPressure], ["反转铺垫", contract.reversalSetup],
+        ["本集反转", contract.reversalTurn], ["反转后果", contract.reversalConsequence],
+        ["当集兑现", contract.localDramaticResult], ["出去压力", contract.outgoingPressure],
+        ["结尾交接状态", contract.handoffState], ["信息权限", contract.informationPermissions],
+        ["情绪钩子", contract.emotionalHook], ["结尾状态", contract.endState],
+      ];
+  for (const [heading, value] of episodeSections) {
+    if (value?.trim()) lines.push(`### ${heading}\n- ${truncate(value)}`);
   }
 
   return lines.join("\n");

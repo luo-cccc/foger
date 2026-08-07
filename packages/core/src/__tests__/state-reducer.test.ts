@@ -1,8 +1,28 @@
 import { describe, expect, it } from "vitest";
 import { applyRuntimeStateDelta } from "../state/state-reducer.js";
+import { applyEpisodeRuntimeStateDelta } from "../state/episode-state-reducer.js";
 import { RuntimeStateDeltaSchema } from "../models/runtime-state.js";
 
 describe("applyRuntimeStateDelta", () => {
+  it("supports the Episode-native reducer contract", () => {
+    const result = applyEpisodeRuntimeStateDelta({
+      snapshot: {
+        manifest: { schemaVersion: 2, language: "zh", lastAppliedEpisode: 0, projectionVersion: 1, migrationWarnings: [] },
+        currentState: { episode: 0, facts: [] },
+        hooks: { hooks: [] },
+        episodeSummaries: { rows: [] },
+      },
+      delta: {
+        episode: 1,
+        currentStatePatch: { currentLocation: "屋顶" },
+        hookOps: { upsert: [], mention: [], resolve: [], defer: [] },
+        newHookCandidates: [], episodeSummary: undefined,
+        subplotOps: [], emotionalArcOps: [], characterMatrixOps: [], notes: [],
+      },
+    });
+    expect(result.manifest.lastAppliedEpisode).toBe(1);
+    expect(result.currentState.facts[0]?.validFromEpisode).toBe(1);
+  });
   it("ignores empty optional state-patch values instead of creating invalid facts", () => {
     const delta = RuntimeStateDeltaSchema.parse({
       chapter: 1,

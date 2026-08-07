@@ -1,6 +1,12 @@
 import { readFile, writeFile, mkdir, readdir, rm, stat, unlink, open, cp } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { BookConfigSchema, type BookConfig } from "../models/book.js";
+import {
+  BookConfigSchema,
+  EpisodeBookConfigSchema,
+  UnsupportedLegacyFormatError,
+  type BookConfig,
+  type EpisodeBookConfig,
+} from "../models/book.js";
 import type { ChapterMeta } from "../models/chapter.js";
 import { bootstrapStructuredStateFromMarkdown, resolveDurableStoryProgress } from "./state-bootstrap.js";
 import { atomicWriteFile, atomicWriteJson } from "../utils/atomic-write.js";
@@ -11,7 +17,7 @@ export type ChapterPersistenceRecovery =
   | { readonly kind: "committed-cleanup"; readonly chapterNumber: number; readonly operationId?: string }
   | { readonly kind: "rolled-back"; readonly chapterNumber: number; readonly rolledBackTo: number; readonly operationId?: string };
 
-export type CoreWorkflowMutationKind = "plan-chapter" | "compose-chapter" | "audit-chapter" | "consolidate-book";
+export type CoreWorkflowMutationKind = "plan-chapter" | "compose-chapter" | "audit-chapter" | "consolidate-book" | "rewrite-chapter";
 
 export type CoreWorkflowRecovery =
   | { readonly kind: "none" }
@@ -36,9 +42,15 @@ function coreWorkflowTargets(workflow: CoreWorkflowMutationKind): ReadonlyArray<
       return ["story/runtime"];
     case "audit-chapter":
       return ["chapters/index.json", "story/audit_drift.md"];
+    case "rewrite-chapter":
+      // Rewriting rolls truth back and removes all later screenplay/chapter
+      // artifacts before regeneration. Back up the complete affected roots so
+      // a provider or schema failure cannot destroy the accepted draft.
+      return ["chapters", "episodes", "story"];
     case "consolidate-book":
       return [
         "story/chapter_summaries.md",
+        "story/episode_summaries.md",
         "story/volume_summaries.md",
         "story/pending_hooks.md",
         "story/summaries_archive",
@@ -253,6 +265,11 @@ export class StateManager {
 
   async saveBookConfigAt(bookDir: string, config: BookConfig): Promise<void> {
     const parsed = BookConfigSchema.parse(config);
+    if (parsed.schemaVersion === "inkos-episode-v2") {
+      const { targetChapters: _legacyTarget, chapterWordCount: _legacyWords, ...episodeConfig } = parsed;
+      await atomicWriteJson(join(bookDir, "book.json"), episodeConfig);
+      return;
+    }
     await atomicWriteJson(join(bookDir, "book.json"), parsed);
   }
 
@@ -377,19 +394,26 @@ export class StateManager {
   async beginCoreWorkflowMutation(bookId: string, workflow: CoreWorkflowMutationKind): Promise<void> {
     const bookDir = this.bookDir(bookId);
     const backupRoot = join(bookDir, CORE_WORKFLOW_BACKUP);
-    const targets = coreWorkflowTargets(workflow);
+    const isEpisodeProject = await this.isEpisodeProjectDir(bookDir);
+    const targets = coreWorkflowTargets(workflow)
+      .map((target) => isEpisodeProject
+        ? target
+          .replace(/^chapters(?:\/|$)/u, "episodes/")
+          .replace(/^story\/chapter_summaries\./u, "story/episode_summaries.")
+          .replace(/\/$/u, "")
+        : target)
+      .filter((target, index, all) => all.indexOf(target) === index);
     await rm(backupRoot, { recursive: true, force: true });
-    const recorded: Array<{ readonly relativePath: string; readonly existed: boolean }> = [];
-    for (const relativePath of targets) {
+    const recorded = await Promise.all(targets.map(async (relativePath) => {
       const source = join(bookDir, relativePath);
       const backup = join(backupRoot, relativePath);
       const existed = await stat(source).then(() => true).catch(() => false);
-      recorded.push({ relativePath, existed });
       if (existed) {
         await mkdir(dirname(backup), { recursive: true });
         await cp(source, backup, { recursive: true, force: true });
       }
-    }
+      return { relativePath, existed } as const;
+    }));
     await atomicWriteJson(join(bookDir, CORE_WORKFLOW_TRANSACTION), {
       workflow,
       status: "preparing",
@@ -475,17 +499,19 @@ export class StateManager {
   }
 
   async loadChapterIndex(bookId: string): Promise<ReadonlyArray<ChapterMeta>> {
-    const indexPath = join(this.bookDir(bookId), "chapters", "index.json");
+    const bookDir = this.bookDir(bookId);
+    const isEpisodeProject = await this.isEpisodeProjectDir(bookDir);
+    const indexPath = join(bookDir, isEpisodeProject ? "episodes" : "chapters", "index.json");
     try {
       const raw = await readFile(indexPath, "utf-8");
       const parsed = JSON.parse(raw) as unknown;
       if (Array.isArray(parsed) && parsed.length > 0) return parsed as ReadonlyArray<ChapterMeta>;
       if (Array.isArray(parsed)) {
-        const rebuilt = await this.rebuildChapterIndexFromFiles(bookId);
+        const rebuilt = isEpisodeProject ? [] : await this.rebuildChapterIndexFromFiles(bookId);
         return rebuilt.length > 0 ? rebuilt : parsed as ReadonlyArray<ChapterMeta>;
       }
     } catch {
-      const rebuilt = await this.rebuildChapterIndexFromFiles(bookId);
+      const rebuilt = isEpisodeProject ? [] : await this.rebuildChapterIndexFromFiles(bookId);
       if (rebuilt.length > 0) return rebuilt;
     }
     return [];
@@ -518,6 +544,7 @@ export class StateManager {
       const rawTitle = match[2]?.replace(/^_+/, "").replace(/_/g, " ").trim();
       return [{
         number,
+        episodeNumber: number,
         title: rawTitle || `第${number}章`,
         status: "ready-for-review" as const,
         wordCount: content.replace(/\s+/g, "").length,
@@ -546,12 +573,50 @@ export class StateManager {
     index: ReadonlyArray<ChapterMeta>,
     options: { readonly allowEmptyWithChapterFiles?: boolean } = {},
   ): Promise<void> {
-    const chaptersDir = join(bookDir, "chapters");
-    await mkdir(chaptersDir, { recursive: true });
-    const safeIndex = index.length === 0 && !options.allowEmptyWithChapterFiles
+    const isEpisodeProject = await this.isEpisodeProjectDir(bookDir);
+    const safeIndex = !isEpisodeProject && index.length === 0 && !options.allowEmptyWithChapterFiles
       ? await this.rebuildChapterIndexFromFilesAt(bookDir).then((rebuilt) => rebuilt.length > 0 ? rebuilt : index)
       : index;
-    await atomicWriteJson(join(chaptersDir, "index.json"), safeIndex);
+    const episodesDir = join(bookDir, "episodes");
+    await mkdir(episodesDir, { recursive: true });
+    await atomicWriteJson(join(episodesDir, "index.json"), safeIndex);
+    if (!isEpisodeProject) {
+      const chaptersDir = join(bookDir, "chapters");
+      await mkdir(chaptersDir, { recursive: true });
+      await atomicWriteJson(join(chaptersDir, "index.json"), safeIndex);
+    }
+  }
+
+  private async isEpisodeProjectDir(bookDir: string): Promise<boolean> {
+    const raw = await readFile(join(bookDir, "book.json"), "utf8").catch(() => "");
+    if (!raw.trim()) return false;
+    try {
+      const value = JSON.parse(raw) as Record<string, unknown>;
+      return value.schemaVersion === "inkos-episode-v2" && value.format === "screenplay";
+    } catch {
+      return false;
+    }
+  }
+
+  async loadEpisodeBookConfig(bookId: string): Promise<EpisodeBookConfig> {
+    const bookDir = this.bookDir(bookId);
+    const configPath = join(bookDir, "book.json");
+    const raw = await readFile(configPath, "utf-8");
+    if (!raw.trim()) throw new Error(`book.json is empty for book "${bookId}"`);
+    const value = JSON.parse(raw) as Record<string, unknown>;
+    const hasLegacyDirectory = await stat(join(bookDir, "chapters"))
+      .then((entry) => entry.isDirectory())
+      .catch(() => false);
+    const hasLegacyFields = "targetChapters" in value || "chapterWordCount" in value;
+    if (
+      hasLegacyDirectory
+      || hasLegacyFields
+      || value.schemaVersion !== "inkos-episode-v2"
+      || value.format !== "screenplay"
+    ) {
+      throw new UnsupportedLegacyFormatError(`UNSUPPORTED_LEGACY_FORMAT: book "${bookId}" is not an inkos-episode-v2 project.`);
+    }
+    return EpisodeBookConfigSchema.parse(value);
   }
 
   async snapshotState(bookId: string, chapterNumber: number): Promise<void> {
@@ -565,7 +630,7 @@ export class StateManager {
 
     const files = [
       "current_state.md", "particle_ledger.md", "pending_hooks.md",
-      "chapter_summaries.md", "subplot_board.md", "emotional_arcs.md", "character_matrix.md",
+      "chapter_summaries.md", "episode_summaries.md", "subplot_board.md", "emotional_arcs.md", "character_matrix.md",
     ];
     await Promise.all(
       files.map(async (f) => {
@@ -599,12 +664,13 @@ export class StateManager {
   async isCompleteBookDirectory(bookDir: string): Promise<boolean> {
     // Phase 5 cleanup: prefer outline/* paths, fall back to legacy flat files
     // so older books on disk still resolve as complete.
+    const isEpisodeProject = await this.isEpisodeProjectDir(bookDir);
     const requiredSingle = [
       join(bookDir, "book.json"),
       join(bookDir, "story", "book_rules.md"),
       join(bookDir, "story", "current_state.md"),
       join(bookDir, "story", "pending_hooks.md"),
-      join(bookDir, "chapters", "index.json"),
+      join(bookDir, isEpisodeProject ? "episodes" : "chapters", "index.json"),
     ];
 
     const eitherOr: Array<ReadonlyArray<string>> = [
@@ -651,7 +717,7 @@ export class StateManager {
 
     const files = [
       "current_state.md", "particle_ledger.md", "pending_hooks.md",
-      "chapter_summaries.md", "subplot_board.md", "emotional_arcs.md", "character_matrix.md",
+      "chapter_summaries.md", "episode_summaries.md", "subplot_board.md", "emotional_arcs.md", "character_matrix.md",
     ];
     try {
       // current_state.md and pending_hooks.md are required;
@@ -753,6 +819,23 @@ export class StateManager {
       // chapters directory missing
     }
 
+    // Screenplay projections are first-class artifacts and must roll back with
+    // the internal chapter reducer so a failed episode cannot remain exportable.
+    const episodesDir = join(bookDir, "episodes");
+    try {
+      const files = await readdir(episodesDir);
+      for (const file of files) {
+        const match = file.match(/^(\d+)_.*\.(?:md|json)$/);
+        if (!match) continue;
+        const num = parseInt(match[1]!, 10);
+        if (num > targetChapter) {
+          await unlink(join(episodesDir, file)).catch(() => {});
+        }
+      }
+    } catch {
+      // episodes directory missing
+    }
+
     // Delete snapshots for discarded chapters
     const snapshotsDir = join(bookDir, "story", "snapshots");
     try {
@@ -772,7 +855,7 @@ export class StateManager {
     try {
       const runtimeFiles = await readdir(runtimeDir);
       for (const file of runtimeFiles) {
-        const match = file.match(/^chapter-(\d+)\./);
+        const match = file.match(/^(?:chapter|episode)-(\d+)\./);
         if (!match) continue;
         const num = parseInt(match[1]!, 10);
         if (num > targetChapter) {

@@ -1,4 +1,4 @@
-import { deriveBookIdFromTitle, normalizePlatformOrOther, defaultChapterLength, type Platform } from "@actalk/inkos-core";
+import { deriveBookIdFromTitle, normalizePlatformOrOther, type Platform } from "@actalk/inkos-core";
 export { waitForStudioBookReady } from "../lib/book-ready.js";
 export type { StudioBookDetail, WaitForStudioBookReadyOptions } from "../lib/book-ready.js";
 
@@ -7,8 +7,8 @@ export interface StudioCreateBookBody {
   readonly genre: string;
   readonly language?: string;
   readonly platform?: string;
-  readonly chapterWordCount?: number;
-  readonly targetChapters?: number;
+  readonly targetEpisodes?: number;
+  readonly episodeDurationSeconds?: number;
   readonly blurb?: string;
 }
 
@@ -18,8 +18,10 @@ export interface StudioBookConfigDraft {
   readonly platform: Platform;
   readonly genre: string;
   readonly status: "outlining";
-  readonly targetChapters: number;
-  readonly chapterWordCount: number;
+  readonly schemaVersion: "inkos-episode-v2";
+  readonly format: "screenplay";
+  readonly targetEpisodes: number;
+  readonly episodeDurationSeconds: number;
   readonly language?: "zh" | "en";
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -30,14 +32,17 @@ export function normalizeStudioPlatform(platform?: string): Platform {
 }
 
 export function buildStudioBookConfig(body: StudioCreateBookBody, now: string): StudioBookConfigDraft {
+  const targetEpisodes = body.targetEpisodes ?? 100;
   return {
     id: deriveBookIdFromTitle(body.title) || `book-${Date.now().toString(36)}`,
     title: body.title,
     platform: normalizeStudioPlatform(body.platform),
     genre: body.genre,
     status: "outlining",
-    targetChapters: body.targetChapters ?? 200,
-    chapterWordCount: body.chapterWordCount ?? defaultChapterLength(body.language === "en" ? "en" : "zh"),
+    schemaVersion: "inkos-episode-v2",
+    format: "screenplay",
+    targetEpisodes,
+    episodeDurationSeconds: body.episodeDurationSeconds ?? 90,
     ...(body.language === "en"
       ? { language: "en" as const }
       : body.language === "zh"

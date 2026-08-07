@@ -288,11 +288,23 @@ describe("executeChapterMutation", () => {
     const result = await executeCoreMutation({ state }, {
       kind: "update-book-config",
       bookId,
-      updates: { chapterWordCount: 2600, targetChapters: 30, language: "en" },
+      updates: {
+        chapterWordCount: 2600,
+        targetChapters: 30,
+        targetEpisodes: 30,
+        episodeDurationSeconds: 95,
+        language: "en",
+      },
     });
 
     expect(result.previous).toMatchObject({ chapterWordCount: 2000, targetChapters: 20, language: "zh" });
-    expect(result.book).toMatchObject({ chapterWordCount: 2600, targetChapters: 30, language: "en" });
+    expect(result.book).toMatchObject({
+      chapterWordCount: 2600,
+      targetChapters: 30,
+      targetEpisodes: 30,
+      episodeDurationSeconds: 95,
+      language: "en",
+    });
     expect(result.book.updatedAt).not.toBe(result.previous.updatedAt);
     expect(acquireLock).toHaveBeenCalledWith(bookId);
     await expect(state.loadBookConfig(bookId)).resolves.toEqual(result.book);

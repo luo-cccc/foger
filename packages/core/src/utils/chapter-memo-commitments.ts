@@ -130,9 +130,33 @@ function findForbiddenActionEvidence(
   language: "zh" | "en",
 ): string | undefined {
   const core = prohibitedCore(directive);
+  const normalizedContent = normalizeText(content);
+  const requiresPhysicalVictoryEvidence = /(?:无武器|武力打赢|打斗升级|肢体冲突|靠武力|without\s+(?:a\s+)?weapon|win\s+by\s+force|fight(?:ing)?\s+escalation)/iu.test(core);
+  if (/(?:晚于|之后|先于|之前).{0,16}(?:我接受|接受)|(?:我接受|接受).{0,12}(?:前|后)/u.test(core)
+    || /(?:after|before|later than|earlier than).{0,20}\b(?:i accept|accept)\b/i.test(core)) {
+    const acceptanceIndex = language === "zh"
+      ? normalizedContent.indexOf(normalizeText("我接受"))
+      : normalizedContent.search(/\bI\s+accept\b/i);
+    const locationPattern = language === "zh"
+      ? /(?:B闸|第三排|铁窗|具体位置)/u
+      : /\b(?:location|gate|third row|iron window)\b/i;
+    const locationMatch = normalizedContent.match(locationPattern);
+    const locationIndex = locationMatch?.index ?? -1;
+    const requiresAfterAcceptance = /(?:晚于|之后|(?:我接受|接受).{0,12}前|later than|after|before.{0,20}\b(?:i accept|accept)\b)/iu.test(core);
+    if (acceptanceIndex >= 0 && locationIndex >= 0 && requiresAfterAcceptance && locationIndex > acceptanceIndex) {
+      return undefined;
+    }
+  }
   const quoted = [...core.matchAll(/[“"']([^”"'\n]{2,80})[”"']/g)].map((match) => match[1]!);
   const terms = extractSensitiveConcepts(core, language);
   for (const clause of splitClauses(content)) {
+    if (requiresConcreteTimeEvidence(core, language) && !hasConcreteTimeEvidence(clause, language)) {
+      continue;
+    }
+    if (requiresPhysicalVictoryEvidence
+      && !/(?:打|踢|击|挥|搏斗|制服|摔|撞|掐|刺|砸|拳|脚|倒地|fight|punch|kick|hit|strike|wrestle|tackle|subdue|knock)/iu.test(clause)) {
+      continue;
+    }
     for (const phrase of quoted) {
       if (normalizeText(clause).includes(normalizeText(phrase)) && !isNegatedNear(clause, phrase, language)) {
         return clause.trim();
@@ -147,6 +171,22 @@ function findForbiddenActionEvidence(
     if (positiveMatches.length >= required) return clause.trim();
   }
   return undefined;
+}
+
+function requiresConcreteTimeEvidence(text: string, language: "zh" | "en"): boolean {
+  return language === "en"
+    ? /\b(?:specific|exact|precise)\s+(?:explosion\s+)?time\b/i.test(text)
+    : /(?:具体|准确|确切)时间|爆炸.{0,3}(?:具体|准确|确切)时间/u.test(text);
+}
+
+function hasConcreteTimeEvidence(text: string, language: "zh" | "en"): boolean {
+  if (/\b\d{1,2}:\d{2}\b/u.test(text)) return true;
+  if (language === "en") {
+    return /\b(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)\b/i.test(text)
+      || /\b(?:midnight|noon|tomorrow\s+(?:morning|afternoon|evening|night))\b/i.test(text);
+  }
+  return /(?:凌晨|早上|上午|中午|下午|傍晚|晚上|午夜|零点).{0,5}(?:\d{1,2}|[一二三四五六七八九十两零〇]{2,3})(?:点|时)/u.test(text)
+    || /(?:\d{1,2}|[一二三四五六七八九十两零〇]{2,3})(?:点|时)(?:整|半|\d{1,2}分)?/u.test(text);
 }
 
 function extractEvidenceTerms(text: string, language: "zh" | "en"): string[] {

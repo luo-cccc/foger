@@ -2,19 +2,45 @@ import type { GenreProfile } from "../models/genre-profile.js";
 import type { LengthCountingMode } from "../models/length-governance.js";
 import type { WriteChapterOutput } from "./writer.js";
 import { countChapterLength } from "../utils/length-metrics.js";
+import {
+  parseEpisodeScriptOutput,
+  renderEpisodeScriptMarkdown,
+  type EpisodeScript,
+  measureEpisodeScript,
+} from "../models/episode-script.js";
 
 export interface CreativeOutput {
   readonly title: string;
   readonly content: string;
   readonly wordCount: number;
   readonly preWriteCheck: string;
+  readonly episodeScript?: EpisodeScript;
+  readonly episodeScriptMetrics?: ReturnType<typeof measureEpisodeScript>;
 }
 
 export function parseCreativeOutput(
   chapterNumber: number,
   content: string,
   countingMode: LengthCountingMode = "zh_chars",
+  targetDurationSeconds = 90,
 ): CreativeOutput {
+  const structured = tryParseEpisodeScript(content, chapterNumber);
+  if (structured) {
+    const script = structured.script;
+    const metrics = measureEpisodeScript(script, targetDurationSeconds);
+    return {
+      title: script.title,
+      content: renderEpisodeScriptMarkdown(script),
+      // Keep the historical field populated for index compatibility, but use
+      // spoken/narrated characters as the screenplay content measure rather
+      // than counting Markdown formatting and shot metadata as prose words.
+      wordCount: metrics.spokenCharacters + metrics.narrationCharacters,
+      preWriteCheck: extractTag(content, "PRE_WRITE_CHECK"),
+      episodeScript: script,
+      episodeScriptMetrics: metrics,
+    };
+  }
+
   const extract = (tag: string): string => {
     const regex = new RegExp(
       `=== ${tag} ===\\s*([\\s\\S]*?)(?==== [A-Z_]+ ===|$)`,
@@ -43,6 +69,28 @@ export function parseCreativeOutput(
     wordCount: countChapterLength(chapterContent, countingMode),
     preWriteCheck: extract("PRE_WRITE_CHECK"),
   };
+}
+
+function extractTag(content: string, tag: string): string {
+  const regex = new RegExp(
+    `=== ${tag} ===\\s*([\\s\\S]*?)(?==== [A-Z_]+ ===|$)`,
+  );
+  return content.match(regex)?.[1]?.trim() ?? "";
+}
+
+function tryParseEpisodeScript(
+  content: string,
+  chapterNumber: number,
+): { readonly script: EpisodeScript } | undefined {
+  const hasStructuredMarker = /===\s*EPISODE_SCRIPT_JSON\s*===/i.test(content);
+  const hasJsonFence = /```json\s*\{/i.test(content);
+  const hasEmbeddedJson = /<!--\s*inkos-episode-script-json/i.test(content);
+  if (!hasStructuredMarker && !hasJsonFence && !hasEmbeddedJson) return undefined;
+  try {
+    return { script: parseEpisodeScriptOutput(content, chapterNumber) };
+  } catch (error) {
+    throw new Error(`漫剧分镜稿解析失败：${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 /**

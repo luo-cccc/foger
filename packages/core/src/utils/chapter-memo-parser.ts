@@ -28,10 +28,40 @@ export class PlannerParseError extends Error {
 interface RequiredSection {
   readonly zh: string;
   readonly en: string;
+  readonly aliases?: ReadonlyArray<string>;
   readonly minContentChars: number;
 }
 
 const REQUIRED_SECTIONS: ReadonlyArray<RequiredSection> = [
+  { zh: "## 当前任务", en: "## Current task", minContentChars: 20 },
+  { zh: "## 本集爽点", en: "## Episode payoff", minContentChars: 10 },
+  { zh: "## 进入状态", en: "## Incoming state", minContentChars: 20 },
+  { zh: "## 当前目标", en: "## Episode objective", minContentChars: 20 },
+  { zh: "## 反对力量", en: "## Opposition", minContentChars: 20 },
+  { zh: "## 因果升级", en: "## Causal escalation", minContentChars: 20 },
+  { zh: "## 关系压力", en: "## Relationship pressure", minContentChars: 10 },
+  { zh: "## 方向性转折", en: "## Directional turn", minContentChars: 10 },
+  { zh: "## 反转铺垫", en: "## Reversal setup", minContentChars: 10 },
+  { zh: "## 本集反转", en: "## Episode reversal", minContentChars: 10 },
+  { zh: "## 反转后果", en: "## Reversal consequence", minContentChars: 10 },
+  { zh: "## 当集兑现", en: "## Local dramatic result", minContentChars: 20 },
+  { zh: "## 出去压力", en: "## Outgoing pressure", minContentChars: 20 },
+  { zh: "## 结尾交接状态", en: "## Handoff state", minContentChars: 20 },
+  { zh: "## 信息权限", en: "## Information permissions", minContentChars: 20 },
+  { zh: "## 情绪钩子", en: "## Emotional hook", minContentChars: 10 },
+  { zh: "## 结尾状态", en: "## End state", minContentChars: 10 },
+  {
+    zh: "## 本集 Hook ledger",
+    en: "## Hook ledger for this episode",
+    aliases: ["## 本章 hook 账", "## Hook ledger for this chapter"],
+    minContentChars: 20,
+  },
+  { zh: "## 不要做", en: "## Do not", minContentChars: 1 },
+];
+
+// Internal chapter aliases remain readable for persisted plans created before
+// the episode contract switch. New Planner output never uses this shape.
+const LEGACY_REQUIRED_SECTIONS: ReadonlyArray<RequiredSection> = [
   { zh: "## 当前任务", en: "## Current task", minContentChars: 20 },
   { zh: "## 读者此刻在等什么", en: "## What the reader is waiting for right now", minContentChars: 20 },
   { zh: "## 该兑现的 / 暂不掀的", en: "## To pay off / to keep buried", minContentChars: 20 },
@@ -43,15 +73,43 @@ const REQUIRED_SECTIONS: ReadonlyArray<RequiredSection> = [
   { zh: "## 不要做", en: "## Do not", minContentChars: 1 },
 ];
 
-const GOAL_HEADINGS = ["## 本章目标", "## Chapter goal"] as const;
+function isLegacyMemoBody(body: string): boolean {
+  return body.includes("## 读者此刻在等什么")
+    || body.includes("## What the reader is waiting for right now")
+    || body.includes("## 关键抉择过三连问")
+    || body.includes("## Three-question check on the key choice");
+}
+
+const GOAL_HEADINGS = ["## 本集目标", "## Episode goal", "## 本章目标", "## Chapter goal"] as const;
 const THREAD_HEADINGS = ["## 关联线索", "## Thread refs", "## Related threads"] as const;
 const VOLUME_KR_HEADINGS = ["## 卷级 KR 绑定", "## Volume KR binding"] as const;
+const PAYOFF_HEADINGS = ["## 本集爽点", "## Episode payoff", "## 本章爽点"] as const;
+const RELATIONSHIP_PRESSURE_HEADINGS = ["## 关系压力", "## Relationship pressure"] as const;
+const REVERSAL_SETUP_HEADINGS = ["## 反转铺垫", "## Reversal setup"] as const;
+const REVERSAL_TURN_HEADINGS = ["## 本集反转", "## Episode reversal", "## Reversal turn"] as const;
+const REVERSAL_CONSEQUENCE_HEADINGS = ["## 反转后果", "## Reversal consequence"] as const;
+const EMOTIONAL_HOOK_HEADINGS = ["## 情绪钩子", "## Emotional hook"] as const;
+const END_STATE_HEADINGS = ["## 结尾状态", "## End state"] as const;
+const INCOMING_STATE_HEADINGS = ["## 进入状态", "## Incoming state"] as const;
+const OBJECTIVE_HEADINGS = ["## 当前目标", "## Episode objective"] as const;
+const OPPOSITION_HEADINGS = ["## 反对力量", "## Opposition"] as const;
+const CAUSAL_ESCALATION_HEADINGS = ["## 因果升级", "## Causal escalation"] as const;
+const TURN_HEADINGS = ["## 方向性转折", "## Directional turn"] as const;
+const LOCAL_RESULT_HEADINGS = ["## 当集兑现", "## Local dramatic result"] as const;
+const OUTGOING_PRESSURE_HEADINGS = ["## 出去压力", "## Outgoing pressure"] as const;
+const HANDOFF_STATE_HEADINGS = ["## 结尾交接状态", "## Handoff state"] as const;
+const INFORMATION_PERMISSION_HEADINGS = ["## 信息权限", "## Information permissions"] as const;
 const KNOWN_ZH_HEADINGS = [
   ...GOAL_HEADINGS.filter((heading) => /[\u4e00-\u9fff]/u.test(heading)),
   ...THREAD_HEADINGS.filter((heading) => /[\u4e00-\u9fff]/u.test(heading)),
   ...VOLUME_KR_HEADINGS.filter((heading) => /[\u4e00-\u9fff]/u.test(heading)),
-  ...REQUIRED_SECTIONS.map((section) => section.zh),
+  ...REQUIRED_SECTIONS.flatMap((section) => [section.zh, ...(section.aliases ?? [])]),
+  ...LEGACY_REQUIRED_SECTIONS.flatMap((section) => [section.zh, ...(section.aliases ?? [])]),
 ];
+
+function requiredSectionHeadings(section: RequiredSection): ReadonlyArray<string> {
+  return [section.zh, section.en, ...(section.aliases ?? [])];
+}
 
 /**
  * Extract the content between `heading` and the next `## ...` heading (or
@@ -109,7 +167,7 @@ function dropLeadingProse(raw: string): string {
     ...GOAL_HEADINGS,
     ...THREAD_HEADINGS,
     ...VOLUME_KR_HEADINGS,
-    ...REQUIRED_SECTIONS.flatMap((section) => [section.zh, section.en]),
+    ...REQUIRED_SECTIONS.flatMap(requiredSectionHeadings),
   ];
   let first = -1;
   for (const marker of markers) {
@@ -186,7 +244,7 @@ function extractVolumeKrBinding(body: string): { refs: string[]; rationale: stri
 
 function extractMemoBody(markdown: string): string {
   const starts = REQUIRED_SECTIONS
-    .flatMap((section) => [section.zh, section.en])
+    .flatMap(requiredSectionHeadings)
     .map((heading) => markdown.indexOf(heading))
     .filter((index) => index >= 0);
   if (starts.length === 0) return markdown.trim();
@@ -200,7 +258,9 @@ function makeDisplayGoal(goal: string): string {
 
 function prependFullGoalIfNeeded(markdown: string, body: string, fullGoal: string, displayGoal: string): string {
   if (fullGoal === displayGoal) return body;
-  const heading = markdown.includes("## Chapter goal") ? "## Chapter goal" : "## 本章目标";
+  const heading = markdown.includes("## Episode goal") || markdown.includes("## Chapter goal")
+    ? "## Episode goal"
+    : "## 本集目标";
   return `${heading}\n${fullGoal}\n\n${body}`;
 }
 
@@ -228,16 +288,35 @@ export function parseMemo(
   const markdown = dropLeadingProse(normalizeKnownMemoHeadings(stripWrappingFence(raw)));
   const goal = extractGoal(markdown);
   const body = extractMemoBody(markdown);
+  const requiredSections = isLegacyMemoBody(body) ? LEGACY_REQUIRED_SECTIONS : REQUIRED_SECTIONS;
   const threadRefs = extractThreadRefs(markdown);
   const volumeKrBinding = extractVolumeKrBinding(markdown);
+  const optionalFields = {
+    payoff: extractAnyHeading(markdown, PAYOFF_HEADINGS) || undefined,
+    relationshipPressure: extractAnyHeading(markdown, RELATIONSHIP_PRESSURE_HEADINGS) || undefined,
+    reversalSetup: extractAnyHeading(markdown, REVERSAL_SETUP_HEADINGS) || undefined,
+    reversalTurn: extractAnyHeading(markdown, REVERSAL_TURN_HEADINGS) || undefined,
+    reversalConsequence: extractAnyHeading(markdown, REVERSAL_CONSEQUENCE_HEADINGS) || undefined,
+    emotionalHook: extractAnyHeading(markdown, EMOTIONAL_HOOK_HEADINGS) || undefined,
+    endState: extractAnyHeading(markdown, END_STATE_HEADINGS) || undefined,
+    incomingState: extractAnyHeading(markdown, INCOMING_STATE_HEADINGS) || undefined,
+    objective: extractAnyHeading(markdown, OBJECTIVE_HEADINGS) || undefined,
+    opposition: extractAnyHeading(markdown, OPPOSITION_HEADINGS) || undefined,
+    causalEscalation: extractAnyHeading(markdown, CAUSAL_ESCALATION_HEADINGS) || undefined,
+    turn: extractAnyHeading(markdown, TURN_HEADINGS) || undefined,
+    localDramaticResult: extractAnyHeading(markdown, LOCAL_RESULT_HEADINGS) || undefined,
+    outgoingPressure: extractAnyHeading(markdown, OUTGOING_PRESSURE_HEADINGS) || undefined,
+    handoffState: extractAnyHeading(markdown, HANDOFF_STATE_HEADINGS) || undefined,
+    informationPermissions: extractAnyHeading(markdown, INFORMATION_PERMISSION_HEADINGS) || undefined,
+  };
 
   if (goal.length === 0) {
     throw new PlannerParseError("goal must be a non-empty string");
   }
   const displayGoal = makeDisplayGoal(goal);
 
-  const missing = REQUIRED_SECTIONS.filter(
-    (section) => !body.includes(section.zh) && !body.includes(section.en),
+  const missing = requiredSections.filter(
+    (section) => !requiredSectionHeadings(section).some((heading) => body.includes(heading)),
   );
   if (missing.length > 0) {
     // Report by zh heading (canonical) so the LLM-feedback loop stays stable.
@@ -251,8 +330,8 @@ export function parseMemo(
   // "shell" memos to flow downstream. Threshold differs per section: most need
   // 20 chars (one short sentence) while "## 不要做" / "## Do not" allows 5
   // (e.g. "无", "N/A") since "no extra prohibitions" is a legitimate state.
-  const empty = REQUIRED_SECTIONS.filter((section) => {
-    const heading = body.includes(section.zh) ? section.zh : section.en;
+  const empty = requiredSections.filter((section) => {
+    const heading = requiredSectionHeadings(section).find((candidate) => body.includes(candidate)) ?? section.zh;
     const content = extractSectionContent(body, heading);
     return content.length < section.minContentChars;
   });
@@ -271,5 +350,6 @@ export function parseMemo(
     threadRefs,
     volumeKrRefs: volumeKrBinding.refs,
     volumeKrRationale: volumeKrBinding.rationale,
+    ...optionalFields,
   });
 }

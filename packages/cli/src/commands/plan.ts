@@ -3,13 +3,13 @@ import { executeCoreMutation, PipelineRunner, StateManager } from "@actalk/inkos
 import { buildPipelineConfig, findProjectRoot, loadConfig, log, logError, resolveBookId, resolveContext } from "../utils.js";
 
 export const planCommand = new Command("plan")
-  .description("Plan chapter input artifacts");
+  .description("Plan episode input artifacts");
 
 planCommand
-  .command("chapter")
-  .description("Generate chapter intent for the next chapter")
+  .command("episode")
+  .description("Generate episode intent for the next episode")
   .argument("[book-id]", "Book ID (auto-detected if only one book)")
-  .option("--context <text>", "Chapter steering guidance")
+  .option("--context <text>", "Episode steering guidance")
   .option("--context-file <path>", "Read guidance from file")
   .option("--json", "Output JSON")
   .option("-q, --quiet", "Suppress console output")
@@ -38,7 +38,7 @@ planCommand
       if (opts.json) {
         log(JSON.stringify(result, null, 2));
       } else {
-        log(`Planned chapter ${result.chapterNumber} for "${bookId}"`);
+        log(`Planned episode ${result.chapterNumber} for "${bookId}"`);
         log(`  Goal: ${result.goal}`);
         log(`  Intent: ${result.intentPath}`);
         if (result.conflicts.length > 0) {
@@ -52,7 +52,7 @@ planCommand
       if (opts.json) {
         log(JSON.stringify({ error: String(e) }));
       } else {
-        logError(`Failed to plan chapter: ${e}`);
+        logError(`Failed to plan episode: ${e}`);
       }
       process.exit(1);
     }

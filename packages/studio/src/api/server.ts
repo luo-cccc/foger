@@ -80,6 +80,8 @@ import {
   type RequestedIntent,
   type SessionKind,
   type AgentSessionAttachment,
+  EpisodePerformanceReportSchema,
+  type EpisodePerformanceReport,
 } from "@actalk/inkos-core";
 import { access, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
@@ -1095,6 +1097,44 @@ async function loadStudioBookListSummary(
   const book = await state.loadBookConfig(bookId);
   const nextChapter = await state.getNextChapterNumber(bookId);
   return { ...book, chaptersWritten: nextChapter - 1 };
+}
+
+async function loadStudioEpisodePerformance(bookDir: string): Promise<{
+  readonly byEpisode: ReadonlyMap<number, EpisodePerformanceReport>;
+  readonly aggregate?: {
+    readonly totalCalls: number;
+    readonly totalTokens: number;
+    readonly averageContextEstimatedTokens: number;
+    readonly cacheHits: number;
+    readonly cacheMisses: number;
+  };
+}> {
+  const runtimeDir = join(bookDir, "story", "runtime");
+  const files = (await readdir(runtimeDir).catch(() => [] as string[]))
+    .filter((file) => /^episode-\d{4}\.performance\.json$/u.test(file));
+  const reports = (await Promise.all(files.map(async (file) => {
+    try {
+      const raw = await readFile(join(runtimeDir, file), "utf8");
+      const parsed = EpisodePerformanceReportSchema.safeParse(JSON.parse(raw));
+      return parsed.success ? parsed.data : undefined;
+    } catch {
+      return undefined;
+    }
+  }))).filter((report): report is EpisodePerformanceReport => report !== undefined);
+  const byEpisode = new Map(reports.map((report) => [report.episode, report]));
+  if (reports.length === 0) return { byEpisode };
+  return {
+    byEpisode,
+    aggregate: {
+      totalCalls: reports.reduce((sum, report) => sum + Object.values(report.calls).reduce((a, b) => a + b, 0), 0),
+      totalTokens: reports.reduce((sum, report) => sum + report.totalTokens, 0),
+      averageContextEstimatedTokens: Math.round(
+        reports.reduce((sum, report) => sum + report.contextEstimatedTokens, 0) / reports.length,
+      ),
+      cacheHits: reports.reduce((sum, report) => sum + report.cacheHits, 0),
+      cacheMisses: reports.reduce((sum, report) => sum + report.cacheMisses, 0),
+    },
+  };
 }
 
 function isCustomServiceId(serviceId: string): boolean {
@@ -2168,9 +2208,18 @@ export function createStudioServer(
     const id = c.req.param("id");
     try {
       const book = await state.loadBookConfig(id);
-      const chapters = await state.loadChapterIndex(id);
-      const nextChapter = await state.getNextChapterNumber(id);
-      return c.json({ book, chapters, nextChapter });
+      const [episodeIndex, nextChapter, performance] = await Promise.all([
+        state.loadChapterIndex(id),
+        state.getNextChapterNumber(id),
+        loadStudioEpisodePerformance(state.bookDir(id)),
+      ]);
+      const chapters = episodeIndex.map((episode) => ({
+        ...episode,
+        ...(performance.byEpisode.get(episode.episodeNumber ?? episode.number)
+          ? { performanceReport: performance.byEpisode.get(episode.episodeNumber ?? episode.number) }
+          : {}),
+      }));
+      return c.json({ book, chapters, nextChapter, ...(performance.aggregate ? { seriesPerformance: performance.aggregate } : {}) });
     } catch {
       return c.json({ error: `Book "${id}" not found` }, 404);
     }
@@ -2202,8 +2251,8 @@ export function createStudioServer(
       genre: string;
       language?: string;
       platform?: string;
-      chapterWordCount?: number;
-      targetChapters?: number;
+      targetEpisodes?: number;
+      episodeDurationSeconds?: number;
       blurb?: string;
     }>();
 
@@ -2240,8 +2289,8 @@ export function createStudioServer(
         genre: body.genre,
         language: body.language === "en" ? "en" : body.language === "zh" ? "zh" : undefined,
         platform: body.platform,
-        chapterWordCount: body.chapterWordCount,
-        targetChapters: body.targetChapters,
+        targetEpisodes: body.targetEpisodes ?? 100,
+        episodeDurationSeconds: body.episodeDurationSeconds ?? 90,
         blurb: body.blurb,
       },
       tools,
@@ -2299,17 +2348,50 @@ export function createStudioServer(
     const id = c.req.param("id");
     const num = normalizePositiveIntegerParam(c.req.param("num"), "chapter number");
     const bookDir = state.bookDir(id);
-    const chaptersDir = join(bookDir, "chapters");
+    const book = await state.loadBookConfig(id).catch(() => undefined);
+    const chaptersDir = join(bookDir, book?.schemaVersion === "inkos-episode-v2" ? "episodes" : "chapters");
 
     try {
       const files = await readdir(chaptersDir);
       const paddedNum = String(num).padStart(4, "0");
-      const match = files.find((f) => f.startsWith(paddedNum) && f.endsWith(".md"));
+      const match = files.find((f) => f.startsWith(`${paddedNum}_`) && f.endsWith(".md"));
       if (!match) return c.json({ error: "Chapter not found" }, 404);
       const content = await readFile(join(chaptersDir, match), "utf-8");
       return c.json({ chapterNumber: num, filename: match, content });
     } catch {
       return c.json({ error: "Chapter not found" }, 404);
+    }
+  });
+
+  app.get("/api/v1/books/:id/episodes/:num", async (c) => {
+    const id = c.req.param("id");
+    const num = normalizePositiveIntegerParam(c.req.param("num"), "episode number");
+    const bookDir = state.bookDir(id);
+    const episodesDir = join(bookDir, "episodes");
+    try {
+      await state.loadEpisodeBookConfig(id);
+      const files = await readdir(episodesDir);
+      const paddedNum = String(num).padStart(4, "0");
+      const match = files.find((file) => file.startsWith(`${paddedNum}_`) && file.endsWith(".md"));
+      if (!match) return c.json({ error: "Episode not found" }, 404);
+      const content = await readFile(join(episodesDir, match), "utf8");
+      const performanceRaw = await readFile(
+        join(bookDir, "story", "runtime", `episode-${paddedNum}.performance.json`),
+        "utf8",
+      ).catch(() => "");
+      const performance = (() => {
+        try {
+          const parsed = performanceRaw
+            ? EpisodePerformanceReportSchema.safeParse(JSON.parse(performanceRaw))
+            : undefined;
+          return parsed?.success ? parsed.data : undefined;
+        } catch {
+          return undefined;
+        }
+      })();
+      return c.json({ episodeNumber: num, filename: match, content, ...(performance ? { performance } : {}) });
+    } catch {
+      return c.json({ error: "Episode not found" }, 404);
     }
   });
 
@@ -2337,6 +2419,31 @@ export function createStudioServer(
     } catch (e) {
       rethrowCoreMutationApiError(e);
       return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.put("/api/v1/books/:id/episodes/:num", async (c) => {
+    const id = c.req.param("id");
+    const num = normalizePositiveIntegerParam(c.req.param("num"), "episode number");
+    const { content } = await c.req.json<{ content: string }>();
+    try {
+      await state.loadEpisodeBookConfig(id);
+      const result = await executeCoreMutation({ state }, {
+        kind: "save-chapter",
+        bookId: id,
+        chapterNumber: num,
+        content,
+      });
+      broadcast("episode:edited", { bookId: id, episodeNumber: num });
+      return c.json({
+        ok: true,
+        episodeNumber: result.chapterNumber,
+        status: result.status,
+        warning: result.warning,
+      });
+    } catch (error) {
+      rethrowCoreMutationApiError(error);
+      return c.json({ error: String(error) }, 500);
     }
   });
 
@@ -2719,6 +2826,46 @@ export function createStudioServer(
     } catch (e) {
       rethrowCoreMutationApiError(e);
       return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.post("/api/v1/books/:id/episodes/:num/approve", async (c) => {
+    const id = c.req.param("id");
+    const num = normalizePositiveIntegerParam(c.req.param("num"), "episode number");
+    try {
+      await state.loadEpisodeBookConfig(id);
+      const result = await executeCoreMutation({ state }, {
+        kind: "approve",
+        bookId: id,
+        chapterNumber: num,
+      });
+      return c.json({ ok: true, episodeNumber: result.chapterNumber, status: result.status });
+    } catch (error) {
+      rethrowCoreMutationApiError(error);
+      return c.json({ error: String(error) }, 500);
+    }
+  });
+
+  app.post("/api/v1/books/:id/episodes/:num/reject", async (c) => {
+    const id = c.req.param("id");
+    const num = normalizePositiveIntegerParam(c.req.param("num"), "episode number");
+    try {
+      await state.loadEpisodeBookConfig(id);
+      const result = await executeCoreMutation({ state }, {
+        kind: "reject",
+        bookId: id,
+        chapterNumber: num,
+      });
+      return c.json({
+        ok: true,
+        episodeNumber: result.chapterNumber,
+        status: result.status,
+        rolledBackTo: result.keepSubsequent ? undefined : result.rolledBackTo,
+        discarded: result.discarded,
+      });
+    } catch (error) {
+      rethrowCoreMutationApiError(error);
+      return c.json({ error: String(error) }, 500);
     }
   });
 
@@ -4244,7 +4391,8 @@ export function createStudioServer(
 
     // Keep cheap request validation synchronous, but run the LLM-backed
     // revision through the same cancellable operation contract as rewrites.
-    const chaptersDir = join(bookDir, "chapters");
+    const book = await state.loadBookConfig(id).catch(() => undefined);
+    const chaptersDir = join(bookDir, book?.schemaVersion === "inkos-episode-v2" ? "episodes" : "chapters");
     const files = await readdir(chaptersDir);
     const paddedNum = String(chapterNum).padStart(4, "0");
     const match = files.find((f) => f.startsWith(paddedNum) && f.endsWith(".md"));
@@ -4531,7 +4679,8 @@ export function createStudioServer(
     const bookDir = state.bookDir(id);
 
     try {
-      const chaptersDir = join(bookDir, "chapters");
+      const book = await state.loadBookConfig(id);
+      const chaptersDir = join(bookDir, book.schemaVersion === "inkos-episode-v2" ? "episodes" : "chapters");
       const files = await readdir(chaptersDir);
       const paddedNum = String(chapterNum).padStart(4, "0");
       const match = files.find((f) => f.startsWith(paddedNum) && f.endsWith(".md"));
@@ -4597,6 +4746,8 @@ export function createStudioServer(
     const updates = await c.req.json<{
       chapterWordCount?: unknown;
       targetChapters?: unknown;
+      targetEpisodes?: unknown;
+      episodeDurationSeconds?: unknown;
       status?: unknown;
       language?: unknown;
     }>();
@@ -4681,7 +4832,8 @@ export function createStudioServer(
     const bookDir = state.bookDir(id);
 
     try {
-      const chaptersDir = join(bookDir, "chapters");
+      const book = await state.loadBookConfig(id);
+      const chaptersDir = join(bookDir, book.schemaVersion === "inkos-episode-v2" ? "episodes" : "chapters");
       const files = await readdir(chaptersDir);
       const mdFiles = files.filter((f) => f.endsWith(".md") && /^\d{4}/.test(f)).sort();
       const { analyzeAITells } = await import("@actalk/inkos-core");

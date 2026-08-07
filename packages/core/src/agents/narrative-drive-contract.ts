@@ -2,7 +2,7 @@ export type NarrativeDriveStage = "foundation" | "planner" | "writer" | "auditor
 
 /**
  * One reader-drive model, specialized by pipeline stage. The five factors are
- * coordinated across the book instead of being repeated as a chapter checklist.
+ * coordinated across the series instead of being repeated as an episode checklist.
  */
 export function buildNarrativeDriveContract(
   stage: NarrativeDriveStage,
@@ -30,23 +30,24 @@ function buildChineseContract(stage: NarrativeDriveStage): string {
   if (stage === "planner") {
     return `## 叙事驱动编排
 
-五项是跨章节组合，不是单章打卡。每章选择至少两项作为主驱动，其余项只在因果需要时承接；喘息章可以承接上章反转的代价，不得为了“高频”硬造新反转。
+五项是跨剧集组合，不是单集打卡。当前集只选择因果真正需要的主驱动；承接集可以兑现上一集反转的代价，不得为了“高频”硬造新反转。
 
-- 在“当前任务”中写清本书差异设定如何具体改变本章选择或代价，并指出谁与谁形成不能轻易退出的利益压力；确实没有同场关系冲突时，写清上一段关系压力如何继续约束行动。
-- 在“该兑现的 / 暂不掀的”中指定一个读者熟悉的欲望或压抑处于铺垫、部分兑现还是完整兑现，回报必须可观察，不写抽象的“获得成长”。
-- 在“章尾必须发生的改变”中指定由前文证据触发的信息、权力、关系或选择翻面，并留下具体的选择、代价、亏欠或关系余震。反转若在上一章已发生，本章就写后果，不重复翻桌。
+- 在“当前目标”和“关系压力”中写清差异设定如何改变本集选择或代价，以及谁与谁形成不能轻易退出的利益压力。
+- 在“当集兑现”中指定观众熟悉的欲望或压抑得到怎样的可观察结果，不写抽象的“获得成长”，也不把结果拖成“马上揭晓”。
+- 在“反转铺垫—本集反转—反转后果”中写清由已有证据触发的判断翻面；若翻面已在上一集发生，本集就写后果，不重复翻桌。
+- 在“出去压力”和“结尾交接状态”中写清本集结果如何启动下一股决定、危险或关系余震。
 - 禁止用巧合、临时新增规则、角色降智或故意藏住视角内已知信息制造反转；禁止用无关新敌人替代情绪钩子。`;
   }
 
   if (stage === "writer") {
     return `## 叙事驱动执行
 
-把 memo 已选的驱动力写成同一条因果链，不在正文里复述方法论，也不擅自增加新反转或新 hook。让本书的差异规则在角色选择和损失中显形，用读者熟悉的欲望承接理解成本；让关系压力通过交换、拒绝、试探、背叛或被迫合作落地。反转必须能回指前文证据，并真实改变后续行动；章尾钩住具体选择、代价或关系余震，而不是只把危险音量调大。喘息/后效章优先写上次翻面的损失与新常态，不为满足频率再翻一次。`;
+把 memo 已选的驱动力写成同一条因果链，不在剧本里复述方法论，也不擅自增加新反转或新 Hook。让差异规则在角色选择和损失中显形，让关系压力通过交换、拒绝、试探、背叛或被迫合作落地。反转必须能回指前置证据并改变后续行动；当集兑现必须先落地，再用出去压力交接下一集。承接/后效集优先写上次翻面的损失与新常态，不为满足频率再翻一次。`;
   }
 
   return `## 叙事驱动审计
 
-只按 chapter memo 和既有铺垫中实际承诺的驱动力审计，不要求每章机械集齐五项。检查差异设定是否改变了选择或代价、熟悉欲望是否得到计划程度的可观察反馈、关系压力是否来自双方真实利益、反转是否可回指证据并改变后续行动、章尾是否留下具体选择/代价/关系余震。memo 明确承诺却缺失时才可按结构问题报告；喘息/后效章已经写出上次反转的后果时，不因没有新反转扣分。巧合翻面、临时新增规则、角色降智、隐瞒视角内信息或无关强敌断章属于结构缺陷。`;
+只按 episode memo 和既有铺垫中实际承诺的驱动力审计，不要求每集机械集齐五项。检查差异设定是否改变选择或代价、熟悉欲望是否得到可观察的当集兑现、关系压力是否来自双方真实利益、反转是否可回指证据并产生后果、出去压力是否由本集结果启动、交接状态是否可供下一集继承。承接集已经写出上次反转的后果时，不因没有新反转扣分。巧合翻面、临时新增规则、角色降智、信息权限泄漏或无关强敌断集属于结构缺陷。`;
 }
 
 function buildEnglishContract(stage: NarrativeDriveStage): string {
@@ -67,11 +68,12 @@ Place premise and cost in story_frame; payoff and reversal cadence in volume_map
   if (stage === "planner") {
     return `## Narrative Drive Orchestration
 
-The five factors form a cross-chapter portfolio, not a chapter checklist. Choose at least two as primary drivers in each chapter and carry the others only when causally needed. A breather may carry the cost of the previous reversal; never manufacture another turn merely to appear frequent.
+The five factors form a cross-episode portfolio, not an episode checklist. Select only the drivers the current causal chain needs. A recovery episode may carry the cost of the previous reversal; never manufacture another turn merely to appear frequent.
 
-- In Current task, state how the book's premise difference changes this chapter's choice or cost, and name the parties trapped in real interest pressure. If no relationship clash is on stage, state how earlier relationship pressure constrains the action.
-- In To pay off / to keep buried, name one genre-familiar desire or pressure and whether this chapter plants, partly delivers, or fully delivers it. The feedback must be observable, not “the character grows.”
-- In Required end-of-chapter change, specify an evidence-driven revaluation of information, power, relationship, or choice, then leave a concrete choice, cost, debt, or aftershock. If the prior chapter already turned the board, write consequence instead of turning it again.
+- In Episode objective and Relationship pressure, state how the premise difference changes this episode's choice or cost and name the parties trapped in real interest pressure.
+- In Local dramatic result, deliver an observable result for a familiar desire or pressure; never replace payoff with “soon” or “to be revealed.”
+- In Reversal setup, Episode reversal, and Reversal consequence, specify the prior evidence, overturned belief, and resulting cost. If the prior episode already turned the board, write consequence instead of turning it again.
+- In Outgoing pressure and Handoff state, state how the delivered result starts the next decision, danger, or relationship aftershock.
 - Never manufacture a turn through coincidence, a newly invented rule, convenient stupidity, or withheld viewpoint knowledge. Never substitute an unrelated stronger enemy for an emotional hook.`;
   }
 

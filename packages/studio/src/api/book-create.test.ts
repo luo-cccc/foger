@@ -20,8 +20,8 @@ describe("buildStudioBookConfig", () => {
         genre: "xuanhuan",
         platform: "qidian",
         language: "zh",
-        chapterWordCount: 2500,
-        targetChapters: 120,
+        targetEpisodes: 80,
+        episodeDurationSeconds: 95,
       },
       "2026-03-30T00:00:00.000Z",
     );
@@ -31,9 +31,12 @@ describe("buildStudioBookConfig", () => {
       genre: "xuanhuan",
       platform: "qidian",
       language: "zh",
-      chapterWordCount: 2500,
-      targetChapters: 120,
+      format: "screenplay",
+      targetEpisodes: 80,
+      episodeDurationSeconds: 95,
     });
+    expect(config).not.toHaveProperty("targetChapters");
+    expect(config).not.toHaveProperty("chapterWordCount");
   });
 
   it("normalizes unsupported platform ids to other for storage", () => {

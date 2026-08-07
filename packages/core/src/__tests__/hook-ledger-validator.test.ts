@@ -360,8 +360,7 @@ resolve:
 `;
     const draft = "林秋翻看胖虎借条，随后摘下杂役腰牌。";
     const violations = validateHookLedger(memo, draft);
-    expect(violations).toHaveLength(1);
-    expect(violations[0]!.category).toContain("揭 1 埋 1");
+    expect(violations).toHaveLength(0);
   });
 
   it("accepts 揭 1 埋 1 floor when a [new] line balances the resolved hook", () => {

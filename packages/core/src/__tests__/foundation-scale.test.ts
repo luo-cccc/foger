@@ -42,6 +42,31 @@ describe("foundation scale contract", () => {
     ]);
   });
 
+  it("renders and validates episode-sized story arcs", () => {
+    const plan = buildFoundationScalePlan(100, { unit: "episodes" });
+    expect(plan.volumeCount).toBe(10);
+    const guidance = renderFoundationScaleGuidance(100, "zh", { unit: "episodes" });
+    expect(guidance).toContain("第1篇：第1-10集");
+    expect(guidance).toContain("第100集就是全剧终局");
+    expect(guidance).not.toContain("第100章就是全书终章");
+
+    const issues = validateFoundationVolumeScale([
+      "## 第1篇《夜港封锁》（第1-10集）",
+      "Objective: 主角夺回账本并解除封锁。",
+      "KR1: 找到账本。",
+      "KR2: 逼出内鬼。",
+      "KR3: 在第10集解除封锁并解决核心冲突。",
+      "Irreversible Event: 主角公开身份并失去匿名保护。",
+      "## 第2篇《终局清算》（第11-20集）",
+      "Objective: 主角完成最终清算。",
+      "KR1: 找到幕后账本。",
+      "KR2: 公开证据。",
+      "KR3: 在第20集完成清算并解决主线。",
+      "Irreversible Event: 主角与旧盟友完成关系结算。",
+    ].join("\n"), 20, { unit: "episodes" });
+    expect(issues).toEqual([]);
+  });
+
   it("rejects a five-volume outline for a five-chapter complete work", () => {
     const issues = validateFoundationVolumeScale([
       "全书共5卷。",

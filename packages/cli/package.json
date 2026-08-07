@@ -1,19 +1,19 @@
 {
   "name": "@actalk/inkos",
   "version": "1.6.3",
-  "description": "Story Creation AI Agent CLI for long-form novel writing and continuations.",
+  "description": "InkOS CLI for serialized vertical drama planning, writing, audit, and export.",
   "keywords": [
     "story-creation-ai-agent",
     "story-agent",
-    "ai-novel-writing",
-    "ai-writing-agent",
-    "novel-generator",
-    "long-form-fiction",
+    "ai-screenwriting",
+    "vertical-drama",
+    "episode-script",
+    "storyboard-script",
     "litrpg",
     "progression-fantasy",
     "ai-fiction",
     "creative-writing-ai",
-    "novel-writing-tool",
+    "screenwriting-tool",
     "ai-storytelling",
     "cli",
     "epub",
@@ -31,7 +31,7 @@
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Narcooo/inkos.git",
+    "url": "https://github.com/luo-cccc/foger.git",
     "directory": "packages/cli"
   },
   "scripts": {

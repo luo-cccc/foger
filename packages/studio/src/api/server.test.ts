@@ -3076,8 +3076,8 @@ describe("createStudioServer daemon lifecycle", () => {
         genre: "urban",
         platform: "qidian",
         language: "zh",
-        chapterWordCount: 2600,
-        targetChapters: 88,
+        episodeDurationSeconds: 95,
+        targetEpisodes: 88,
         blurb: "主角在旧城查账洗白，卷一先追账本。",
       }),
     });
@@ -3092,8 +3092,8 @@ describe("createStudioServer daemon lifecycle", () => {
         genre: "urban",
         language: "zh",
         platform: "qidian",
-        chapterWordCount: 2600,
-        targetChapters: 88,
+        episodeDurationSeconds: 95,
+        targetEpisodes: 88,
         blurb: "主角在旧城查账洗白，卷一先追账本。",
       },
     }));

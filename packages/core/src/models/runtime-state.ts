@@ -27,6 +27,7 @@ export type HookPayoffTiming = z.infer<typeof HookPayoffTimingSchema>;
 
 export const HookRecordSchema = z.object({
   hookId: z.string().min(1),
+  hookKind: z.enum(["plot", "emotion"]).optional(),
   startChapter: z.number().int().min(0),
   type: z.string().min(1),
   status: HookStatusSchema,
@@ -34,6 +35,10 @@ export const HookRecordSchema = z.object({
   expectedPayoff: z.string().default(""),
   payoffTiming: HookPayoffTimingSchema.optional(),
   notes: z.string().default(""),
+  audienceQuestion: z.string().optional(),
+  seedEpisode: z.number().int().min(1).optional(),
+  targetPayoffEpisode: z.number().int().min(1).optional(),
+  pressureSource: z.string().optional(),
   // Phase 7 — hook causality / promotion metadata.
   // All optional so hooks parsed from pre-Phase-7 markdown still validate
   // and so callers constructing HookRecord inline can omit them.
@@ -58,6 +63,7 @@ export type HooksState = z.infer<typeof HooksStateSchema>;
 
 export const ChapterSummaryRowSchema = z.object({
   chapter: z.number().int().min(1),
+  episodeNumber: z.number().int().min(1).optional(),
   title: z.string().min(1),
   characters: z.string().default(""),
   events: z.string().default(""),
@@ -65,9 +71,18 @@ export const ChapterSummaryRowSchema = z.object({
   hookActivity: z.string().default(""),
   mood: z.string().default(""),
   chapterType: z.string().default(""),
+  payoff: z.string().optional(),
+  reversal: z.string().optional(),
+  relationshipChange: z.string().optional(),
+  emotionalHook: z.string().optional(),
+  endingQuestion: z.string().optional(),
+  estimatedDurationSeconds: z.number().finite().nonnegative().optional(),
+  shotCount: z.number().int().min(0).optional(),
 });
 
 export type ChapterSummaryRow = z.infer<typeof ChapterSummaryRowSchema>;
+export const EpisodeSummaryRowSchema = ChapterSummaryRowSchema;
+export type EpisodeSummaryRow = ChapterSummaryRow;
 
 export const ChapterSummariesStateSchema = z.object({
   rows: z.array(ChapterSummaryRowSchema).default([]),

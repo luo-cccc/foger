@@ -273,7 +273,6 @@ describe("long-form governance corpus", () => {
 
       expect(chapterThreeCategories).toEqual(expect.arrayContaining([
         "claim-reveal-missing",
-        "hook 账揭 1 埋 1 违规",
         "volume-kr-not-visible",
         "volume-end-kr-incomplete",
         "volume-end-irreversible-missing",

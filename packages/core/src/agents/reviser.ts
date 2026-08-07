@@ -25,12 +25,14 @@ import { join } from "node:path";
 import { z } from "zod";
 import { estimateTextTokens } from "../llm/provider.js";
 import { resolvePromptCompactionTarget, truncatePromptBlock } from "../utils/prompt-budget.js";
+import { parseEpisodeScriptOutput, renderEpisodeScriptMarkdown } from "../models/episode-script.js";
 import {
   readStoryFrame,
   readVolumeMap,
   readCharacterContext,
   readCurrentStateWithFallback,
 } from "../utils/outline-paths.js";
+import type { EpisodeContextSnapshot } from "../pipeline/episode-context.js";
 
 export const ReviseModeSchema = z.enum(["auto", "polish", "rewrite", "rework", "anti-detect", "spot-fix"]);
 export type ReviseMode = z.infer<typeof ReviseModeSchema>;
@@ -132,6 +134,8 @@ export class ReviserAgent extends BaseAgent {
       contextPackage?: ContextPackage;
       ruleStack?: RuleStack;
       lengthSpec?: LengthSpec;
+      targetDurationSeconds?: number;
+      episodeContextSnapshot?: EpisodeContextSnapshot;
     },
   ): Promise<ReviseOutput> {
     const [diskCurrentState, ledger, hooks, styleGuideRaw, volumeOutline, storyBible, characterMatrix, chapterSummaries, parentCanon] = await Promise.all([
@@ -222,7 +226,17 @@ export class ReviserAgent extends BaseAgent {
       : characterMatrix;
 
     const systemPromptBase = mode === "auto"
-      ? this.buildAutoSystemPrompt({ langPrefix, gp, protagonistBlock, numericalRule, lengthGuardrail, resolvedLanguage, lengthSpec: options?.lengthSpec, autoOutputMode })
+      ? this.buildAutoSystemPrompt({
+          langPrefix,
+          gp,
+          protagonistBlock,
+          numericalRule,
+          lengthGuardrail,
+          resolvedLanguage,
+          lengthSpec: options?.lengthSpec,
+          targetDurationSeconds: options?.targetDurationSeconds ?? 90,
+          autoOutputMode,
+        })
       : this.buildLegacySystemPrompt({ langPrefix, gp, protagonistBlock, numericalRule, lengthGuardrail, mode, resolvedLanguage });
     const systemPrompt = await this.withPromptPackGuidance(systemPromptBase, "longform.reviser");
 
@@ -352,7 +366,7 @@ ${chapterContent}`;
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
       ],
-      { temperature: 0.3, stream: false, callPhase: "revise" },
+      { temperature: 0.3, stream: false, callPhase: "revise", maxTokens: 8192 },
     );
 
     const output = this.parseOutput(
@@ -399,9 +413,24 @@ ${chapterContent}`;
       revisedContent: string,
       applied: boolean,
       changeKind?: "patch" | "rewrite",
-    ): ReviseOutput => ({
-      revisedContent,
-      wordCount: revisedContent.length,
+    ): ReviseOutput => {
+      let normalizedContent = revisedContent;
+      if (applied && revisedContent.trim().startsWith("{")) {
+        try {
+          const script = parseEpisodeScriptOutput(revisedContent);
+          normalizedContent = renderEpisodeScriptMarkdown(script);
+        } catch (error) {
+          this.ctx.logger?.warn(
+            `[reviser] rejected invalid EpisodeScript candidate: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          normalizedContent = originalChapter;
+          applied = false;
+          changeKind = undefined;
+        }
+      }
+      return {
+      revisedContent: normalizedContent,
+      wordCount: normalizedContent.length,
       fixedIssues: applied ? fixedIssues : [],
       updatedState: extract("UPDATED_STATE") || "(状态卡未更新)",
       updatedLedger: gp.numericalSystem
@@ -409,7 +438,8 @@ ${chapterContent}`;
         : "",
       updatedHooks: extract("UPDATED_HOOKS") || "(伏笔池未更新)",
       ...(applied && changeKind ? { changeKind } : {}),
-    });
+      };
+    };
 
     // Auto mode: route by issue type — structural issues require REVISED_CONTENT,
     // local-only issues only accept PATCHES, mixed sets accept either.
@@ -484,9 +514,18 @@ ${chapterContent}`;
     lengthGuardrail: string;
     resolvedLanguage: "zh" | "en";
     lengthSpec?: LengthSpec;
+    targetDurationSeconds: number;
     autoOutputMode: AutoOutputMode;
   }): string {
-    const { langPrefix, gp, protagonistBlock, numericalRule, resolvedLanguage, lengthSpec, autoOutputMode } = params;
+    const {
+      langPrefix,
+      gp,
+      protagonistBlock,
+      numericalRule,
+      resolvedLanguage,
+      targetDurationSeconds,
+      autoOutputMode,
+    } = params;
     // lengthGuardrail intentionally not used in auto mode — length constraint is embedded in REVISED_CONTENT description
     const en = resolvedLanguage === "en";
     if (autoOutputMode === "patch-only") {
@@ -535,11 +574,11 @@ REPLACEMENT_TEXT:
     const ledgerSection = gp.numericalSystem
       ? (en ? "\n=== UPDATED_LEDGER ===\n(Full updated resource ledger)" : "\n=== UPDATED_LEDGER ===\n(更新后的完整资源账本)")
       : "";
-    const rewriteLengthConstraint = lengthSpec
-      ? (en
-          ? `\n  HARD CONSTRAINT: The revised chapter must stay within ${lengthSpec.softMin}-${lengthSpec.softMax} characters (target: ${lengthSpec.target}, ±25%). This is non-negotiable — do not exceed this range.`
-          : `\n  硬性约束：重写后的章节必须控制在 ${lengthSpec.softMin}-${lengthSpec.softMax} 字以内（目标 ${lengthSpec.target} 字，±25%）。这是不可突破的底线。`)
-      : "";
+    const softMin = Math.max(60, targetDurationSeconds - 15);
+    const softMax = Math.min(120, targetDurationSeconds + 15);
+    const rewriteLengthConstraint = en
+      ? `\n  HARD CONSTRAINT: Return a valid EpisodeScript JSON object with 1-3 scenes, 6-12 shots, target ${targetDurationSeconds} seconds, preferred ${softMin}-${softMax} seconds, and hard range 60-120 seconds.`
+      : `\n  硬性约束：返回合法的 EpisodeScript JSON 对象，包含 1-3 个场景、6-12 个镜头，目标 ${targetDurationSeconds} 秒，建议区间 ${softMin}-${softMax} 秒，硬区间 60-120 秒。`;
 
     const routingDirectiveEn = autoOutputMode === "rewrite-only"
       ? "\n\nROUTING: The reviewer's blocking issues are structural / semantic (character collapse, mainline drift, missing payoff, timeline break, unpaid hook, memo drift, etc.). You MUST output REVISED_CONTENT — do not emit PATCHES, they cannot fix this class of problem. If you cannot safely rewrite, say so in FIXED_ISSUES and leave REVISED_CONTENT empty."
@@ -549,7 +588,7 @@ REPLACEMENT_TEXT:
       : "";
 
     return en
-      ? `${langPrefix}You are a professional ${gp.name} web-fiction revision editor. Fix the chapter according to the review notes.${protagonistBlock}${routingDirectiveEn}
+      ? `${langPrefix}You are a professional ${gp.name} comic-drama screenplay revision editor. Fix the episode according to the review notes.${protagonistBlock}${routingDirectiveEn}
 
 PATCHES and REVISED_CONTENT serve different problems — choose by problem type, not preference:
 
@@ -569,6 +608,8 @@ Revision principles:
 5. Emotion through action (never "he felt angry" — show it). Values through behavior, not slogans
 6. Different characters speak differently. No "everyone gasped in unison"
 7. Escalate: bad things stack, each worse than the last
+8. For EpisodeScript JSON, fix only the findings named above. Preserve the incoming state, objective, reversal identity, local dramatic result, outgoing pressure, handoff state and information permissions unless that exact field is the finding's owner.
+9. Never replace a local payoff with a withholding question. Every repaired contract claim must remain traceable to a visible or audible shot.
 
 Cycle-aware revision:
 - If this chapter should be "aftermath" but is still escalating tension, rewrite the densest conflict passage into a change-showing passage — who lost what, whose attitude shifted, what the new normal is
@@ -590,14 +631,14 @@ REPLACEMENT_TEXT:
 --- END PATCH ---
 
 === REVISED_CONTENT ===
-(Full revised chapter content — only when PATCHES cannot solve the problem. Omit this section if using PATCHES)
+(A complete raw EpisodeScript JSON object. Do not wrap it in Markdown fences. Omit this section if using PATCHES)
 
 === UPDATED_STATE ===
 (Full updated state card)
 ${ledgerSection}
 === UPDATED_HOOKS ===
 (Full updated hooks board)`
-      : `${langPrefix}你是一位专业的${gp.name}网络小说修稿编辑。你的任务是根据审稿意见对章节进行修正。${protagonistBlock}${routingDirectiveZh}
+      : `${langPrefix}你是一位专业的${gp.name}漫剧分镜修稿编辑。你的任务是根据审稿意见修正整集分镜。${protagonistBlock}${routingDirectiveZh}
 
 PATCHES 和 REVISED_CONTENT 分别处理不同类型的问题——按问题类型选择，不是按偏好：
 
@@ -617,6 +658,8 @@ REVISED_CONTENT——处理全章级问题（字数压缩、结构重组、节�
 5. 情绪用动作外化（不写"他感到愤怒"，写动作）。价值观通过行为传达
 6. 不同角色说话方式必须不同。禁止"众人齐声惊呼"
 7. 坏事叠坏事，每层比上一层过分
+8. 对 EpisodeScript JSON 只修复上方列出的 finding。除非 finding 明确负责该字段，否则保留进入状态、目标、反转身份、当集兑现、出去压力、交接状态和信息权限。
+9. 不得把当集兑现改回等待揭示；修复后的每个 contract 声明仍必须能在可见或可听镜头中找到证据。
 
 小目标周期修稿指引：
 - 如果本章应该是"后效"阶段但仍在加压，把最密集的冲突段落改写为展示改变的段落——谁失去了什么、谁的态度变了、新的常态是什么
@@ -638,7 +681,7 @@ REPLACEMENT_TEXT:
 --- END PATCH ---
 
 === REVISED_CONTENT ===
-(修正后的完整正文——用于字数/结构/节奏等全章级问题。仅局部问题时省略此区块)
+(完整的 EpisodeScript JSON 对象，不要使用 Markdown 代码围栏。仅局部问题时省略此区块)
 
 === UPDATED_STATE ===
 (更新后的完整状态卡)

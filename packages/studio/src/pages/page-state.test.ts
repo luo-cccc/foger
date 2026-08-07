@@ -6,7 +6,7 @@ import {
   buildCreationDraftSummary,
   canCreateFromDraft,
   defaultBookCreateForm,
-  defaultChapterWordsForLanguage,
+  defaultEpisodeDurationForLanguage,
   ensureBookCreateSessionId,
   isBookCreateFormReady,
   platformOptionsForLanguage,
@@ -27,10 +27,10 @@ describe("pickValidValue", () => {
   });
 });
 
-describe("defaultChapterWordsForLanguage", () => {
-  it("uses 3000 for chinese projects and 2000 for english projects", () => {
-    expect(defaultChapterWordsForLanguage("zh")).toBe("3000");
-    expect(defaultChapterWordsForLanguage("en")).toBe("2000");
+describe("defaultEpisodeDurationForLanguage", () => {
+  it("uses a 90-second target for chinese and english projects", () => {
+    expect(defaultEpisodeDurationForLanguage("zh")).toBe("90");
+    expect(defaultEpisodeDurationForLanguage("en")).toBe("90");
   });
 });
 
@@ -48,8 +48,8 @@ describe("book create form", () => {
       title: "",
       genre: "",
       platform: "tomato",
-      targetChapters: "200",
-      chapterWordCount: "3000",
+      targetEpisodes: "100",
+      episodeDurationSeconds: "90",
       brief: "",
     });
   });
@@ -65,7 +65,7 @@ describe("book create form", () => {
     expect(isBookCreateFormReady(ready)).toBe(true);
     expect(isBookCreateFormReady({ ...ready, title: "" })).toBe(false);
     expect(isBookCreateFormReady({ ...ready, brief: " " })).toBe(false);
-    expect(isBookCreateFormReady({ ...ready, targetChapters: "0" })).toBe(false);
+    expect(isBookCreateFormReady({ ...ready, targetEpisodes: "0" })).toBe(false);
   });
 
   it("builds a direct create payload without dropping the story brief", () => {
@@ -73,16 +73,16 @@ describe("book create form", () => {
       title: " 夜港账本 ",
       genre: " 都市悬疑 ",
       platform: "qidian",
-      targetChapters: "120",
-      chapterWordCount: "2600",
+      targetEpisodes: "80",
+      episodeDurationSeconds: "95",
       brief: " 主角查账洗白，旧案回潮。 ",
     }, "zh")).toEqual({
       title: "夜港账本",
       genre: "都市悬疑",
       platform: "qidian",
       language: "zh",
-      targetChapters: 120,
-      chapterWordCount: 2600,
+      targetEpisodes: 80,
+      episodeDurationSeconds: 95,
       blurb: "主角查账洗白，旧案回潮。",
     });
   });

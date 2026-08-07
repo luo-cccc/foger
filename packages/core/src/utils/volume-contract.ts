@@ -681,7 +681,7 @@ function isChapterInContract(chapter: number, contract: VolumeContract): boolean
 }
 
 function isVolumeEndChapter(contract: VolumeContract, chapterNumber: number): boolean {
-  // Fire the volume-end gate only on the planned last chapter. Chapters are
+  // Fire the volume-end gate only on the planned last episode. Internal chapter
   // written sequentially, so `=== chapterEnd` hits exactly once per volume.
   // Using `>=` here re-fired the full volume-end critical suite on every chapter
   // past the planned end (e.g. when writing overruns the outline and
@@ -902,9 +902,9 @@ function findNextContentLine(lines: ReadonlyArray<string>, start: number): strin
 
 function parseChapterRange(text: string): { start: number; end: number } | null {
   const patterns = [
-    /(?:Chapters?|Ch\.?)\s*(\d+)\s*[-~–—]\s*(\d+)/i,
-    /第\s*(\d+)\s*[-~–—至到]\s*(\d+)\s*章/u,
-    /章节范围\s*[：:]\s*(\d+)\s*[-~–—至到]\s*(\d+)\s*章?/u,
+    /(?:(?:Chapters?|Episodes?)|Ch\.?)\s*(\d+)\s*[-~–—]\s*(\d+)/i,
+    /第\s*(\d+)\s*[-~–—至到]\s*(\d+)\s*(?:章|集)/u,
+    /(?:章节|集数)范围\s*[：:]\s*(\d+)\s*[-~–—至到]\s*(\d+)\s*(?:章|集)?/u,
   ];
   for (const pattern of patterns) {
     const match = text.match(pattern);
@@ -919,13 +919,13 @@ function parseChapterRange(text: string): { start: number; end: number } | null 
 }
 
 function isVolumeHeading(heading: string): boolean {
-  return /^(第[一二三四五六七八九十百千万零〇\d]+\s*卷|Volume\s+\d+|Vol\.\s*\d+|\d+_Volume)/i.test(heading.trim());
+  return /^(第[一二三四五六七八九十百千万零〇\d]+\s*(?:卷|篇)|(?:Volume|Arc)\s+\d+|Vol\.\s*\d+|\d+_(?:Volume|Arc))/i.test(heading.trim());
 }
 
 function parseVolumeNumber(text: string): number | null {
-  const arabic = text.match(/(?:Volume|Vol\.?|第|^)\s*(\d+)/i)?.[1];
+  const arabic = text.match(/(?:Volume|Arc|Vol\.?|第|^)\s*(\d+)/i)?.[1];
   if (arabic) return Number(arabic);
-  const chinese = text.match(/第\s*([一二三四五六七八九十百千万零〇]+)\s*卷/u)?.[1];
+  const chinese = text.match(/第\s*([一二三四五六七八九十百千万零〇]+)\s*(?:卷|篇)/u)?.[1];
   return chinese ? parseChineseNumber(chinese) : null;
 }
 
@@ -954,8 +954,8 @@ function parseChineseNumber(value: string): number | null {
 
 function cleanTitle(heading: string, volumeNumber: number): string {
   const cleaned = heading
-    .replace(/^第[一二三四五六七八九十百千万零〇\d]+\s*卷\s*/u, "")
-    .replace(/^Volume\s+\d+\s*[:：.-]?\s*/i, "")
+    .replace(/^第[一二三四五六七八九十百千万零〇\d]+\s*(?:卷|篇)\s*/u, "")
+    .replace(/^(?:Volume|Arc)\s+\d+\s*[:：.-]?\s*/i, "")
     .replace(/^Vol\.\s*\d+\s*[:：.-]?\s*/i, "")
     .trim();
   return cleaned || `Volume ${volumeNumber}`;

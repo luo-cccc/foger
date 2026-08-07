@@ -1391,37 +1391,51 @@ describe("StateManager", () => {
       const bookDir = manager.bookDir(bookId);
       const storyDir = join(bookDir, "story");
       const chaptersDir = join(bookDir, "chapters");
+      const episodesDir = join(bookDir, "episodes");
       const runtimeDir = join(storyDir, "runtime");
       await mkdir(runtimeDir, { recursive: true });
       await mkdir(chaptersDir, { recursive: true });
+      await mkdir(episodesDir, { recursive: true });
 
       // Write initial state (chapter 0 baseline)
       await writeFile(join(storyDir, "current_state.md"), "# State\n\n- Initial state.\n", "utf-8");
       await writeFile(join(storyDir, "pending_hooks.md"), "# Hooks\n\n- hook-1\n", "utf-8");
       await writeFile(join(storyDir, "chapter_summaries.md"), "# Summaries\n", "utf-8");
+      await writeFile(join(storyDir, "episode_summaries.md"), "# Episode Summaries\n", "utf-8");
       await manager.snapshotState(bookId, 0);
 
       // Write chapter 1 state + file
       await writeFile(join(storyDir, "current_state.md"), "# State\n\n- After chapter 1.\n", "utf-8");
       await writeFile(join(storyDir, "pending_hooks.md"), "# Hooks\n\n- hook-1\n- hook-2\n", "utf-8");
       await writeFile(join(storyDir, "chapter_summaries.md"), "# Summaries\n\n| 1 | Title 1 |\n", "utf-8");
+      await writeFile(join(storyDir, "episode_summaries.md"), "# Episode Summaries\n\n| 1 | Title 1 |\n", "utf-8");
       await writeFile(join(chaptersDir, "0001_Title_One.md"), "# Chapter 1\n\nContent 1.", "utf-8");
+      await writeFile(join(episodesDir, "0001_Title_One.md"), "# Episode 1\n\nContent 1.", "utf-8");
+      await writeFile(join(episodesDir, "0001_Title_One.json"), "{}", "utf-8");
       await manager.snapshotState(bookId, 1);
 
       // Write chapter 2 state + file
       await writeFile(join(storyDir, "current_state.md"), "# State\n\n- After chapter 2.\n", "utf-8");
       await writeFile(join(storyDir, "pending_hooks.md"), "# Hooks\n\n- hook-1\n- hook-2\n- hook-3\n", "utf-8");
       await writeFile(join(storyDir, "chapter_summaries.md"), "# Summaries\n\n| 1 | Title 1 |\n| 2 | Title 2 |\n", "utf-8");
+      await writeFile(join(storyDir, "episode_summaries.md"), "# Episode Summaries\n\n| 1 | Title 1 |\n| 2 | Title 2 |\n", "utf-8");
       await writeFile(join(chaptersDir, "0002_Title_Two.md"), "# Chapter 2\n\nContent 2.", "utf-8");
+      await writeFile(join(episodesDir, "0002_Title_Two.md"), "# Episode 2\n\nContent 2.", "utf-8");
+      await writeFile(join(episodesDir, "0002_Title_Two.json"), "{}", "utf-8");
       await writeFile(join(runtimeDir, "chapter-002.intent.md"), "intent 2", "utf-8");
+      await writeFile(join(runtimeDir, "episode-0002.intent.md"), "intent 2", "utf-8");
       await manager.snapshotState(bookId, 2);
 
       // Write chapter 3 state + file
       await writeFile(join(storyDir, "current_state.md"), "# State\n\n- After chapter 3.\n", "utf-8");
       await writeFile(join(storyDir, "pending_hooks.md"), "# Hooks\n\n- hook-1\n- hook-2\n- hook-3\n- hook-4\n", "utf-8");
       await writeFile(join(storyDir, "chapter_summaries.md"), "# Summaries\n\n| 1 | Title 1 |\n| 2 | Title 2 |\n| 3 | Title 3 |\n", "utf-8");
+      await writeFile(join(storyDir, "episode_summaries.md"), "# Episode Summaries\n\n| 1 | Title 1 |\n| 2 | Title 2 |\n| 3 | Title 3 |\n", "utf-8");
       await writeFile(join(chaptersDir, "0003_Title_Three.md"), "# Chapter 3\n\nContent 3.", "utf-8");
+      await writeFile(join(episodesDir, "0003_Title_Three.md"), "# Episode 3\n\nContent 3.", "utf-8");
+      await writeFile(join(episodesDir, "0003_Title_Three.json"), "{}", "utf-8");
       await writeFile(join(runtimeDir, "chapter-003.intent.md"), "intent 3", "utf-8");
+      await writeFile(join(runtimeDir, "episode-0003.intent.md"), "intent 3", "utf-8");
       await writeFile(join(runtimeDir, "tier2_current_arc.md"), "stale current arc", "utf-8");
       await manager.snapshotState(bookId, 3);
 
@@ -1462,6 +1476,18 @@ describe("StateManager", () => {
       const { readdir: rd } = await import("node:fs/promises");
       const remaining = (await rd(chaptersDir)).filter((f) => f.endsWith(".md"));
       expect(remaining).toEqual(["0001_Title_One.md"]);
+
+      const remainingEpisodes = (await rd(join(bookDir, "episodes")))
+        .filter((file) => file.endsWith(".md") || file.endsWith(".json"))
+        .filter((file) => file !== "index.json")
+        .sort();
+      expect(remainingEpisodes).toEqual(["0001_Title_One.json", "0001_Title_One.md"]);
+
+      const episodeSummaries = await readFile(join(bookDir, "story", "episode_summaries.md"), "utf-8");
+      expect(episodeSummaries).toContain("| 1 | Title 1 |");
+      expect(episodeSummaries).not.toContain("| 2 | Title 2 |");
+
+      await expect(stat(join(bookDir, "story", "runtime", "episode-0002.intent.md"))).rejects.toThrow();
 
       // Snapshots for 2 and 3 should be deleted
       const snapshotsDir = join(bookDir, "story", "snapshots");

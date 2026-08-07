@@ -17,6 +17,8 @@ export const CreateBookActionPayloadSchema = z.object({
   platform: z.enum(["tomato", "qidian", "feilu", "other"]).optional(),
   language: z.enum(["zh", "en"]).optional(),
   targetChapters: z.number().int().min(1).optional(),
+  targetEpisodes: z.number().int().min(1).max(100).optional(),
+  episodeDurationSeconds: z.number().int().min(30).max(300).optional(),
   chapterWordCount: z.number().int().min(1).optional(),
 }).strict();
 

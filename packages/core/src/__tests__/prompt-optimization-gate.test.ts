@@ -83,28 +83,28 @@ describe("prompt optimization fixed-corpus gate", () => {
     expectCostReduction(zhNormal, BEFORE.writerZhNormal);
     expectCostReduction(enOpening, BEFORE.writerEnOpening);
 
-    expect(zhOpening).toContain("黄金三章写作纪律");
-    expect(zhOpening).toContain("Planner 负责决定“本章发生什么”");
-    expect(zhOpening).toContain("章尾改变");
+    expect(zhOpening).toContain("漫剧核心规则");
+    expect(zhOpening).toContain("Planner 负责决定“本集发生什么”");
+    expect(zhOpening).toContain("当集兑现");
     expect(zhOpening).toContain("Hook 执行");
-    expect(zhOpening).toContain("=== CHAPTER_CONTENT ===");
+    expect(zhOpening).toContain("=== EPISODE_SCRIPT_JSON ===");
     expect(zhOpening).not.toContain("黄金3章");
     expect(zhOpening).not.toContain("目标字数：3000");
 
     expect(enOpening).toContain("The planner owns plot decisions");
-    expect(enOpening).toContain("Required end change");
+    expect(enOpening).toContain("Local result and outgoing pressure");
     expect(enOpening).toContain("Hook execution");
-    expect(enOpening).toContain("Output only the three blocks above");
+    expect(enOpening).toContain("Output only PRE_WRITE_CHECK and EPISODE_SCRIPT_JSON");
     expect(enOpening).not.toContain("Real hook_id");
     expect(enOpening).not.toContain("Target length: 3000 words");
   });
 
-  it("keeps Planner responsible for decisions while Writer owns prose execution", () => {
-    expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("你不写正文");
-    expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("## 卷级 KR 绑定");
+  it("keeps Planner responsible for decisions while Writer owns screenplay execution", () => {
+    expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("你不写分镜正文");
+    expect(PLANNER_MEMO_SYSTEM_PROMPT).not.toContain("## 卷级 KR 绑定");
     expect(PLANNER_MEMO_SYSTEM_PROMPT).toContain("## 不要做");
-    expect(PLANNER_MEMO_SYSTEM_PROMPT_EN).toContain("You do NOT write prose");
-    expect(PLANNER_MEMO_SYSTEM_PROMPT_EN).toContain("## Volume KR binding");
+    expect(PLANNER_MEMO_SYSTEM_PROMPT_EN).toContain("You do NOT write screenplay content");
+    expect(PLANNER_MEMO_SYSTEM_PROMPT_EN).not.toContain("## Volume KR binding");
     expect(PLANNER_MEMO_SYSTEM_PROMPT_EN).toContain("## Do not");
   });
 
@@ -240,8 +240,8 @@ describe("prompt optimization fixed-corpus gate", () => {
       expect(occurrences(optimizedPrompt, marker), marker).toBe(1);
     }
     expect(optimizedPrompt).not.toContain("FULL_STATE_TABLE_DUPLICATE");
-    expect(optimizedPrompt).toContain(`Hard range: ${lengthSpec.hardMin}-${lengthSpec.hardMax} words`);
-    expect(optimizedPrompt).toContain("Output only PRE_WRITE_CHECK, CHAPTER_TITLE, and CHAPTER_CONTENT blocks");
+    expect(optimizedPrompt).toContain("Hard range: 60-120 seconds");
+    expect(optimizedPrompt).toContain("Output only PRE_WRITE_CHECK and EPISODE_SCRIPT_JSON");
 
     const legacyDuplicatedAssembly = [
       optimizedPrompt,

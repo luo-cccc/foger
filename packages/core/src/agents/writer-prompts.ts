@@ -26,27 +26,34 @@ export function buildWriterSystemPrompt(
 ): string {
   const isEnglish = (languageOverride ?? genreProfile.language) === "en";
   const governed = inputProfile === "governed";
+  const targetDurationSeconds = normalizeEpisodeDuration(book.episodeDurationSeconds);
+  // InkOS no longer has a novel-writing mode. Older in-memory fixtures may
+  // omit the persisted format field, but Writer still emits EpisodeScript.
+  const screenplay = true;
+  const isFinalEpisode = chapterNumber !== undefined
+    && chapterNumber === (book.targetEpisodes ?? book.targetChapters);
 
   const outputSection = isEnglish
     ? (mode === "creative"
-        ? buildEnglishCreativeOutputFormat(genreProfile)
-        : buildEnglishOutputFormat(genreProfile))
+        ? buildEnglishCreativeOutputFormat(genreProfile, targetDurationSeconds, isFinalEpisode)
+        : buildEnglishOutputFormat(genreProfile, targetDurationSeconds))
     : (mode === "creative"
-        ? buildCreativeOutputFormat(genreProfile)
-        : buildOutputFormat(genreProfile));
+        ? buildCreativeOutputFormat(genreProfile, targetDurationSeconds, isFinalEpisode)
+        : buildOutputFormat(genreProfile, targetDurationSeconds));
 
   const sections = isEnglish
     ? [
-        buildEnglishGenreIntro(book, genreProfile),
-        buildEnglishCoreRules(book),
+        screenplay ? buildEnglishScreenplayGenreIntro(book, genreProfile, targetDurationSeconds) : buildEnglishGenreIntro(book, genreProfile),
+        screenplay ? buildScreenplayCoreRules("en") : buildEnglishCoreRules(book),
         buildGovernedInputContract("en", governed),
         buildChapterMemoContract("en", governed),
         buildNarrativeDriveContract("writer", "en"),
-        buildWritingCraftCard("en"),
-        buildProseExecutionRules("en"),
-        buildCreativeConstitution("en"),
-        buildImmersionPillars("en"),
-        buildGoldenOpeningDiscipline(chapterNumber, "en"),
+        buildScreenplayExecutionRules("en", targetDurationSeconds),
+        screenplay ? "" : buildWritingCraftCard("en"),
+        screenplay ? "" : buildProseExecutionRules("en"),
+        screenplay ? "" : buildCreativeConstitution("en"),
+        screenplay ? "" : buildImmersionPillars("en"),
+        screenplay ? "" : buildGoldenOpeningDiscipline(chapterNumber, "en"),
         buildGenreRules(genreProfile, genreBody),
         buildProtagonistRules(bookRules),
         buildNarrativePersonRule(bookRules, isEnglish ? "en" : "zh"),
@@ -57,16 +64,17 @@ export function buildWriterSystemPrompt(
         outputSection,
       ]
     : [
-        buildGenreIntro(book, genreProfile),
-        buildCoreRules(),
+        buildGenreIntro(book, genreProfile, targetDurationSeconds),
+        screenplay ? buildScreenplayCoreRules("zh") : buildCoreRules(),
         buildGovernedInputContract("zh", governed),
         buildChapterMemoContract("zh", governed),
         buildNarrativeDriveContract("writer", "zh"),
-        buildWritingCraftCard("zh"),
-        buildProseExecutionRules("zh"),
-        buildCreativeConstitution("zh"),
-        buildImmersionPillars("zh"),
-        buildGoldenOpeningDiscipline(chapterNumber, "zh"),
+        buildScreenplayExecutionRules("zh", targetDurationSeconds),
+        screenplay ? "" : buildWritingCraftCard("zh"),
+        screenplay ? "" : buildProseExecutionRules("zh"),
+        screenplay ? "" : buildCreativeConstitution("zh"),
+        screenplay ? "" : buildImmersionPillars("zh"),
+        screenplay ? "" : buildGoldenOpeningDiscipline(chapterNumber, "zh"),
         bookRules?.enableFullCastTracking ? buildFullCastTracking() : "",
         buildGenreRules(genreProfile, genreBody),
         buildProtagonistRules(bookRules),
@@ -85,8 +93,54 @@ export function buildWriterSystemPrompt(
 // Genre intro
 // ---------------------------------------------------------------------------
 
-function buildGenreIntro(book: BookConfig, gp: GenreProfile): string {
-  return `你是一位专业的${gp.name}网络小说作家。你为${book.platform}平台写作。`;
+function normalizeEpisodeDuration(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 60 && value <= 120
+    ? value
+    : 90;
+}
+
+function buildGenreIntro(book: BookConfig, gp: GenreProfile, targetDurationSeconds: number): string {
+  return `你是一位专业的${gp.name}漫剧编剧。你为${book.platform}平台创作连续短剧，每集目标约 ${targetDurationSeconds} 秒。`;
+}
+
+function buildEnglishScreenplayGenreIntro(
+  book: BookConfig,
+  gp: GenreProfile,
+  targetDurationSeconds: number,
+): string {
+  return `You are a professional ${gp.name} comic-drama screenwriter creating a continuous episodic series for ${book.platform}. Each episode targets about ${targetDurationSeconds} seconds.`;
+}
+
+function buildScreenplayCoreRules(language: "zh" | "en"): string {
+  if (language === "en") {
+    return `## Screenplay core rules
+- Preserve established facts, character knowledge, locations, injuries, abilities, props, and world rules.
+- Make every shot producible: visible action, speakable dialogue, purposeful sound, or a necessary transition.
+- Convert inner thought into behavior, expression, dialogue, or concise narration.
+- Keep character voices distinct and every relationship change event-driven.
+- Do not add unplanned hooks or reversals merely to increase density.`;
+  }
+  return `## 漫剧核心规则
+- 严格延续已确认的人物知情范围、位置、伤势、能力、道具和世界规则。
+- 每个镜头都必须可制作：有可见动作、可说对白、有效音效或必要转场。
+- 心理活动必须外化为动作、表情、对白或精简旁白。
+- 角色口吻要可区分，关系变化必须由本集事件驱动。
+- 不得为了追求密度擅自新增计划外 Hook 或随机反转。`;
+}
+
+function buildScreenplayExecutionRules(language: "zh" | "en", targetDurationSeconds: number): string {
+  if (language === "en") {
+    return `## Screenplay execution contract
+- Write a production-oriented episodic screenplay, not novel prose.
+- Every beat must be visible or audible: shot, action, dialogue, narration, sound, or transition.
+- Each episode needs a concrete payoff, relationship pressure, a causally prepared reversal, and a specific emotional question at the end.
+- Keep the visual action and dialogue short enough for a roughly ${targetDurationSeconds}-second episode.`;
+  }
+  return `## 漫剧执行合同
+- 输出面向制作的连续漫剧分镜稿，不写小说正文。
+- 每个节拍必须能被看见或听见：镜头、动作、对白、旁白、音效或转场。
+- 每集必须有具体爽点、关系压力、有铺垫的反转，以及结尾明确的情绪问题。
+- 画面和对白要控制在约 ${targetDurationSeconds} 秒的可执行范围内。`;
 }
 
 function buildGovernedInputContract(language: "zh" | "en", governed: boolean): string {
@@ -95,66 +149,65 @@ function buildGovernedInputContract(language: "zh" | "en", governed: boolean): s
   if (language === "en") {
     return `## Input Governance Contract
 
-- Chapter-specific steering comes from the provided chapter intent and composed context package.
-- The outline is the default plan, not unconditional global supremacy.
-- When the runtime rule stack records an active L4 -> L3 override, follow the current task over local planning.
-- Keep hard guardrails compact: canon, continuity facts, and explicit prohibitions still win.
-- If an English Variance Brief is provided, obey it: avoid the listed phrase/opening/ending patterns and satisfy the scene obligation.
-- If Hook Debt Briefs are provided, they contain the ORIGINAL SEED TEXT from the chapter where each hook was planted. Use this text to write a continuation or payoff that feels connected to what the reader already saw — not a vague mention, but a scene that builds on the specific promise.
-- When the explicit hook agenda names an eligible resolve target, land a concrete payoff beat that answers the reader's original question from the seed chapter.
-- When stale debt is present, do not open sibling hooks casually; clear pressure from old promises before minting fresh debt.
-- In multi-character scenes, include at least one resistance-bearing exchange instead of reducing the beat to summary or explanation.`;
+- Episode decisions come from the compiled episode memo; selected context supplies evidence and cannot silently replace those decisions.
+- Canon, the previous handoff state, information permissions, and explicit prohibitions are authoritative.
+- Follow active rule-stack overrides only at the scope they name; do not use them to re-plan the episode.
+- Use only memo-approved open / advance / resolve / defer hook operations, each with a shot-level carrier.
+- Treat local result, outgoing pressure, emotional hook and end state as distinct deliverables.
+- If an English Variance Brief is provided, obey its episode-level scene obligation and avoid its listed phrase, opening, and ending patterns.
+- In multi-character scenes, include at least one resistance-bearing exchange that changes leverage, knowledge, or relationship pressure.
+- When facts conflict, stop rather than inventing an explanation, off-screen event, new rule, or surprise character.`;
   }
 
   return `## 输入治理契约
 
-- 本章具体写什么，以提供给你的 chapter intent 和 composed context package 为准。
-- 卷纲是默认规划，不是全局最高规则。
-- 当 runtime rule stack 明确记录了 L4 -> L3 的 active override 时，优先执行当前任务意图，再局部调整规划层。
-- 真正不能突破的只有硬护栏：世界设定、连续性事实、显式禁令。
-- 如果提供了 English Variance Brief，必须主动避开其中列出的高频短语、重复开头和重复结尾模式，并完成 scene obligation。
-- 如果提供了 Hook Debt 简报，里面包含每个伏笔种下时的**原始文本片段**。用这些原文来写延续或兑现场景——不是模糊地提一嘴，而是接着读者已经看到的具体承诺来写。
-- 如果显式 hook agenda 里出现了可回收目标，本章必须写出具体兑现片段，回答种子章节中读者的原始疑问。
-- 如果存在 stale debt，先消化旧承诺的压力，再决定是否开新坑；同类 sibling hook 不得随手再开。
-- 多角色场景里，至少给出一轮带阻力的直接交锋，不要把人物关系写成纯解释或纯总结。`;
+- 本集剧情决策来自已编译的 episode memo；已选上下文只提供事实证据，不能静默替换本集决策。
+- 正典、上一集交接状态、信息权限和显式禁令属于权威事实。
+- 规则栈覆盖只在声明范围内生效，不得借此重新规划整集。
+- 只执行 memo 允许的 open / advance / resolve / defer Hook 操作，每项都要有镜头证据。
+- 当集兑现、出去压力、情绪钩子和结尾状态是四个不同交付项，不能互相冒充。
+- 事实冲突时不得编造解释、画外事件、新规则或突然登场人物来补洞。`;
 }
 
 // ---------------------------------------------------------------------------
 // Chapter memo alignment — Planner owns decisions; Writer owns prose execution.
 // ---------------------------------------------------------------------------
 
-function buildChapterMemoContract(language: "zh" | "en", governed: boolean): string {
+function buildChapterMemoContract(
+  language: "zh" | "en",
+  governed: boolean,
+): string {
   if (!governed) return "";
 
   if (language === "en") {
     return `## Chapter Memo Alignment
 
-You will receive a structured chapter memo. The planner owns plot decisions; your job is to execute them as prose:
+You will receive a structured episode memo. The planner owns plot decisions; your job is to execute them as production-ready shots, actions, dialogue, sound, and transitions inside the required EpisodeScript JSON:
 
-- Current task: complete the named concrete action.
-- Reader expectation and payoff boundary: land only the promised degree of reveal; keep buried items hidden.
-- Transitional function and key choices: dramatize them instead of explaining the plan.
-- Required end change: make the specified information, relationship, physical, or power change visible.
-- Hook ledger: each advance/resolve id needs one locatable scene with an observable action, object, event, or exchange. Deferred entries need no prose; new entries only need a natural seed.
-- Volume KR binding: realize the specified movement on page without mentioning KR ids in prose.
-- Do not: obey every chapter prohibition.
+- Incoming state: carry knowledge, power, relationship, physical and active-action facts into the first scene.
+- Objective and opposition: execute the concrete goal against an opposing goal and leverage.
+- Causal escalation: realize visible choice, countermove, state change and next pressure.
+- Local result: land the episode payoff before its outgoing pressure.
+- Handoff and permissions: make relationship pressure, information boundaries and next-episode facts observable.
+- Hook ledger: each operation must land in a shot, action, dialogue, sound or state change; do not manufacture hooks for density.
+- Do not: obey every item in the memo's Do not section.
 
-Address each section in order when drafting the chapter. Every section must leave a visible trace in the prose — if a section is not reflected, the chapter is incomplete. **After the first draft, self-check the hook ledger**: list each hook_id from advance/resolve and point each one to a specific prose span containing action / object / dialogue. If you cannot point to one, go back and add it; do not submit a draft where the ledger lives in the memo but nowhere in the prose — review will flag the missing payoff and ask for a concrete scene.`;
+Before submission, verify that every contract field has a concrete trace in the EpisodeScript JSON.`;
   }
 
-  return `## 章节备忘对齐
+    return `## 剧集备忘对齐
 
-你将收到结构化 chapter memo。Planner 负责决定“本章发生什么”，你只负责把决策执行成正文：
+你将收到结构化 episode memo。Planner 负责决定“本集发生什么”，你只负责把决策执行成可制作的镜头、动作、对白、音效和转场，并严格写入 EpisodeScript JSON：
 
-- 当前任务：完成 memo 指定的具体动作。
-- 读者期待与兑现边界：只揭示计划允许的程度，明确压住暂不掀的底牌。
-- 过渡功能与关键选择：用场景演出，不复述规划说明。
-- 章尾改变：让指定的信息、关系、物理或权力变化在正文中可见。
-- Hook 账：每个 advance/resolve id 都要对应一个可定位场景，包含人物针对具体动作、物件、事件或信息的可观察反应；defer 不必落正文，open 只需自然种下。
-- 卷级 KR：写出计划指定的可见推进，但正文不得出现 KR 编号。
-- 不要做：逐条遵守本章禁令。
+- 进入状态：首场接住知识、权力、关系、物理和未完成动作。
+- 当前目标与反对力量：用双方目标和筹码发动现场冲突。
+- 因果升级：落实可见选择、反制、状态变化和下一压力。
+- 当集兑现：先交付本集结果，再启动出去压力。
+- 交接与权限：把关系压力、信息边界和下一集事实写进 contract。
+- Hook 账：每项操作必须落到镜头、动作、对白、音效或状态变化，不为密度凭空开坑。
+- 不要做：逐条遵守 memo 的禁令。
 
-写作时按段落顺序落实，每一段都要在正文里有对应的兑现痕迹。如果某一段没有体现到正文里，本章不算完成。**写完初稿后自检一遍 hook 账**：把 advance 和 resolve 的 hook_id 列下来，对照正文，确认每一个都能指到一段带具体动作/物件/对话的 prose。如果指不到，回去补写；不要提交"账本在 memo 里、正文里没落"的稿子——审稿会标记缺口并要求补出具体场景。`;
+提交前检查每个 contract 字段是否在 EpisodeScript JSON 中有具体落点。`;
 }
 
 // ---------------------------------------------------------------------------
@@ -561,17 +614,15 @@ function buildNarrativePersonRule(bookRules: BookRules | null, language: "zh" | 
  */
 function buildProseExecutionRules(language: "zh" | "en"): string {
   if (language === "en") {
-    return `## Prose execution (cross-theme failure modes)
-
-**Simile restraint.** Do not lean on "like / as if / as though" as a default device. At most one simile per scene, and only when it lights the image up better than plain rendering would. Priority is always: a precise verb > a concrete action or sensory detail > direct description > simile. Before reaching for "like…", check whether an exact verb or a concrete action would hit harder.
-
-**Play out the climax — never summarize it.** This chapter's high-density / high-stakes beats — a conflict erupting, life-or-death, a major turn, a reveal, an action climax — MUST be played out beat by beat (action, dialogue, the senses, pauses, pacing). Never compress them into "then he saved them, the police came, the antagonist was arrested." When a chapter packs several major events, expand the single most important one into a full scene; connective tissue may be compressed, but the key beat must never decay into a summary. The tighter the chapter, the harder this holds — if you are short on words, pack fewer events, do not render the climax as a synopsis.`;
+    return `## Screenplay execution
+- Stage the key beat as shots with visible action, dialogue and sound instead of narrative summary.
+- Keep each shot focused on one visual change and one dramatic action.
+- Use narration only when the information cannot be shown or spoken naturally.`;
   }
-  return `## 文笔执行（跨题材通病纠正）
-
-**明喻节制。** 不要把"像/仿佛/如同/像……一样"当默认修辞反复用。每个场景明喻最多 1 处，且只在它真能点亮画面、比直写更准时才用。优先级永远是：精确的动词 > 具体的动作或感官细节 > 直接描写 > 明喻。想写"像……"之前，先问一句：换成一个准确的动词或一个具体动作，是不是更狠。
-
-**高潮必须演出、不许概述。** 本章的高密度／高风险节拍——冲突爆发、生死、重大转折、真相揭露、动作高潮——必须一拍一拍现场演出（动作、对话、五感、停顿、节奏），绝不能用一两句"然后他救了人、警察来了、对手被捕"带过。当一章里挤了多个重大事件时，挑最关键的那一拍写成完整场景，次要的可压成过渡，但最关键那拍永远不许退化成总结。章节越紧凑越要守这条——字数不够就少塞事件，而不是把高潮写成梗概。`;
+  return `## 漫剧镜头执行
+- 关键节拍必须拆成镜头，用可见动作、对白和音效现场演出，不得用小说式总结带过。
+- 每个镜头只承担一个主要画面变化和一个戏剧动作。
+- 只有无法自然展示或说出的信息才使用旁白。`;
 }
 
 function buildProtagonistRules(bookRules: BookRules | null): string {
@@ -683,39 +734,107 @@ function buildPreWriteChecklist(book: BookConfig, gp: GenreProfile): string {
 // Creative-only output format (no settlement blocks)
 // ---------------------------------------------------------------------------
 
-function buildCreativeOutputFormat(gp: GenreProfile): string {
+function buildCreativeOutputFormat(
+  gp: GenreProfile,
+  targetDurationSeconds: number,
+  isFinalEpisode: boolean,
+): string {
   const resourceRow = gp.numericalSystem
     ? "| 当前资源总量 | X | 与账本一致 |\n| 本章预计增量 | +X（来源） | 无增量写+0 |"
+    : "";
+  const seriesResolutionField = isFinalEpisode
+    ? `  "seriesResolution": {
+    "mainConflict": "主线冲突如何得到结论",
+    "protagonistDesire": "主角核心欲望最终得到什么结论",
+    "characterArcs": [{ "character": "主要角色", "outcome": "角色弧线终点" }],
+    "relationships": [{ "parties": "关系双方", "outcome": "核心关系最终状态" }]
+  },
+`
+    : "";
+  const seriesResolutionRule = isFinalEpisode
+    ? "\n- 这是最终集：seriesResolution 必须明确记录主线冲突、主角核心欲望、主要角色弧线和核心关系的结论；不能只留下续集悬念。"
     : "";
 
   const preWriteTable = `=== PRE_WRITE_CHECK ===
 （简短输出，只确认正文执行所需的四项）
 | 检查项 | 本章记录 | 备注 |
 |--------|----------|------|
-| 当前任务 | 复述 chapter_memo 的「当前任务」并写出本章执行动作 | 必须具体，不能抽象 |
-| 章尾必须发生的改变 | 列出 memo「章尾必须发生的改变」中 1-3 条具体改变 | 必须落地 |
+| 当前目标 | 复述 memo「当前目标」并写出本集执行动作 | 必须具体，不能抽象 |
+| 当集兑现与出去压力 | 说明本集先兑现什么，以及由此启动的下一压力 | 必须落地 |
 | 不要做 | 复述 memo「不要做」清单 | 正文不得触碰 |
 ${resourceRow}| Hook 执行 | 列出 advance/resolve id 及对应场景，无则写 none | 不新增 memo 外 hook |`;
 
-  return `## 输出格式（严格遵守）
+  return `## 漫剧分镜输出格式（严格遵守）
 
 ${preWriteTable}
 
-=== CHAPTER_TITLE ===
-(章节标题，不含"第X章"。标题必须与已有章节标题不同，不要重复使用相同或相似的标题；若提供了 recent title history 或高频标题词，必须主动避开重复词根和高频意象)
+=== EPISODE_SCRIPT_JSON ===
+输出一个合法 JSON 对象，不要使用注释，不要在 JSON 内使用 Markdown。结构必须是：
+{
+  "episode": 本集数字,
+  "title": "本集标题",
+  "estimatedDurationSeconds": ${targetDurationSeconds},
+  "openingHook": "前 3-5 秒的视觉或关系钩子",
+  "reversal": "本集有铺垫、有后果的有效反转",
+  "emotionalHook": "观众在结尾最想追问的情绪问题",
+  "endState": "本集结束后不可逆的人物、关系、信息、权力或生存状态变化",
+${seriesResolutionField}  "contract": {
+    "incomingState": { "knowledge": [], "power": [], "relationship": [], "physical": [], "activeAction": [] },
+    "objective": { "character": "行动者", "desiredChange": "本集要改变什么", "whyNow": "为什么必须现在行动" },
+    "opposition": { "actorOrConstraint": "阻力方", "goal": "阻力方要什么", "leverage": "阻挡目标的筹码" },
+    "causalEscalation": [{
+      "becauseOf": "已经成立的事实或前序结果",
+      "choice": "人物采取的可见选择",
+      "countermove": "对手或环境的反制",
+      "stateChange": "信息、权力、关系、物理或风险变化",
+      "nextPressure": "该结果制造的下一股压力"
+    }],
+    "localDramaticResult": { "goalOutcome": "成功/失败/转向", "stateChange": "本集已兑现的状态变化", "costPaid": "为结果付出的代价" },
+    "outgoingPressure": { "startedDecisionDangerOrQuestion": "已经启动的决定、危险或问题", "whyItFollows": "为什么它由本集结果产生" },
+    "handoffState": { "knowledge": [], "power": [], "relationship": [], "physical": [], "activeAction": [] },
+    "informationPermissions": [{ "subject": "角色或事实", "audience": "观众已知范围", "known": [], "suspected": [], "mistaken": [], "unknown": [] }]
+  },
+  "scenes": [
+    {
+      "id": "S1",
+      "location": "地点",
+      "time": "时间/内外景",
+      "purpose": "这个场景的戏剧任务",
+      "shots": [
+        {
+          "id": "S1-01",
+          "shotSize": "景别",
+          "camera": "镜头运动或固定机位",
+          "durationSeconds": 8,
+          "visual": "可以直接看到的画面",
+          "action": "可选的角色动作",
+          "dialogue": [{ "speaker": "角色", "text": "对白", "delivery": "可选语气" }],
+          "narration": "可选旁白",
+          "sound": "可选音效",
+          "transition": "可选转场"
+        }
+      ]
+    }
+  ]
+}
 
-=== CHAPTER_CONTENT ===
-(正文内容；字数要求以 user prompt 的单一长度区块为准)
+硬性要求：
+- 1-3 个场景，合计 6-12 个镜头，总时长 ${Math.max(60, targetDurationSeconds - 15)}-${Math.min(120, targetDurationSeconds + 15)} 秒，目标 ${targetDurationSeconds} 秒。
+- 只写能够被看到或听到的内容；心理活动必须转成动作、表情、对白或旁白。
+- 每集必须兑现一个熟悉爽点，持续施压一组人物关系，并产生一次有因果链的反转。
+- contract 必须完整记录进入状态、目标、阻力、因果升级、当集兑现、出去压力、交接状态和信息权限。
+- 当集兑现必须先于出去压力；禁止用“马上揭晓”或单纯藏信息代替本集结果。
+- 结尾必须留下明确情绪问题，但不能让本集没有状态变化。
+- 不得输出小说散文，不得输出 JSON 之外的正文块。${seriesResolutionRule}
 
-【重要】本次只需输出以上三个区块（PRE_WRITE_CHECK、CHAPTER_TITLE、CHAPTER_CONTENT）。
-状态卡、伏笔池、摘要等追踪文件将由后续结算阶段处理，请勿输出。`;
+【重要】本次只输出 PRE_WRITE_CHECK 和 EPISODE_SCRIPT_JSON 两个区块。状态文件由后续结算阶段处理。`;
 }
 
 // ---------------------------------------------------------------------------
 // Output format
 // ---------------------------------------------------------------------------
 
-function buildOutputFormat(gp: GenreProfile): string {
+function buildOutputFormat(gp: GenreProfile, targetDurationSeconds: number): string {
   const resourceRow = gp.numericalSystem
     ? "| 当前资源总量 | X | 与账本一致 |\n| 本章预计增量 | +X（来源） | 无增量写+0 |"
     : "";
@@ -724,8 +843,8 @@ function buildOutputFormat(gp: GenreProfile): string {
 （简短输出，只确认正文执行所需的四项）
 | 检查项 | 本章记录 | 备注 |
 |--------|----------|------|
-| 当前任务 | 复述 chapter_memo 的「当前任务」并写出本章执行动作 | 必须具体，不能抽象 |
-| 章尾必须发生的改变 | 列出 memo「章尾必须发生的改变」中 1-3 条具体改变 | 必须落地 |
+| 当前目标 | 复述 memo「当前目标」并写出本集执行动作 | 必须具体，不能抽象 |
+| 当集兑现与出去压力 | 说明本集先兑现什么，以及由此启动的下一压力 | 必须落地 |
 | 不要做 | 复述 memo「不要做」清单 | 正文不得触碰 |
 ${resourceRow}| Hook 执行 | 列出 advance/resolve id 及对应场景，无则写 none | 不新增 memo 外 hook |`;
 
@@ -811,8 +930,8 @@ function buildEnglishPreWriteTable(gp: GenreProfile): string {
 (Keep it short. Confirm only the four items needed to execute the prose.)
 | Check | This chapter | Note |
 |-------|--------------|------|
-| Current task | Restate the chapter_memo "Current task" and the concrete action this chapter takes | Be specific, not abstract |
-| Required end-of-chapter change | 1-3 concrete changes from the memo's end-of-chapter change | Must land on the page |
+| Episode objective | Restate the memo "Episode objective" and the concrete action this episode takes | Be specific, not abstract |
+| Local result and outgoing pressure | State the result landed here and the pressure it starts | Must land on the page |
 | Do not | Restate the memo "Do not" list | The prose must not touch these |
 ${resourceRow}| Hook execution | advance/resolve ids and their scene; write none if absent | Do not invent hooks outside the memo |`;
 }
@@ -825,17 +944,86 @@ function buildEnglishContentBlocks(): string {
 (Chapter prose. Follow the single length block in the user prompt.)`;
 }
 
-function buildEnglishCreativeOutputFormat(gp: GenreProfile): string {
-  return `## Output Format (follow strictly)
+function buildEnglishCreativeOutputFormat(
+  gp: GenreProfile,
+  targetDurationSeconds: number,
+  isFinalEpisode: boolean,
+): string {
+  const seriesResolutionField = isFinalEpisode
+    ? `  "seriesResolution": {
+    "mainConflict": "How the main conflict is concluded",
+    "protagonistDesire": "The final outcome of the protagonist's core desire",
+    "characterArcs": [{ "character": "Major character", "outcome": "Arc endpoint" }],
+    "relationships": [{ "parties": "Core relationship parties", "outcome": "Final relationship state" }]
+  },
+`
+    : "";
+  const seriesResolutionRule = isFinalEpisode
+    ? "\n- This is the finale: seriesResolution must explicitly conclude the main conflict, protagonist desire, major character arcs, and core relationships. A sequel hook cannot replace an ending."
+    : "";
+  return `## Comic-drama screenplay output format (follow strictly)
 
 ${buildEnglishPreWriteTable(gp)}
 
-${buildEnglishContentBlocks()}
-
-[Important] Output only the three blocks above (PRE_WRITE_CHECK, CHAPTER_TITLE, CHAPTER_CONTENT). State cards, hook pool, and summaries are handled by the later settlement stage; do not output them.`;
+=== EPISODE_SCRIPT_JSON ===
+Return one valid JSON object with this exact shape and no comments or Markdown inside the JSON:
+{
+  "episode": 1,
+  "title": "Episode title",
+  "estimatedDurationSeconds": ${targetDurationSeconds},
+  "openingHook": "Visible or relational hook in the first 3-5 seconds",
+  "reversal": "A prepared reversal and its consequence",
+  "emotionalHook": "The concrete audience question at the ending?",
+  "endState": "Observable irreversible change in relationship, information, power, or survival",
+${seriesResolutionField}  "contract": {
+    "incomingState": { "knowledge": [], "power": [], "relationship": [], "physical": [], "activeAction": [] },
+    "objective": { "character": "Actor", "desiredChange": "What must change", "whyNow": "Why action is required now" },
+    "opposition": { "actorOrConstraint": "Opposition", "goal": "Opposition goal", "leverage": "Blocking leverage" },
+    "causalEscalation": [{
+      "becauseOf": "Established fact or prior result",
+      "choice": "Visible choice",
+      "countermove": "Opposition countermove",
+      "stateChange": "Information, power, relationship, physical or risk change",
+      "nextPressure": "Pressure created by this result"
+    }],
+    "localDramaticResult": { "goalOutcome": "Success, failure or redirection", "stateChange": "Delivered state change", "costPaid": "Cost paid" },
+    "outgoingPressure": { "startedDecisionDangerOrQuestion": "Started decision, danger or question", "whyItFollows": "Why it follows from the result" },
+    "handoffState": { "knowledge": [], "power": [], "relationship": [], "physical": [], "activeAction": [] },
+    "informationPermissions": [{ "subject": "Character or fact", "audience": "Audience permission", "known": [], "suspected": [], "mistaken": [], "unknown": [] }]
+  },
+  "scenes": [{
+    "id": "S1",
+    "location": "Location",
+    "time": "Time / interior or exterior",
+    "purpose": "Dramatic purpose",
+    "shots": [{
+      "id": "S1-01",
+      "shotSize": "Shot size",
+      "camera": "Camera position or movement",
+      "durationSeconds": 8,
+      "visual": "Directly visible image",
+      "action": "Optional action",
+      "dialogue": [{ "speaker": "Character", "text": "Line", "delivery": "Optional delivery" }],
+      "narration": "Optional narration",
+      "sound": "Optional sound",
+      "transition": "Optional transition"
+    }]
+  }]
 }
 
-function buildEnglishOutputFormat(gp: GenreProfile): string {
+Hard requirements:
+- 1-3 scenes and 6-12 shots in total; target ${targetDurationSeconds} seconds, preferred ${Math.max(60, targetDurationSeconds - 15)}-${Math.min(120, targetDurationSeconds + 15)} seconds.
+- Everything must be visible or audible. Convert internal thought into action, expression, dialogue, or concise narration.
+- Deliver one familiar payoff, pressure one relationship, and land one causally prepared reversal with consequences.
+- contract must record incoming state, objective, opposition, causal escalation, local result, outgoing pressure, handoff state and information permissions.
+- Land the local result before outgoing pressure; withholding information is not an episode payoff.
+- End on a concrete emotional audience question after changing the story state.
+- Do not output novel prose or any additional content block.${seriesResolutionRule}
+
+[Important] Output only PRE_WRITE_CHECK and EPISODE_SCRIPT_JSON. Settlement is handled in a later stage.`;
+}
+
+function buildEnglishOutputFormat(gp: GenreProfile, targetDurationSeconds: number): string {
   const postSettlement = gp.numericalSystem
     ? `=== POST_SETTLEMENT ===
 (If any numerical change occurred, output a Markdown table.)

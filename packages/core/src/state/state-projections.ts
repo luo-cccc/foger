@@ -97,19 +97,36 @@ export function renderChapterSummariesProjection(
   language: "zh" | "en" = "zh",
 ): string {
   const title = language === "en" ? "# Chapter Summaries" : "# 章节摘要";
+  const hasEpisodeFields = state.rows.some((summary) => (
+    summary.payoff !== undefined
+    || summary.reversal !== undefined
+    || summary.relationshipChange !== undefined
+    || summary.emotionalHook !== undefined
+    || summary.endingQuestion !== undefined
+    || summary.estimatedDurationSeconds !== undefined
+    || summary.shotCount !== undefined
+  ));
   const headers = language === "en"
-    ? [
+    ? hasEpisodeFields ? [
+      "| Chapter | Title | Characters | Key Events | State Changes | Hook Activity | Mood | Chapter Type | Payoff | Reversal | Relationship Change | Emotional Hook | Ending Question | Duration (s) | Shots |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ] : [
       "| Chapter | Title | Characters | Key Events | State Changes | Hook Activity | Mood | Chapter Type |",
       "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     : [
-      "| 章节 | 标题 | 出场人物 | 关键事件 | 状态变化 | 伏笔动态 | 情绪基调 | 章节类型 |",
-      "| --- | --- | --- | --- | --- | --- | --- | --- |",
+      ...(hasEpisodeFields ? [
+        "| 章节 | 标题 | 出场人物 | 关键事件 | 状态变化 | 伏笔动态 | 情绪基调 | 章节类型 | 爽点 | 反转 | 关系变化 | 情绪钩子 | 结尾问题 | 时长（秒） | 镜头数 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      ] : [
+        "| 章节 | 标题 | 出场人物 | 关键事件 | 状态变化 | 伏笔动态 | 情绪基调 | 章节类型 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+      ]),
     ];
 
   const rows = [...state.rows]
     .sort((left, right) => left.chapter - right.chapter)
-    .map((summary) => `| ${
+    .map((summary) => `| ${(
       [
         summary.chapter,
         summary.title,
@@ -119,8 +136,17 @@ export function renderChapterSummariesProjection(
         summary.hookActivity,
         summary.mood,
         summary.chapterType,
+        ...(hasEpisodeFields ? [
+          summary.payoff ?? "",
+          summary.reversal ?? "",
+          summary.relationshipChange ?? "",
+          summary.emotionalHook ?? "",
+          summary.endingQuestion ?? "",
+          summary.estimatedDurationSeconds ?? "",
+          summary.shotCount ?? "",
+        ] : []),
       ].map(escapeTableCell).join(" | ")
-    } |`);
+    )} |`);
 
   return [title, "", ...headers, ...rows, ""].join("\n");
 }

@@ -97,9 +97,11 @@ describe("WriterAgent", () => {
       externalContext: "本章标题：雨夜账本\n必须围绕账本失窃后的当面对质展开。",
     });
 
-    expect(prompt).toContain("本章用户指令");
+    expect(prompt).toContain("本集用户指令");
     expect(prompt).toContain("本章标题：雨夜账本");
     expect(prompt).toContain("当面对质");
+    expect(prompt).toContain("目标时长：约 90 秒");
+    expect(prompt).not.toContain("NaN");
   });
 
   it("caps oversized legacy truth files in creative prompts", () => {
@@ -1276,7 +1278,7 @@ describe("WriterAgent", () => {
         "阶段 2b：把观察结果回写到真相文件",
       ]));
       const messages = chatSpy.mock.calls[0]?.[0] as ReadonlyArray<{ content: string }> | undefined;
-      expect(messages?.[0]?.content ?? "").toContain("你是一位专业的玄幻网络小说作家");
+      expect(messages?.[0]?.content ?? "").toContain("你是一位专业的玄幻漫剧编剧");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

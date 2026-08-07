@@ -1,6 +1,6 @@
 /** Shared TypeScript contracts for Studio API/UI communication. */
 
-import type { BookConfig, ChapterMeta } from "@actalk/inkos-core";
+import type { BookConfig, EpisodeMeta, EpisodePerformanceReport } from "@actalk/inkos-core";
 
 // --- Health ---
 
@@ -33,15 +33,22 @@ export interface BookListResponse {
 
 export interface BookDetailResponse {
   readonly book: BookDetail;
-  readonly chapters: ReadonlyArray<ChapterMeta>;
+  readonly chapters: ReadonlyArray<EpisodeMeta & { readonly performanceReport?: EpisodePerformanceReport }>;
   readonly nextChapter: number;
+  readonly seriesPerformance?: {
+    readonly totalCalls: number;
+    readonly totalTokens: number;
+    readonly averageContextEstimatedTokens: number;
+    readonly cacheHits: number;
+    readonly cacheMisses: number;
+  };
 }
 
 // --- Chapters ---
 
-export type ChapterSummary = ChapterMeta;
+export type ChapterSummary = EpisodeMeta;
 
-export type ChapterDetail = ChapterMeta & {
+export type ChapterDetail = EpisodeMeta & {
   readonly content: string;
 };
 

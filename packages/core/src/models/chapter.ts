@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { LengthTelemetrySchema } from "./length-governance.js";
+import { EpisodeScriptMetricsSchema } from "./episode-script.js";
 
 export const ChapterStatusSchema = z.enum([
   "card-generated",
@@ -64,6 +65,7 @@ export type ChapterRecoveryState = z.infer<typeof ChapterRecoveryStateSchema>;
 
 export const ChapterMetaSchema = z.object({
   number: z.number().int().min(1),
+  episodeNumber: z.number().int().min(1).optional(),
   title: z.string(),
   status: ChapterStatusSchema,
   wordCount: z.number().int().default(0),
@@ -76,6 +78,7 @@ export const ChapterMetaSchema = z.object({
   detectionProvider: z.string().optional(),
   detectedAt: z.string().datetime().optional(),
   lengthTelemetry: LengthTelemetrySchema.optional(),
+  episodeScriptMetrics: EpisodeScriptMetricsSchema.optional(),
   tokenUsage: z.object({
     promptTokens: z.number().int().default(0),
     completionTokens: z.number().int().default(0),
@@ -87,3 +90,11 @@ export const ChapterMetaSchema = z.object({
 });
 
 export type ChapterMeta = z.infer<typeof ChapterMetaSchema>;
+
+// Public screenplay vocabulary. The persistence engine still uses the
+// chapter-shaped internal reducer while callers can work entirely in episode
+// terms during the schema transition.
+export const EpisodeStatusSchema = ChapterStatusSchema;
+export type EpisodeStatus = ChapterStatus;
+export const EpisodeMetaSchema = ChapterMetaSchema;
+export type EpisodeMeta = ChapterMeta;

@@ -329,8 +329,11 @@ export function BookDetail({
     setSavingSettings(true);
     try {
       const body: Record<string, unknown> = {};
-      if (settingsWordCount !== null) body.chapterWordCount = settingsWordCount;
-      if (settingsTargetChapters !== null) body.targetChapters = settingsTargetChapters;
+      if (settingsWordCount !== null) body.episodeDurationSeconds = settingsWordCount;
+      if (settingsTargetChapters !== null) {
+        body.targetEpisodes = settingsTargetChapters;
+        body.targetChapters = settingsTargetChapters;
+      }
       if (settingsStatus !== null) body.status = settingsStatus;
       await fetchJson(`/books/${bookId}`, {
         method: "PUT",
@@ -351,7 +354,7 @@ export function BookDetail({
     let failed = 0;
     for (const chapter of reviewable) {
       try {
-        await postApi(`/books/${bookId}/chapters/${chapter.number}/approve`);
+        await postApi(`/books/${bookId}/episodes/${chapter.number}/approve`);
       } catch {
         failed += 1;
       }
@@ -532,7 +535,10 @@ export function BookDetail({
   if (!data) return null;
 
   const { book, chapters } = data;
-  const totalWords = chapters.reduce((sum, ch) => sum + (ch.wordCount ?? 0), 0);
+  const totalDurationSeconds = chapters.reduce(
+    (sum, episode) => sum + (episode.episodeScriptMetrics?.estimatedDurationSeconds ?? 0),
+    0,
+  );
   const reviewCount = chapters.filter((ch) => ch.status === "ready-for-review").length;
   const latestIssueSummary = summarizeChapterIssues(
     latestChapter?.auditIssues,
@@ -542,8 +548,8 @@ export function BookDetail({
     && (latestChapter.status === "ready-for-review" || latestChapter.status === "audit-failed" || latestChapter.status === "state-degraded")
     && (latestIssueSummary.total > 0 || latestChapter.status !== "ready-for-review");
 
-  const currentWordCount = settingsWordCount ?? book.chapterWordCount;
-  const currentTargetChapters = settingsTargetChapters ?? book.targetChapters ?? 0;
+  const currentWordCount = settingsWordCount ?? book.episodeDurationSeconds ?? 90;
+  const currentTargetChapters = settingsTargetChapters ?? book.targetEpisodes ?? book.targetChapters ?? 0;
   const currentStatus = settingsStatus ?? (book.status as BookStatus);
 
   const exportHref = `/api/v1/books/${bookId}/export?format=${exportFormat}${exportApprovedOnly ? "&approvedOnly=true" : ""}`;
@@ -583,11 +589,11 @@ export function BookDetail({
             <span className="px-2 py-0.5 rounded bg-secondary/50 text-foreground/70 uppercase tracking-wider text-xs">{book.genre}</span>
             <div className="flex items-center gap-1.5">
               <FileText size={14} />
-              <span>{chapters.length} {t("dash.chapters")}</span>
+              <span>{chapters.length} {book.language === "en" ? "episodes" : "集"}</span>
             </div>
             <div className="flex items-center gap-1.5">
               <Zap size={14} />
-              <span>{totalWords.toLocaleString()} {t("book.words")}</span>
+              <span>{Math.floor(totalDurationSeconds / 60)}m {totalDurationSeconds % 60}s</span>
             </div>
           </div>
         </div>
@@ -639,6 +645,19 @@ export function BookDetail({
           </button>
         </div>
       </div>
+
+      {data.seriesPerformance && (
+        <div
+          data-testid="series-performance"
+          className="grid grid-cols-2 gap-x-6 gap-y-3 border-y border-border/50 py-4 text-sm sm:grid-cols-5"
+        >
+          <div><div className="text-xs text-muted-foreground">{book.language === "en" ? "Model calls" : "模型调用"}</div><div className="mt-1 font-semibold tabular-nums">{data.seriesPerformance.totalCalls}</div></div>
+          <div><div className="text-xs text-muted-foreground">Token</div><div className="mt-1 font-semibold tabular-nums">{data.seriesPerformance.totalTokens.toLocaleString()}</div></div>
+          <div><div className="text-xs text-muted-foreground">{book.language === "en" ? "Average context" : "平均上下文"}</div><div className="mt-1 font-semibold tabular-nums">{data.seriesPerformance.averageContextEstimatedTokens.toLocaleString()}</div></div>
+          <div><div className="text-xs text-muted-foreground">{book.language === "en" ? "Cache hits" : "缓存命中"}</div><div className="mt-1 font-semibold tabular-nums">{data.seriesPerformance.cacheHits}</div></div>
+          <div><div className="text-xs text-muted-foreground">{book.language === "en" ? "Cache misses" : "缓存未命中"}</div><div className="mt-1 font-semibold tabular-nums">{data.seriesPerformance.cacheMisses}</div></div>
+        </div>
+      )}
 
       {(writing || drafting || activity.activeOperation || activity.lastFailure) && (
         <div
@@ -925,7 +944,7 @@ export function BookDetail({
         </div>
       </div>
 
-      {/* Chapters Table */}
+      {/* Episodes Table */}
       <div className="paper-sheet rounded-2xl overflow-hidden border border-border/40 shadow-xl shadow-primary/5">
         <div className="overflow-x-auto">
           <table className="w-full text-sm border-collapse">
@@ -933,7 +952,7 @@ export function BookDetail({
               <tr className="bg-muted/30 border-b border-border/50">
                 <th className="text-left px-6 py-4 font-bold text-[11px] uppercase tracking-widest text-muted-foreground w-16">#</th>
                 <th className="text-left px-6 py-4 font-bold text-[11px] uppercase tracking-widest text-muted-foreground">{t("book.manuscriptTitle")}</th>
-                <th className="text-left px-6 py-4 font-bold text-[11px] uppercase tracking-widest text-muted-foreground w-28">{t("book.words")}</th>
+                <th className="text-left px-6 py-4 font-bold text-[11px] uppercase tracking-widest text-muted-foreground w-44">{book.language === "en" ? "Duration / production" : "时长 / 生产"}</th>
                 <th className="text-left px-6 py-4 font-bold text-[11px] uppercase tracking-widest text-muted-foreground w-36">{t("book.status")}</th>
                 <th className="text-right px-6 py-4 font-bold text-[11px] uppercase tracking-widest text-muted-foreground">{t("book.curate")}</th>
               </tr>
@@ -967,7 +986,18 @@ export function BookDetail({
                       </button>
                     )}
                   </td>
-                  <td className="px-6 py-4 text-muted-foreground font-medium tabular-nums text-xs">{(ch.wordCount ?? 0).toLocaleString()}</td>
+                  <td className="px-6 py-4 text-muted-foreground font-medium tabular-nums text-xs">
+                    <div>
+                      {ch.episodeScriptMetrics
+                        ? `${ch.episodeScriptMetrics.estimatedDurationSeconds}s · ${ch.episodeScriptMetrics.shotCount} ${book.language === "en" ? "shots" : "镜"}`
+                        : "-"}
+                    </div>
+                    {ch.performanceReport && (
+                      <div data-testid={`episode-performance-${ch.number}`} className="mt-1 text-[10px] text-muted-foreground/80">
+                        {Object.values(ch.performanceReport.calls).reduce((sum, count) => sum + count, 0)} calls · {ch.performanceReport.totalTokens.toLocaleString()} token
+                      </div>
+                    )}
+                  </td>
                   <td className="px-6 py-4">
                     <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-tight ${STATUS_CONFIG[ch.status]?.color ?? "bg-muted text-muted-foreground"}`}>
                       {STATUS_CONFIG[ch.status]?.icon}
@@ -994,7 +1024,7 @@ export function BookDetail({
                         <>
                           <button
                             onClick={async () => {
-                              try { await postApi(`/books/${bookId}/chapters/${ch.number}/approve`); refetch(); }
+                              try { await postApi(`/books/${bookId}/episodes/${ch.number}/approve`); refetch(); }
                               catch (e) { alert(e instanceof Error ? e.message : "Approve failed"); }
                             }}
                             className="p-2 rounded-lg bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500 hover:text-white transition-all shadow-sm"
@@ -1004,7 +1034,7 @@ export function BookDetail({
                           </button>
                           <button
                             onClick={async () => {
-                              try { await postApi(`/books/${bookId}/chapters/${ch.number}/reject`); refetch(); }
+                              try { await postApi(`/books/${bookId}/episodes/${ch.number}/reject`); refetch(); }
                               catch (e) { alert(e instanceof Error ? e.message : "Reject failed"); }
                             }}
                             className="p-2 rounded-lg bg-destructive/10 text-destructive hover:bg-destructive hover:text-white transition-all shadow-sm"

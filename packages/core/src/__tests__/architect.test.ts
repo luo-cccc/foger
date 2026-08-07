@@ -76,8 +76,13 @@ describe("ArchitectAgent", () => {
 
     const messages = chat.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
     expect(messages[0]?.content).toContain("MUST be written in English");
-    expect(messages[0]?.content).toContain("The requested 20 chapters are the TOTAL chapter count");
-    expect(messages[0]?.content).toContain("Chapter 20 is the book ending");
+    expect(messages[0]?.content).toContain(
+      "The requested 20 episodes are the TOTAL work length",
+    );
+    expect(messages[0]?.content).toContain("Episode 20 is the ending");
+    expect(messages[0]?.content).not.toContain("3-5 chapters per KR");
+    expect(messages[0]?.content).not.toContain("every 5 chapters");
+    expect(messages[0]?.content).not.toContain("last chapter roughly feels");
     expect(messages[1]?.content).toContain("Generate the complete foundation");
     expect(messages[1]?.content).not.toContain("请从中反向推导");
   });

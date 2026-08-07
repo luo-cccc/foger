@@ -1,7 +1,17 @@
 import { extractVolumeContracts } from "./volume-contract.js";
 
 export const FOUNDATION_COMPACT_MAX_CHAPTERS = 12;
-const TARGET_CHAPTERS_PER_VOLUME = 40;
+const TARGET_CHAPTERS_PER_VOLUME = 30;
+const TARGET_EPISODES_PER_VOLUME = 10;
+
+export interface FoundationScaleOptions {
+  /**
+   * Legacy callers use chapter-sized novel planning. New comic-drama
+   * foundations opt into episode-sized arcs explicitly.
+   */
+  readonly unit?: "chapters" | "episodes";
+  readonly unitsPerVolume?: number;
+}
 
 export interface FoundationVolumeRange {
   readonly volume: number;
@@ -31,13 +41,20 @@ export interface FoundationScaleIssue {
   readonly en: string;
 }
 
-export function buildFoundationScalePlan(targetChapters: number): FoundationScalePlan {
+export function buildFoundationScalePlan(
+  targetChapters: number,
+  options: FoundationScaleOptions = {},
+): FoundationScalePlan {
+  const unit = options.unit ?? "chapters";
+  const unitsPerVolume = Number.isFinite(options.unitsPerVolume)
+    ? Math.max(1, Math.round(options.unitsPerVolume!))
+    : unit === "episodes" ? TARGET_EPISODES_PER_VOLUME : TARGET_CHAPTERS_PER_VOLUME;
   const target = Number.isFinite(targetChapters)
     ? Math.max(1, Math.round(targetChapters))
     : 1;
   const volumeCount = target <= FOUNDATION_COMPACT_MAX_CHAPTERS
     ? 1
-    : Math.max(1, Math.ceil(target / TARGET_CHAPTERS_PER_VOLUME));
+    : Math.max(1, Math.ceil(target / unitsPerVolume));
   const baseSize = Math.floor(target / volumeCount);
   const remainder = target % volumeCount;
   const ranges: FoundationVolumeRange[] = [];
@@ -62,64 +79,70 @@ export function buildFoundationScalePlan(targetChapters: number): FoundationScal
 export function renderFoundationScaleGuidance(
   targetChapters: number,
   language: "zh" | "en",
+  options: FoundationScaleOptions = {},
 ): string {
-  const plan = buildFoundationScalePlan(targetChapters);
+  const plan = buildFoundationScalePlan(targetChapters, options);
+  const episodic = options.unit === "episodes";
   const ranges = plan.ranges
     .map((range) => language === "en"
-      ? `Volume ${range.volume}: chapters ${range.startChapter}-${range.endChapter}`
-      : `第${range.volume}卷：第${range.startChapter}-${range.endChapter}章`)
+      ? `${episodic ? "Arc" : "Volume"} ${range.volume}: ${episodic ? "episodes" : "chapters"} ${range.startChapter}-${range.endChapter}`
+      : `第${range.volume}${episodic ? "篇" : "卷"}：第${range.startChapter}-${range.endChapter}${episodic ? "集" : "章"}`)
     .join(language === "en" ? "; " : "；");
   const contractTemplate = plan.ranges
     .map((range) => language === "en"
-      ? `## Volume ${range.volume}: <title> (Chapters ${range.startChapter}-${range.endChapter})
-Objective: <verifiable volume-end state>
+      ? `## ${episodic ? "Arc" : "Volume"} ${range.volume}: <title> (${episodic ? "Episodes" : "Chapters"} ${range.startChapter}-${range.endChapter})
+Objective: <verifiable ${episodic ? "arc" : "volume"}-end state>
 KR1: <observable result>
 KR2: <observable result>
 KR3: <observable result>
-Irreversible Event: <mandatory volume-end change>`
-      : `## 第${range.volume}卷《卷名》（第${range.startChapter}-${range.endChapter}章）
-Objective: <可验证的卷末状态>
+Irreversible Event: <mandatory ${episodic ? "arc" : "volume"}-end change>`
+      : `## 第${range.volume}${episodic ? "篇" : "卷"}《${episodic ? "篇章名" : "卷名"}》（第${range.startChapter}-${range.endChapter}${episodic ? "集" : "章"}）
+Objective: <可验证的${episodic ? "篇章" : "卷"}末状态>
 KR1: <可观察结果>
 KR2: <可观察结果>
 KR3: <可观察结果>
-Irreversible Event: <卷尾必须发生的不可逆改变>`)
+Irreversible Event: <${episodic ? "篇章" : "卷"}尾必须发生的不可逆改变>`)
     .join("\n\n");
   const compactBeatTemplate = plan.compact
     ? Array.from({ length: plan.targetChapters }, (_, index) => language === "en"
-      ? `Chapter ${index + 1}: Goal=<active scene goal> | Obstacle=<concrete resistance> | Turn=<new decision or reversal> | Delivery=<observable result> | End Hook=<causal handoff or final aftermath>`
-      : `第${index + 1}章：目标=<本章主动行动> | 阻碍=<具体阻力> | 转折=<新决定或反转> | 交付=<可观察结果> | 章末钩子=<因果接力或终局后效>`)
+      ? `${episodic ? "Episode" : "Chapter"} ${index + 1}: Goal=<active scene goal> | Obstacle=<concrete resistance> | Turn=<new decision or reversal> | Delivery=<observable result> | End Hook=<causal handoff or final aftermath>`
+      : `第${index + 1}${episodic ? "集" : "章"}：目标=<本${episodic ? "集" : "章"}主动行动> | 阻碍=<具体阻力> | 转折=<新决定或反转> | 交付=<可观察结果> | ${episodic ? "集" : "章"}末钩子=<因果接力或终局后效>`)
       .join("\n")
     : "";
 
   if (language === "en") {
-    return `## Whole-book scale contract (overrides generic volume advice)
-- The requested ${plan.targetChapters} chapters are the TOTAL chapter count, not the number of volumes.
-- Plan exactly ${plan.volumeCount} volume(s): ${ranges}. All volume ranges must add up to exactly ${plan.targetChapters} chapters.
+    return `## 100-episode comic-drama scale contract (overrides generic volume advice)
+- The requested ${plan.targetChapters} ${episodic ? "episodes" : "chapters"} are the TOTAL work length, not the number of arcs.
+- Treat each volume as a story arc of about 10 episodes. The full plan must lock the final conflict and ending before episode writing begins.
+- Every arc must advance the novelty premise, deliver familiar payoffs, intensify a high-pressure relationship, land causally prepared reversals, and carry an emotional hook into the next arc.
+- Plan exactly ${plan.volumeCount} story arc(s): ${ranges}. All ranges must add up to exactly ${plan.targetChapters} ${episodic ? "episodes" : "chapters"}.
 - The five content paragraphs required inside volume_map are five planning dimensions, NOT five volumes.
 - Start volume_map with exactly these parseable execution blocks (replace angle-bracket placeholders, keep the Markdown headings and field labels exactly):
 ${contractTemplate}
 - The assigned ranges are volume boundaries, not chapter-by-chapter tasks. Put the five prose planning dimensions after the execution blocks without creating extra volume headings.
-- Complete each volume's three KRs inside its assigned chapter range; place observable KR delivery points roughly every ${plan.chaptersPerKr} chapter(s), instead of blindly spending 3-5 chapters on every KR.
-- Chapter ${plan.targetChapters} is the book ending: it must complete the Book Objective and resolve the core conflict. Do not defer that work to a later volume or another "chapter ${plan.targetChapters}".${plan.compact ? `
+- Complete each volume's three KRs inside its assigned ${episodic ? "episode" : "chapter"} range; place observable KR delivery points roughly every ${plan.chaptersPerKr} ${episodic ? "episode(s)" : "chapter(s)"}, instead of applying a fixed mini-cycle.
+- ${episodic ? "Episode" : "Chapter"} ${plan.targetChapters} is the ending: it must complete the Book Objective and resolve the core conflict. Do not defer that work beyond the series.${plan.compact ? `
 - This is a compact complete work. Volume 1 is the entire book, not the opening arc of a longer serialization. Volume 1's Objective must equal the complete Book Objective, and KR3 must deliver it. Phrases such as "first clue", "tip of the iceberg", "left for a sequel/later work", or "still not fully revealed" are contract violations.
 - Compact works are the sole exception to the general ban on chapter-level planning. Immediately after the volume execution block, emit this exact parseable beat contract with one distinct line per chapter. Replace every placeholder and keep all five labels:
-### Compact Chapter Beat Contract
+### Compact ${episodic ? "Episode" : "Chapter"} Beat Contract
 ${compactBeatTemplate}
 - Every turn must change the available choice or information, every delivery must be externally observable, and each End Hook must causally launch the next chapter. The final chapter's End Hook is aftermath/closure, not deferred core conflict.` : ""}`;
   }
 
-  return `## 全书尺度合同（优先级高于通用分卷建议）
-- 用户要求的${plan.targetChapters}章是全书总章数，不是卷数。
-- 必须恰好规划${plan.volumeCount}卷：${ranges}。所有卷的章节范围相加必须严格等于${plan.targetChapters}章。
+  return `## 百集漫剧尺度合同（优先级高于通用分篇建议）
+- 用户要求的${plan.targetChapters}${episodic ? "集" : "章"}是${episodic ? "全剧总长度" : "全书总章数"}，不是篇章数。
+- 每卷按约 10 集的故事篇章处理；开始逐集写作前必须锁定最终冲突、终局选择和第${plan.targetChapters}集结局。
+- 每个篇章必须推进新颖设定、兑现熟悉爽点、持续提高关系压力、完成有因果的反转，并把明确情绪钩子传递到下一篇章。
+- 必须恰好规划${plan.volumeCount}个故事篇章：${ranges}。所有范围相加必须严格等于${plan.targetChapters}${episodic ? "集" : "章"}。
 - volume_map 要求的“5段主体”是五个规划维度，不是五卷，禁止据此生成五卷。
 - volume_map 开头必须严格输出以下可解析执行合同（替换尖括号占位内容，Markdown 标题和字段名必须原样保留；不能只用加粗文本表示卷名）：
 ${contractTemplate}
 - 上述范围只是卷边界，不是逐章任务。执行合同之后再写五个散文规划维度，不得创建额外卷标题。
 - 每卷3个 KR 必须在该卷分配的章节内全部完成，约每${plan.chaptersPerKr}章出现一个可观察的 KR 交付点；不要机械套用“每个 KR 都花3-5章”。
-- 第${plan.targetChapters}章就是全书终章，必须完成全书 Objective 并解决核心冲突，不得把终局推迟到后续卷，也不得在第${plan.targetChapters}章里再写“留到第${plan.targetChapters}章大结局”。${plan.compact ? `
+- 第${plan.targetChapters}${episodic ? "集就是全剧终局" : "章就是全书终章"}，必须完成${episodic ? "全剧" : "全书"} Objective 并解决核心冲突，不得把终局推迟到后续篇章。${plan.compact ? `
 - 这是紧凑完结作品，第1卷就是全书，不是更长连载的开篇卷。第1卷 Objective 必须等于完整的全书 Objective，KR3 必须交付它；“第一块线索”“冰山一角”“留待后续作品”“核心仍未完全揭示”等表述均属于合同违规。
 - 紧凑完结作是“禁止章级规划”的唯一例外。紧接卷执行合同，严格输出以下可解析节拍合同：每章恰好一行、替换全部占位符、保留五个字段名。
-### 紧凑篇逐章节拍合同
+### 紧凑篇逐${episodic ? "集" : "章"}节拍合同
 ${compactBeatTemplate}
 - 每章转折必须改变选择或信息，交付必须可被外部观察；章末钩子必须因果启动下一章。终章钩子写后效/闭环，不得把核心冲突留到书外。` : ""}`;
 }
@@ -127,8 +150,9 @@ ${compactBeatTemplate}
 export function validateFoundationVolumeScale(
   volumeMap: string,
   targetChapters: number,
+  options: FoundationScaleOptions = {},
 ): ReadonlyArray<FoundationScaleIssue> {
-  const plan = buildFoundationScalePlan(targetChapters);
+  const plan = buildFoundationScalePlan(targetChapters, options);
   const declaredVolumes = extractDeclaredVolumeNumbers(volumeMap);
   const explicitTotals = extractExplicitVolumeTotals(volumeMap);
   const detectedVolumeCount = Math.max(0, ...declaredVolumes, ...explicitTotals);
@@ -219,10 +243,10 @@ export function validateFoundationVolumeScale(
 function extractCompactBeatSection(content: string): string {
   const lines = content.split(/\r?\n/u);
   const headingIndex = lines.findIndex((line) => (
-    /^#{2,6}\s*(?:紧凑篇逐章节拍合同|Compact Chapter Beat Contract)\s*$/iu.test(line.trim())
+    /^#{2,6}\s*(?:紧凑篇逐(?:章|集)节拍合同|Compact (?:Chapter|Episode) Beat Contract)\s*$/iu.test(line.trim())
   ));
   const firstBeatLineIndex = lines.findIndex((line) => (
-    /^(?:第\s*\d+\s*章\s*[：:]\s*目标\s*[:=：]|Chapter\s+\d+\s*[：:]\s*Goal\s*[:=：])/iu.test(line.trim())
+    /^(?:第\s*\d+\s*(?:章|集)\s*[：:]\s*目标\s*[:=：]|(?:Chapter|Episode)\s+\d+\s*[：:]\s*Goal\s*[:=：])/iu.test(line.trim())
   ));
   const start = headingIndex >= 0 ? headingIndex + 1 : firstBeatLineIndex;
   if (start < 0) return "";
@@ -237,7 +261,7 @@ function extractCompactBeatSection(content: string): string {
 function extractCompactBeatLineChapterNumbers(section: string): number[] {
   const values: number[] = [];
   for (const rawLine of section.split(/\r?\n/u)) {
-    const match = rawLine.trim().match(/^(?:第\s*(\d+)\s*章|Chapter\s+(\d+))\s*[：:]/iu);
+    const match = rawLine.trim().match(/^(?:第\s*(\d+)\s*(?:章|集)|(?:Chapter|Episode)\s+(\d+))\s*[：:]/iu);
     const value = Number.parseInt(match?.[1] ?? match?.[2] ?? "", 10);
     if (Number.isInteger(value) && value > 0 && !values.includes(value)) values.push(value);
   }
@@ -248,11 +272,11 @@ function extractCompleteCompactChapterBeats(section: string): number[] {
   const complete: number[] = [];
   const value = "([^|｜<>\\r\\n]{2,})";
   const zhPattern = new RegExp(
-    `^第\\s*(\\d+)\\s*章\\s*[：:]\\s*目标\\s*[:=：]\\s*${value}\\s*[|｜]\\s*阻碍\\s*[:=：]\\s*${value}\\s*[|｜]\\s*转折\\s*[:=：]\\s*${value}\\s*[|｜]\\s*交付\\s*[:=：]\\s*${value}\\s*[|｜]\\s*章末钩子\\s*[:=：]\\s*${value}\\s*$`,
+    `^第\\s*(\\d+)\\s*(?:章|集)\\s*[：:]\\s*目标\\s*[:=：]\\s*${value}\\s*[|｜]\\s*阻碍\\s*[:=：]\\s*${value}\\s*[|｜]\\s*转折\\s*[:=：]\\s*${value}\\s*[|｜]\\s*交付\\s*[:=：]\\s*${value}\\s*[|｜]\\s*(?:章|集)末钩子\\s*[:=：]\\s*${value}\\s*$`,
     "iu",
   );
   const enPattern = new RegExp(
-    `^Chapter\\s+(\\d+)\\s*[：:]\\s*Goal\\s*[:=：]\\s*${value}\\s*[|｜]\\s*Obstacle\\s*[:=：]\\s*${value}\\s*[|｜]\\s*Turn\\s*[:=：]\\s*${value}\\s*[|｜]\\s*Delivery\\s*[:=：]\\s*${value}\\s*[|｜]\\s*End Hook\\s*[:=：]\\s*${value}\\s*$`,
+    `^(?:Chapter|Episode)\\s+(\\d+)\\s*[：:]\\s*Goal\\s*[:=：]\\s*${value}\\s*[|｜]\\s*Obstacle\\s*[:=：]\\s*${value}\\s*[|｜]\\s*Turn\\s*[:=：]\\s*${value}\\s*[|｜]\\s*Delivery\\s*[:=：]\\s*${value}\\s*[|｜]\\s*End Hook\\s*[:=：]\\s*${value}\\s*$`,
     "iu",
   );
   for (const rawLine of section.split(/\r?\n/u)) {
@@ -267,8 +291,9 @@ export function normalizeFoundationVolumeContracts(
   volumeMap: string,
   targetChapters: number,
   language: "zh" | "en",
+  options: FoundationScaleOptions = {},
 ): string {
-  const plan = buildFoundationScalePlan(targetChapters);
+  const plan = buildFoundationScalePlan(targetChapters, options);
   // A single-volume book still needs an executable volume contract even when
   // it is longer than the compact chapter-beat range. Models often place the
   // required fields in prose sections instead of a standalone volume heading.
@@ -423,11 +448,11 @@ function renderParsedRange(
 
 function extractDeclaredVolumeNumbers(content: string): number[] {
   const values: number[] = [];
-  for (const match of content.matchAll(/第\s*([零〇一二三四五六七八九十百两\d]+)\s*卷/gu)) {
+  for (const match of content.matchAll(/第\s*([零〇一二三四五六七八九十百两\d]+)\s*(?:卷|篇)/gu)) {
     const value = parseChineseInteger(match[1] ?? "");
     if (value > 0) values.push(value);
   }
-  for (const match of content.matchAll(/\bVolume\s+(\d+)\b/giu)) {
+  for (const match of content.matchAll(/\b(?:Volume|Arc)\s+(\d+)\b/giu)) {
     const value = Number.parseInt(match[1] ?? "", 10);
     if (value > 0) values.push(value);
   }
@@ -449,10 +474,10 @@ function extractExplicitVolumeTotals(content: string): number[] {
 
 function extractMaxChapterRangeEnd(content: string): number {
   const ends: number[] = [];
-  for (const match of content.matchAll(/(?:第\s*)?(\d+)\s*(?:-|–|—|~|至|到)\s*(\d+)\s*章/gu)) {
+  for (const match of content.matchAll(/(?:第\s*)?(\d+)\s*(?:-|–|—|~|至|到)\s*(\d+)\s*(?:章|集)/gu)) {
     ends.push(Number.parseInt(match[2] ?? "0", 10));
   }
-  for (const match of content.matchAll(/chapters?\s+(\d+)\s*(?:-|–|—|~|to)\s*(\d+)/giu)) {
+  for (const match of content.matchAll(/(?:chapters?|episodes?)\s+(\d+)\s*(?:-|–|—|~|to)\s*(\d+)/giu)) {
     ends.push(Number.parseInt(match[2] ?? "0", 10));
   }
   return Math.max(0, ...ends);
