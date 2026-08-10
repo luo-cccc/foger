@@ -1,0 +1,1095 @@
+/**
+ * Post-write rule-based validator.
+ *
+ * Deterministic, zero-LLM-cost checks that run after every episode generation.
+ * Catches violations that prompt-only rules cannot guarantee.
+ */
+
+import { analyzeEpisodeCadence } from "../utils/episode-cadence.js";
+import type { BookRules } from "../models/book-rules.js";
+import type { GenreProfile } from "../models/genre-profile.js";
+
+export interface PostWriteViolation {
+  readonly rule: string;
+  readonly severity: "error" | "warning";
+  readonly description: string;
+  readonly suggestion: string;
+  readonly repairScope?: "local" | "structural" | "unknown";
+}
+
+function assignPostWriteRepairScopes(
+  violations: ReadonlyArray<PostWriteViolation>,
+): ReadonlyArray<PostWriteViolation> {
+  return violations.map((violation) => {
+    if (violation.repairScope) return violation;
+    if (violation.rule === "叙事人称") {
+      return { ...violation, repairScope: "structural" as const };
+    }
+    if (violation.rule === "本书禁忌" || violation.rule === "Book prohibition") {
+      return { ...violation, repairScope: "unknown" as const };
+    }
+    return { ...violation, repairScope: "local" as const };
+  });
+}
+
+export function normalizePostWriteSurface(
+  content: string,
+  languageOverride?: "zh" | "en",
+): string {
+  let normalized = stripLeadingEpisodeHeading(stripPostWriteMetaLines(content));
+  if (languageOverride !== "en") {
+    normalized = normalized.replace(/——+/g, "，");
+  }
+  return normalized.trimEnd();
+}
+
+function stripLeadingEpisodeHeading(content: string): string {
+  return content.replace(
+    /^\s*#{1,6}\s*(?:(?:第\s*[零〇一二三四五六七八九十百千万两\d]+\s*章)(?:[^\r\n]*)?|Episode\s+\d+(?::|\s+)[^\r\n]*|\d{1,4})\s*\r?\n+/iu,
+    "",
+  );
+}
+
+function stripPostWriteMetaLines(content: string): string {
+  const lines = content.split(/\r?\n/);
+  const filtered = lines.filter((line) =>
+    !/^\s*\[(?:polisher|writer|reviser|reviewer)-note\]\s*/i.test(line)
+    && !/^\s*\[(?:润色|写作|修订|审稿)备注\]\s*/.test(line)
+  );
+  return filtered.join("\n");
+}
+
+interface ParagraphShape {
+  readonly paragraphs: ReadonlyArray<string>;
+  readonly shortThreshold: number;
+  readonly shortParagraphs: ReadonlyArray<string>;
+  readonly shortRatio: number;
+  readonly averageLength: number;
+  readonly maxConsecutiveShort: number;
+}
+
+// --- Marker word lists ---
+
+/** AI转折/惊讶标记词 */
+const SURPRISE_MARKERS = ["仿佛", "忽然", "竟然", "猛地", "猛然", "不禁", "宛如"];
+
+/** 元叙事/编剧旁白模式 */
+const META_NARRATION_PATTERNS = [
+  /到这里[，,]?算是/,
+  /接下来[，,]?(?:就是|将会|即将)/,
+  /(?:后面|之后)[，,]?(?:会|将|还会)/,
+  /(?:故事|剧情)(?:发展)?到了/,
+  /读者[，,]?(?:可能|应该|也许)/,
+  /我们[，,]?(?:可以|不妨|来看)/,
+];
+
+/** 分析报告式术语（禁止出现在正文中） */
+const REPORT_TERMS = [
+  "核心动机", "信息边界", "信息落差", "核心风险", "利益最大化",
+  "当前处境", "行为约束", "性格过滤", "情绪外化", "锚定效应",
+  "沉没成本", "认知共鸣",
+];
+
+/** 作者说教词 */
+const SERMON_WORDS = ["显然", "毋庸置疑", "不言而喻", "众所周知", "不难看出"];
+
+/** 全场震惊类集体反应 */
+const COLLECTIVE_SHOCK_PATTERNS = [
+  /(?:全场|众人|所有人|在场的人)[，,]?(?:都|全|齐齐|纷纷)?(?:震惊|惊呆|倒吸凉气|目瞪口呆|哗然|惊呼)/,
+  /(?:全场|一片)[，,]?(?:寂静|哗然|沸腾|震动)/,
+];
+
+const CHINESE_STATIC_OPENING_PATTERNS: ReadonlyArray<RegExp> = [
+  /^(?:港城|城市|小镇|村庄|镇上|街道|巷子|房间|屋里|院子|天空|夜色|暮色|晨雾|空气|海风|冷风|雨|雪|雾|春天|夏天|秋天|冬天)[^。！？]{0,120}(?:总是|一向|向来|常年|依旧|仍旧|显得|笼罩|弥漫|沉浸|安静|寂静|沉寂|昏暗|潮湿|寒冷|闷热|灰蒙蒙|阴沉)/,
+  /^(?:清晨|黄昏|傍晚|夜晚|夜里|黎明|入夜|天亮前)[，,\s][^。！？]{0,120}(?:天空|街道|城市|小镇|房间|屋里|空气|风|雨|雪|雾|夜色|灯光)[^。！？]{0,80}(?:笼罩|弥漫|安静|寂静|昏暗|潮湿|寒冷|沉沉|缓缓|静静)/,
+  /^(?:这是|那是|又是)[^。！？]{0,80}(?:清晨|黄昏|夜晚|冬天|夏天|雨天|雾天)[^。！？]{0,80}(?:总是|一向|依旧|仍旧|安静|寂静|昏暗|寒冷|潮湿)/,
+  /^(?:雨|雪|雾|风|阳光|月光|夜色|暮色)[^。！？]{0,120}(?:落|下|飘|吹|笼罩|弥漫|铺|洒|压|吞没|覆盖|盘旋|停留|挂)[^。！？]*[。！？]?$/,
+];
+
+const ENGLISH_STATIC_OPENING_PATTERNS: ReadonlyArray<RegExp> = [
+  /^(?:the\s+)?(?:city|town|village|street|room|house|sky|night|morning|evening|air|rain|snow|fog|wind|winter|summer)\b.{0,180}\b(?:always|usually|seemed|was|were|lay|hung|felt|remained)\b.{0,100}\b(?:quiet|still|dark|cold|wet|gray|grey|empty|silent|heavy|dim|gloomy)\b/i,
+  /^(?:it was|there was)\b.{0,120}\b(?:night|morning|evening|winter|summer|rain|snow|fog|silence|darkness)\b.{0,120}\b(?:quiet|still|dark|cold|wet|gray|grey|empty|silent|heavy|dim|gloomy)\b/i,
+  /^(?:in|over|across|under)\s+(?:the\s+)?(?:city|town|village|street|room|house|sky)\b.{0,180}\b(?:quiet|still|dark|cold|wet|gray|grey|empty|silent|heavy|dim|gloomy)\b/i,
+  /^(?:rain|snow|fog|wind|sunlight|moonlight|darkness)\b.{0,180}\b(?:fell|drifted|hung|covered|pressed|blew|spread|lay)\b/i,
+];
+
+const CHINESE_SUMMARY_ENDING_PATTERNS: ReadonlyArray<RegExp> = [
+  /(?:这|那|一切|所有这一切|故事|旅程)(?:不过|也不过|都不过|只是|也只是|都只是|才|才刚|才刚刚|不过才)?(?:一个)?开始[。！？.!]*$/,
+  /(?:真正的)?(?:较量|战斗|考验|挑战|危机)(?:才|即将|正要|就要|还未|才刚|才刚刚)?(?:开始|到来|展开)[。！？.!]*$/,
+  /(?:命运|时代)的齿轮[^。！？]{0,12}(?:开始|已经|正在|正)[^。！？]{0,8}(?:转动|运转)[。！？.!]*$/,
+  /(?:新的|崭新的)(?:篇章|旅程|时代|征程)[^。！？]{0,12}(?:即将|正要|就要|已经)?(?:开启|开始|到来)[。！？.!]*$/,
+  /(?:序幕|大幕)[^。！？]{0,12}(?:才刚|刚刚|正式)?(?:拉开|揭开)[。！？.!]*$/,
+];
+
+const ENGLISH_SUMMARY_ENDING_PATTERNS: ReadonlyArray<RegExp> = [
+  /(?:this|that|everything|all of this|the story|the journey)\s+(?:was\s+|is\s+)?(?:only\s+|just\s+|merely\s+)?(?:the\s+)?beginning[.!?]*$/i,
+  /the real (?:battle|fight|test|challenge|struggle) (?:was|is) (?:still )?(?:yet )?to come[.!?]*$/i,
+  /(?:a|the) new (?:episode|journey|era) (?:was|is) (?:about|set) to begin[.!?]*$/i,
+  /the wheels? of (?:fate|destiny) (?:had |have |has )?(?:begun|started) to turn[.!?]*$/i,
+  /(?:the curtain|a curtain) (?:had |has )?(?:only |just )?(?:risen|opened)[.!?]*$/i,
+];
+
+function firstSentence(text: string): string {
+  const boundary = text.search(/[。！？.!?]/);
+  return boundary >= 0 ? text.slice(0, boundary + 1).trim() : text.trim();
+}
+
+function lastSentence(text: string): string {
+  const sentences = text.match(/[^。！？.!?]+[。！？.!?]+[”」』"']?|[^。！？.!?]+$/g);
+  return sentences?.at(-1)?.trim() ?? text.trim();
+}
+
+function hasConcreteOpeningBeat(text: string, language: "zh" | "en"): boolean {
+  if (/[“”「」『』"]/.test(text)) return true;
+
+  if (language === "en") {
+    return /(?:^|[.!?\n]\s*)(?:I|he|she|they|we|[A-Z][a-z]+)\s+(?:(?:immediately|suddenly|quickly)\s+)?(?:opened|pushed|pulled|grabbed|raised|drew|threw|dropped|slammed|locked|unlocked|entered|left|ran|stepped|turned|stopped|knocked|dialed|answered|shouted|asked|said|refused|blocked|chased|fled|heard|saw|noticed|realized|knew|found)\b/i.test(text)
+      || /\b(?:phone|doorbell|alarm|gun|glass|light|screen|door handle|lock|elevator|engine|brakes?)\b.{0,24}\b(?:rang|buzzed|sounded|fired|shattered|lit|flashed|went out|turned|clicked|opened|stopped|exploded|cracked|jammed)\b/i.test(text)
+      || /\b(?:had to|must|needed to|could not let|couldn't let|blocked|refused|chased|trapped)\b/i.test(text);
+  }
+
+  return /(?:^|[。！？\n]\s*)(?:我|你|他|她|他们|她们|[\u4e00-\u9fff]{2,4})(?:猛地|立刻|马上|随即|忽然|突然)?(?:推开|拉开|抓起|抬起|转身|起身|站起|冲进|冲出|跑进|跑出|走进|走出|闯入|踢开|敲响|按下|拨通|接起|挂断|掏出|拔出|扔下|摔下|捡起|翻开|打开|关上|停下|蹲下|跪下|扑向|躲开|追上|逃出|喊道|问道|说道|答道|拒绝|挡住|拦住|发现|看见|听见|认出|知道|盯住|攥住|扣下|锁上|塞进|递出|拍下|打翻)/.test(text)
+    || /(?:电话|手机|门铃|警报|枪声|玻璃|灯|屏幕|门把手|锁舌|电梯|引擎|刹车)[^。！？]{0,16}(?:响|震|亮|灭|碎|开|转|弹|停|炸|裂|跳|闪|卡住)/.test(text)
+    || /(?:必须|得在|来不及|不能让|拒绝|拦住|挡住|追上|逃出|困在|堵在)/.test(text);
+}
+
+function isDialogueEnding(sentence: string, language: "zh" | "en"): boolean {
+  if (/^[“「『"]/.test(sentence)) return true;
+  return language === "en"
+    ? /["”]\s*(?:he|she|they|[A-Z][a-z]+)\s+(?:said|asked|whispered|warned|shouted|replied)\b/i.test(sentence)
+    : /[”」』"]\s*(?:我|他|她|他们|她们|[\u4e00-\u9fff]{2,4})(?:说|问|低声道|警告|喊道|答道)/.test(sentence);
+}
+
+export function detectEpisodeBoundaryQuality(
+  content: string,
+  language: "zh" | "en" = "zh",
+): ReadonlyArray<PostWriteViolation> {
+  const paragraphs = extractParagraphs(content);
+  if (paragraphs.length === 0) return [];
+
+  const violations: PostWriteViolation[] = [];
+  const openingLimit = language === "en" ? 420 : 240;
+  const openingWindow = paragraphs.slice(0, 2).join("\n").slice(0, openingLimit);
+  const openingSentence = firstSentence(openingWindow);
+  const staticOpeningPatterns = language === "en"
+    ? ENGLISH_STATIC_OPENING_PATTERNS
+    : CHINESE_STATIC_OPENING_PATTERNS;
+  if (
+    staticOpeningPatterns.some((pattern) => pattern.test(openingSentence))
+    && !hasConcreteOpeningBeat(openingWindow, language)
+  ) {
+    violations.push(language === "en"
+      ? {
+          rule: "Empty opening",
+          severity: "error",
+          description: "The opening stays in weather or background exposition without a concrete action, event, dialogue, anomaly, objective, or resistance in the opening window.",
+          suggestion: "Keep only necessary atmosphere and move the first concrete story beat into the opening window.",
+          repairScope: "local",
+        }
+      : {
+          rule: "空开头",
+          severity: "error",
+          description: "剧集开头停留在天气或环境说明，开头窗口内没有具体行动、事件、对话、异常、目标或阻力。",
+          suggestion: "保留必要氛围，但把首个具体事件、动作、对话或异常提前到开头窗口内。",
+          repairScope: "local",
+        });
+  }
+
+  const endingSentence = lastSentence(paragraphs.at(-1) ?? "");
+  const summaryEndingPatterns = language === "en"
+    ? ENGLISH_SUMMARY_ENDING_PATTERNS
+    : CHINESE_SUMMARY_ENDING_PATTERNS;
+  if (
+    !isDialogueEnding(endingSentence, language)
+    && summaryEndingPatterns.some((pattern) => pattern.test(endingSentence))
+  ) {
+    violations.push(language === "en"
+      ? {
+          rule: "Summary ending",
+          severity: "error",
+          description: "The episode ends with an abstract recap or generic forecast instead of a concrete action, discovery, decision, dialogue, or threat.",
+          suggestion: "Replace the forecast with the final concrete consequence or choice already present in the scene.",
+          repairScope: "local",
+        }
+      : {
+          rule: "总结式结尾",
+          severity: "error",
+          description: "剧集以抽象总结或泛化预告收尾，没有落在具体行动、证据、决定、对话或威胁上。",
+          suggestion: "删除总结和预告，把结尾落在场景中已经发生的最后一个具体后果或选择上。",
+          repairScope: "local",
+        });
+  }
+
+  return assignPostWriteRepairScopes(violations);
+}
+
+// --- Validator ---
+
+export function validatePostWrite(
+  content: string,
+  genreProfile: GenreProfile,
+  bookRules: BookRules | null,
+  languageOverride?: "zh" | "en",
+): ReadonlyArray<PostWriteViolation> {
+  const violations: PostWriteViolation[] = [];
+
+  // Skip Chinese-specific rules for English content
+  const isEnglish = (languageOverride ?? genreProfile.language) === "en";
+  if (isEnglish) {
+    // For English, only run book-specific prohibitions and paragraph length check
+    return validatePostWriteEnglish(content, genreProfile, bookRules);
+  }
+
+  // 1. 硬性禁令: "不是…而是…" 句式
+  if (/不是[^，。！？\n]{0,30}[，,]?\s*而是/.test(content)) {
+    violations.push({
+      rule: "禁止句式",
+      severity: "error",
+      description: "出现了「不是……而是……」句式",
+      suggestion: "改用直述句",
+    });
+  }
+
+  // 2. 硬性禁令: 破折号
+  if (content.includes("——")) {
+    violations.push({
+      rule: "禁止破折号",
+      severity: "error",
+      description: "出现了破折号「——」",
+      suggestion: "用逗号或句号断句",
+    });
+  }
+
+  // 3. 转折/惊讶标记词密度 ≤ 1次/3000字
+  const markerCounts: Record<string, number> = {};
+  let totalMarkerCount = 0;
+  for (const word of SURPRISE_MARKERS) {
+    const matches = content.match(new RegExp(word, "g"));
+    const count = matches?.length ?? 0;
+    if (count > 0) {
+      markerCounts[word] = count;
+      totalMarkerCount += count;
+    }
+  }
+  const markerLimit = Math.max(1, Math.floor(content.length / 3000));
+  if (totalMarkerCount > markerLimit) {
+    const detail = Object.entries(markerCounts)
+      .map(([w, c]) => `"${w}"×${c}`)
+      .join("、");
+    violations.push({
+      rule: "转折词密度",
+      severity: "warning",
+      description: `转折/惊讶标记词共${totalMarkerCount}次（上限${markerLimit}次/${content.length}字），明细：${detail}`,
+      suggestion: "改用具体动作或感官描写传递突然性",
+    });
+  }
+
+  // 4. 高疲劳词检查（从 genreProfile 读取，单章每词 ≤ 1次）
+  const fatigueWords = bookRules?.fatigueWordsOverride && bookRules.fatigueWordsOverride.length > 0
+    ? bookRules.fatigueWordsOverride
+    : genreProfile.fatigueWords;
+  for (const word of fatigueWords) {
+    const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const matches = content.match(new RegExp(escaped, "g"));
+    const count = matches?.length ?? 0;
+    if (count > 1) {
+      violations.push({
+        rule: "高疲劳词",
+        severity: "warning",
+        description: `高疲劳词"${word}"出现${count}次（上限1次/集）`,
+        suggestion: `替换多余的"${word}"为同义但不同形式的表达`,
+      });
+    }
+  }
+
+  // 5. 元叙事检查（编剧旁白）
+  for (const pattern of META_NARRATION_PATTERNS) {
+    const match = content.match(pattern);
+    if (match) {
+      violations.push({
+        rule: "元叙事",
+        severity: "warning",
+        description: `出现编剧旁白式表述："${match[0]}"`,
+        suggestion: "删除元叙事，让剧情自然展开",
+      });
+      break; // 报一次即可
+    }
+  }
+
+  // 6. 分析报告式术语
+  const foundTerms: string[] = [];
+  for (const term of REPORT_TERMS) {
+    if (content.includes(term)) {
+      foundTerms.push(term);
+    }
+  }
+  if (foundTerms.length > 0) {
+    violations.push({
+      rule: "报告术语",
+      severity: "error",
+      description: `正文中出现分析报告术语：${foundTerms.map(t => `"${t}"`).join("、")}`,
+      suggestion: "这些术语只能用于 PRE_WRITE_CHECK 内部推理，正文中用口语化表达替代",
+    });
+  }
+
+  // 7. 正文中的剧集号指称（如"第33集"、"episode 33"）
+  const episodeRefPattern = /(?:第\s*\d+\s*章|[Cc]hapter\s+\d+)/g;
+  const episodeRefs = content.match(episodeRefPattern);
+  if (episodeRefs && episodeRefs.length > 0) {
+    const unique = [...new Set(episodeRefs)];
+    violations.push({
+      rule: isEnglish ? "episode-number-reference" : "剧集号指称",
+      severity: "error",
+      description: isEnglish
+        ? `Episode text contains explicit episode number references: ${unique.map(r => `"${r}"`).join(", ")}. Characters do not know they are in a numbered episode.`
+        : `正文中出现了剧集号指称：${unique.map(r => `"${r}"`).join("、")}。角色不知道自己在第几集。`,
+      suggestion: isEnglish
+        ? "Replace with natural references: 'that night', 'when the warehouse burned', 'the incident at the dock'"
+        : '改成自然表达："那天晚上"、"仓库出事那次"、"码头上的事"',
+    });
+  }
+
+  // 8. 作者说教词
+  const foundSermons: string[] = [];
+  for (const word of SERMON_WORDS) {
+    if (content.includes(word)) {
+      foundSermons.push(word);
+    }
+  }
+  if (foundSermons.length > 0) {
+    violations.push({
+      rule: "作者说教",
+      severity: "warning",
+      description: `出现说教词：${foundSermons.map(w => `"${w}"`).join("、")}`,
+      suggestion: "删除说教词，让读者自己从情节中判断",
+    });
+  }
+
+  // 8. 全场震惊类集体反应
+  for (const pattern of COLLECTIVE_SHOCK_PATTERNS) {
+    const match = content.match(pattern);
+    if (match) {
+      violations.push({
+        rule: "集体反应",
+        severity: "warning",
+        description: `出现集体反应套话："${match[0]}"`,
+        suggestion: "改写成1-2个具体角色的身体反应",
+      });
+      break;
+    }
+  }
+
+  // 9. 连续"了"字检查（3句以上连续含"了"）
+  const sentences = content
+    .split(/[。！？]/)
+    .map(s => s.trim())
+    .filter(s => s.length > 2);
+
+  let consecutiveLe = 0;
+  let maxConsecutiveLe = 0;
+  for (const sentence of sentences) {
+    if (sentence.includes("了")) {
+      consecutiveLe++;
+      maxConsecutiveLe = Math.max(maxConsecutiveLe, consecutiveLe);
+    } else {
+      consecutiveLe = 0;
+    }
+  }
+  if (maxConsecutiveLe >= 6) {
+    violations.push({
+      rule: "连续了字",
+      severity: "warning",
+      description: `检测到${maxConsecutiveLe}句连续包含"了"字，节奏拖沓`,
+      suggestion: "保留最有力的一个「了」，其余改为无「了」句式",
+    });
+  }
+
+  // 10. 段落长度检查（手机阅读适配：50-250字/段为宜）
+  const paragraphs = content
+    .split(/\n\s*\n/)
+    .map(p => p.trim())
+    .filter(p => p.length > 0);
+
+  const longParagraphs = paragraphs.filter(p => p.length > 300);
+  if (longParagraphs.length >= 2) {
+    violations.push({
+      rule: "段落过长",
+      severity: "warning",
+      description: `${longParagraphs.length}个段落超过300字，不适合手机阅读`,
+      suggestion: "长段落拆分为3-5行的短段落，在动作切换或情绪节点处断开",
+    });
+  }
+
+  violations.push(...detectParagraphShapeWarnings(content, "zh"));
+
+  // 11. Book-level prohibitions
+  // Short prohibitions (2-30 chars): exact substring match
+  // Long prohibitions (>30 chars): skip — these are conceptual rules for prompt-level enforcement only
+  if (bookRules?.prohibitions) {
+    for (const prohibition of bookRules.prohibitions) {
+      if (prohibition.length >= 2 && prohibition.length <= 30 && content.includes(prohibition)) {
+        violations.push({
+          rule: "本书禁忌",
+          severity: "error",
+          description: `出现了本书禁忌内容："${prohibition}"`,
+          suggestion: "删除或改写该内容",
+        });
+      }
+    }
+  }
+
+  // 12. Narrative-person adherence (#290). A first-person book must read as first
+  // person. The clearest deterministic signal of third-person drift is a episode
+  // that barely uses 我 yet repeatedly narrates the protagonist by name. Thresholds
+  // are conservative so genuine first-person prose (many 我) never trips.
+  const personViolation = detectNarrativePersonDrift(content, bookRules);
+  if (personViolation) violations.push(personViolation);
+
+  violations.push(...detectEpisodeBoundaryQuality(content, "zh"));
+
+  return assignPostWriteRepairScopes(violations);
+}
+
+function detectNarrativePersonDrift(
+  content: string,
+  bookRules: BookRules | null,
+): PostWriteViolation | null {
+  if (bookRules?.narrativePerson !== "first") return null;
+  const innerStateSlip = detectFirstPersonInnerStateSlip(content);
+  if (innerStateSlip) {
+    return {
+      rule: "叙事人称",
+      severity: "error",
+      description: `本书设定为第一人称，但出现了第三人称内感叙述："${innerStateSlip}"`,
+      suggestion: "把这类主观感受、意识、脑内活动改回「我」的内心视角；不要切到第三人称或全知视角。",
+    };
+  }
+
+  const name = bookRules.protagonist?.name?.trim();
+  if (!name) return null;
+  const woCount = content.split("我").length - 1;
+  const nameCount = content.split(name).length - 1;
+  // Long episode, almost no 我, protagonist repeatedly named → third-person prose.
+  if (content.length >= 800 && woCount < 12 && nameCount >= 6 && nameCount > woCount) {
+    return {
+      rule: "叙事人称",
+      severity: "error",
+      description: `本书设定为第一人称，但本集几乎不用「我」（${woCount} 次）却反复以「${name}」第三人称叙述（${nameCount} 次）`,
+      suggestion: "改用第一人称（主角内心视角）重写本集叙事",
+    };
+  }
+  return null;
+}
+
+function detectFirstPersonInnerStateSlip(content: string): string | null {
+  const sentences = content
+    .split(/(?<=[。！？!?])|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+
+  for (const sentence of sentences) {
+    if (!/^[他她]/.test(sentence)) continue;
+    if (/^[他她][^。！？!?]{0,18}(?:觉得|感到|意识到|明白|想起|脑子里|心里|太阳穴)/.test(sentence)) {
+      return sentence.length > 40 ? `${sentence.slice(0, 39)}…` : sentence;
+    }
+  }
+  return null;
+}
+
+/**
+ * Cross-episode repetition check.
+ * Detects phrases from the current episode that also appeared in recent episodes.
+ */
+export function detectCrossEpisodeRepetition(
+  currentContent: string,
+  recentEpisodesContent: string,
+  language: "zh" | "en" = "zh",
+): ReadonlyArray<PostWriteViolation> {
+  if (!recentEpisodesContent || recentEpisodesContent.length < 100) return [];
+
+  const violations: PostWriteViolation[] = [];
+  const isEnglish = language === "en";
+
+  if (isEnglish) {
+    // Extract 3-word phrases from current episode
+    const words = currentContent.toLowerCase().replace(/[^\w\s']/g, "").split(/\s+/).filter(w => w.length > 2);
+    const phraseCounts = new Map<string, number>();
+    for (let i = 0; i < words.length - 2; i++) {
+      const phrase = `${words[i]} ${words[i + 1]} ${words[i + 2]}`;
+      phraseCounts.set(phrase, (phraseCounts.get(phrase) ?? 0) + 1);
+    }
+    // Check which repeated phrases (2+ in current) also appear in recent episodes
+    const recentLower = recentEpisodesContent.toLowerCase();
+    const crossRepeats: string[] = [];
+    for (const [phrase, count] of phraseCounts) {
+      if (count >= 2 && recentLower.includes(phrase)) {
+        crossRepeats.push(`"${phrase}" (×${count})`);
+      }
+    }
+    if (crossRepeats.length >= 3) {
+      violations.push({
+        rule: "Cross-episode repetition",
+        severity: "warning",
+        description: `${crossRepeats.length} repeated phrases also found in recent episodes: ${crossRepeats.slice(0, 5).join(", ")}`,
+        suggestion: "Vary action verbs and descriptive phrases to avoid cross-episode repetition",
+      });
+    }
+  } else {
+    // Chinese: 6-char ngrams
+    const chars = currentContent.replace(/[\s\n\r]/g, "");
+    const phraseCounts = new Map<string, number>();
+    for (let i = 0; i < chars.length - 5; i++) {
+      const phrase = chars.slice(i, i + 6);
+      if (/^[\u4e00-\u9fff]{6}$/.test(phrase)) {
+        phraseCounts.set(phrase, (phraseCounts.get(phrase) ?? 0) + 1);
+      }
+    }
+    const recentClean = recentEpisodesContent.replace(/[\s\n\r]/g, "");
+    const crossRepeats: string[] = [];
+    for (const [phrase, count] of phraseCounts) {
+      if (count >= 2 && recentClean.includes(phrase)) {
+        crossRepeats.push(`"${phrase}"(×${count})`);
+      }
+    }
+    if (crossRepeats.length >= 3) {
+      violations.push({
+        rule: "跨集重复",
+        severity: "warning",
+        description: `${crossRepeats.length}个重复短语在近期剧集中也出现过：${crossRepeats.slice(0, 5).join("、")}`,
+        suggestion: "变换动作描写和场景用语，避免跨集机械重复",
+      });
+    }
+  }
+
+  return violations;
+}
+
+export function detectParagraphLengthDrift(
+  currentContent: string,
+  recentEpisodesContent: string,
+  language: "zh" | "en" = "zh",
+): ReadonlyArray<PostWriteViolation> {
+  if (!recentEpisodesContent || recentEpisodesContent.trim().length === 0) return [];
+
+  const current = analyzeParagraphShape(currentContent, language);
+  const recent = analyzeParagraphShape(recentEpisodesContent, language);
+
+  if (current.paragraphs.length < 4 || recent.paragraphs.length < 4) return [];
+  if (recent.averageLength <= 0 || current.averageLength <= 0) return [];
+
+  const shrinkRatio = current.averageLength / recent.averageLength;
+  const shortRatioDelta = current.shortRatio - recent.shortRatio;
+
+  if (shrinkRatio >= 0.6 || current.shortRatio < 0.5 || shortRatioDelta < 0.25) {
+    return [];
+  }
+
+  const dropPercent = Math.round((1 - shrinkRatio) * 100);
+
+  return [
+    language === "en"
+      ? {
+          rule: "Paragraph density drift",
+          severity: "warning",
+          description: `Average paragraph length dropped from ${Math.round(recent.averageLength)} to ${Math.round(current.averageLength)} characters (${dropPercent}% shorter) compared with recent episodes.`,
+          suggestion: "Let action, observation, and reaction share paragraphs more often instead of cutting every beat into a single short line.",
+        }
+      : {
+          rule: "段落密度漂移",
+          severity: "warning",
+          description: `当前集平均段长从近期剧集的${Math.round(recent.averageLength)}字降到${Math.round(current.averageLength)}字，缩短了${dropPercent}%。`,
+          suggestion: "不要把每个动作都切成单独短句；适当把动作、观察和反应并入同一段，恢复段落层次。",
+        },
+  ];
+}
+
+/** English-specific post-write validation rules. */
+function validatePostWriteEnglish(
+  content: string,
+  genreProfile: GenreProfile,
+  bookRules: BookRules | null,
+): ReadonlyArray<PostWriteViolation> {
+  const violations: PostWriteViolation[] = [];
+
+  // 1. AI-tell word density (from en-prompt-sections IRON LAW 3)
+  const aiTellWords = ["delve", "tapestry", "testament", "intricate", "pivotal", "vibrant", "embark", "comprehensive", "nuanced"];
+  for (const word of aiTellWords) {
+    const regex = new RegExp(`\\b${word}\\b`, "gi");
+    const matches = content.match(regex);
+    if (matches && matches.length > Math.ceil(content.length / 3000)) {
+      violations.push({
+        rule: "AI-tell word density",
+        severity: "warning",
+        description: `"${word}" appears ${matches.length} times (limit: 1 per 3000 chars)`,
+        suggestion: `Replace with a more specific word`,
+      });
+    }
+  }
+
+  // 2. Paragraph overflow (same rule applies to English)
+  const paragraphs = content.split(/\n\s*\n/).filter((p) => p.trim().length > 0);
+  const longParagraphs = paragraphs.filter((p) => p.length > 500);
+  if (longParagraphs.length >= 2) {
+    violations.push({
+      rule: "Paragraph length",
+      severity: "warning",
+      description: `${longParagraphs.length} paragraphs exceed 500 characters`,
+      suggestion: "Break into shorter paragraphs for readability",
+    });
+  }
+
+  violations.push(...detectParagraphShapeWarnings(content, "en"));
+
+  // 2.5. Multi-character scene with almost no direct exchange
+  const quotedLines = content.match(/"[^"]+"/g) ?? [];
+  const englishNames = [...new Set(
+    (content.match(/\b[A-Z][a-z]{2,}\b/g) ?? [])
+      .filter((name) => !ENGLISH_NAME_STOP_WORDS.has(name)),
+  )];
+  if (englishNames.length >= 2 && quotedLines.length < 2 && content.length >= 120) {
+    violations.push({
+      rule: "Dialogue pressure",
+      severity: "warning",
+      description: `Multi-character scene appears to rely on narration with almost no direct exchange (${englishNames.slice(0, 3).join(", ")}).`,
+      suggestion: "Add at least one resistance-bearing exchange so characters push back, withhold, or pressure each other directly.",
+    });
+  }
+
+  // 3. Book-specific prohibitions
+  if (bookRules?.prohibitions) {
+    for (const prohibition of bookRules.prohibitions) {
+      if (prohibition.length >= 2 && prohibition.length <= 50 && content.toLowerCase().includes(prohibition.toLowerCase())) {
+        violations.push({
+          rule: "Book prohibition",
+          severity: "error",
+          description: `Found banned content: "${prohibition}"`,
+          suggestion: "Remove or rewrite this content",
+        });
+      }
+    }
+  }
+
+  // 4. Genre fatigue words
+  const fatigueWords = bookRules?.fatigueWordsOverride && bookRules.fatigueWordsOverride.length > 0
+    ? bookRules.fatigueWordsOverride
+    : genreProfile.fatigueWords;
+  for (const word of fatigueWords) {
+    const regex = new RegExp(`\\b${word}\\b`, "gi");
+    const matches = content.match(regex);
+    if (matches && matches.length > 1) {
+      violations.push({
+        rule: "Fatigue word",
+        severity: "warning",
+        description: `"${word}" appears ${matches.length} times (max 1 per episode)`,
+        suggestion: "Vary the vocabulary",
+      });
+    }
+  }
+
+  violations.push(...detectEpisodeBoundaryQuality(content, "en"));
+
+  return assignPostWriteRepairScopes(violations);
+}
+
+function appendParagraphShapeWarnings(
+  violations: PostWriteViolation[],
+  content: string,
+  language: "zh" | "en",
+): void {
+  const shape = analyzeParagraphShape(content, language);
+  if (shape.paragraphs.length < 4) return;
+
+  if (shape.shortParagraphs.length >= 4 && shape.shortRatio >= 0.6) {
+    violations.push(
+      language === "en"
+        ? {
+            rule: "Paragraph fragmentation",
+            severity: "warning",
+            description: `${shape.shortParagraphs.length} of ${shape.paragraphs.length} paragraphs are shorter than ${shape.shortThreshold} characters.`,
+            suggestion: "Merge adjacent action, observation, and reaction beats so the episode does not collapse into one-line paragraphs.",
+          }
+        : {
+            rule: "段落过碎",
+            severity: "warning",
+            description: `${shape.paragraphs.length}个段落里有${shape.shortParagraphs.length}个不足${shape.shortThreshold}字，段落被切得过碎。`,
+            suggestion: "把相邻的动作、观察、反应适当并段，不要每句话都单独起段。",
+          },
+    );
+  }
+
+  if (shape.maxConsecutiveShort >= 3) {
+    violations.push(
+      language === "en"
+        ? {
+            rule: "Consecutive short paragraphs",
+            severity: "warning",
+            description: `${shape.maxConsecutiveShort} short paragraphs appear back to back.`,
+            suggestion: "Break the one-beat-per-paragraph rhythm by folding connected beats into fuller paragraphs.",
+          }
+        : {
+            rule: "连续短段",
+            severity: "warning",
+            description: `连续出现${shape.maxConsecutiveShort}个不足${shape.shortThreshold}字的短段，容易形成短句堆砌。`,
+            suggestion: "把连续的碎动作重新编组，至少让一个段落承载完整的动作链或情绪推进。",
+          },
+    );
+  }
+}
+
+export function detectParagraphShapeWarnings(
+  content: string,
+  language: "zh" | "en" = "zh",
+): ReadonlyArray<PostWriteViolation> {
+  const violations: PostWriteViolation[] = [];
+  appendParagraphShapeWarnings(violations, content, language);
+  return violations;
+}
+
+function isDialogueParagraph(paragraph: string): boolean {
+  const trimmed = paragraph.trim();
+  return /^[""「『'《]/.test(trimmed) || /^[""]/.test(trimmed) || /^——/.test(trimmed);
+}
+
+function analyzeParagraphShape(content: string, language: "zh" | "en"): ParagraphShape {
+  const paragraphs = extractParagraphs(content);
+  // Exclude dialogue lines from short paragraph counting — dialogue is naturally short
+  const narrativeParagraphs = paragraphs.filter((p) => !isDialogueParagraph(p));
+  const shortThreshold = language === "en" ? 120 : 35;
+  const shortParagraphs = narrativeParagraphs.filter((paragraph) => paragraph.length < shortThreshold);
+  const averageLength = paragraphs.length > 0
+    ? paragraphs.reduce((sum, paragraph) => sum + paragraph.length, 0) / paragraphs.length
+    : 0;
+
+  let maxConsecutiveShort = 0;
+  let currentConsecutive = 0;
+  for (const paragraph of narrativeParagraphs) {
+    if (paragraph.length < shortThreshold) {
+      currentConsecutive++;
+      maxConsecutiveShort = Math.max(maxConsecutiveShort, currentConsecutive);
+    } else {
+      currentConsecutive = 0;
+    }
+  }
+
+  return {
+    paragraphs,
+    shortThreshold,
+    shortParagraphs,
+    shortRatio: narrativeParagraphs.length > 0 ? shortParagraphs.length / narrativeParagraphs.length : 0,
+    averageLength,
+    maxConsecutiveShort,
+  };
+}
+
+function extractParagraphs(content: string): string[] {
+  return content
+    .split(/\n\s*\n/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph.length > 0)
+    .filter((paragraph) => paragraph !== "---")
+    .filter((paragraph) => !paragraph.startsWith("#"));
+}
+
+const ENGLISH_NAME_STOP_WORDS = new Set([
+  "The",
+  "And",
+  "But",
+  "When",
+  "While",
+  "After",
+  "Before",
+  "Even",
+  "Then",
+  "They",
+]);
+
+const CHINESE_TITLE_STOP_WORDS = new Set([
+  "这次",
+  "正文",
+  "标题",
+  "重复",
+  "不同",
+  "完全",
+  "只是",
+  "碰巧",
+  "没有",
+  "回头",
+]);
+
+const CHINESE_TITLE_STOP_CHARS = new Set(["的", "了", "着", "一", "只", "从", "在", "和", "与", "把", "被", "有", "没", "里", "又", "才"]);
+
+/**
+ * Detect duplicate or near-duplicate episode titles.
+ * Compares the new title against existing episode titles from index.
+ */
+export function detectDuplicateTitle(
+  newTitle: string,
+  existingTitles: ReadonlyArray<string>,
+): ReadonlyArray<PostWriteViolation> {
+  if (!newTitle.trim()) return [];
+
+  const normalized = newTitle.trim().toLowerCase();
+  const violations: PostWriteViolation[] = [];
+
+  for (const existing of existingTitles) {
+    const existingNorm = existing.trim().toLowerCase();
+    if (!existingNorm) continue;
+
+    // Exact match
+    if (normalized === existingNorm) {
+      violations.push({
+        rule: "duplicate-title",
+        severity: "warning",
+        description: `剧集标题"${newTitle}"与已有剧集标题完全相同`,
+        suggestion: "更换一个不同的剧集标题",
+      });
+      break;
+    }
+
+    // Near-duplicate: one is substring of the other, or only differs by punctuation/numbers
+    const stripPunct = (s: string) => s.replace(/[^\p{L}\p{N}]/gu, "");
+    if (stripPunct(normalized) === stripPunct(existingNorm)) {
+      violations.push({
+        rule: "near-duplicate-title",
+        severity: "warning",
+        description: `剧集标题"${newTitle}"与已有标题"${existing}"高度相似`,
+        suggestion: "避免使用相似的剧集标题",
+      });
+      break;
+    }
+  }
+
+  return violations;
+}
+
+export function resolveDuplicateTitle(
+  newTitle: string,
+  existingTitles: ReadonlyArray<string>,
+  language: "zh" | "en" = "zh",
+  options?: {
+    readonly content?: string;
+  },
+): {
+  readonly title: string;
+  readonly issues: ReadonlyArray<PostWriteViolation>;
+} {
+  const trimmed = newTitle.trim();
+  if (!trimmed) {
+    return { title: newTitle, issues: [] };
+  }
+
+  const duplicateIssues = detectDuplicateTitle(trimmed, existingTitles);
+  if (duplicateIssues.length > 0) {
+    const regenerated = regenerateDuplicateTitle(trimmed, existingTitles, language, options?.content);
+    if (regenerated && detectDuplicateTitle(regenerated, existingTitles).length === 0) {
+      return { title: regenerated, issues: duplicateIssues };
+    }
+
+    let counter = 2;
+    while (counter < 100) {
+      const candidate = language === "en"
+        ? `${trimmed} (${counter})`
+        : `${trimmed}（${counter}）`;
+      if (detectDuplicateTitle(candidate, existingTitles).length === 0) {
+        return { title: candidate, issues: duplicateIssues };
+      }
+      counter++;
+    }
+
+    return { title: trimmed, issues: duplicateIssues };
+  }
+
+  const collapseIssues = detectTitleCollapse(trimmed, existingTitles, language);
+  if (collapseIssues.length === 0) {
+    return { title: trimmed, issues: [] };
+  }
+
+  const regenerated = regenerateCollapsedTitle(trimmed, existingTitles, language, options?.content);
+  if (
+    regenerated
+    && detectDuplicateTitle(regenerated, existingTitles).length === 0
+    && detectTitleCollapse(regenerated, existingTitles, language).length === 0
+  ) {
+    return { title: regenerated, issues: collapseIssues };
+  }
+
+  return { title: trimmed, issues: collapseIssues };
+}
+
+function detectTitleCollapse(
+  newTitle: string,
+  existingTitles: ReadonlyArray<string>,
+  language: "zh" | "en",
+): ReadonlyArray<PostWriteViolation> {
+  const recentTitles = existingTitles
+    .map((title) => title.trim())
+    .filter(Boolean)
+    .slice(-3);
+  if (recentTitles.length < 3) {
+    return [];
+  }
+
+  const cadence = analyzeEpisodeCadence({
+    language,
+    rows: [...recentTitles, newTitle].map((title, index) => ({
+      episode: index + 1,
+      title,
+      mood: "",
+      episodeType: "",
+    })),
+  });
+  const titlePressure = cadence.titlePressure;
+  if (!titlePressure || titlePressure.pressure !== "high") {
+    return [];
+  }
+  if (!newTitle.includes(titlePressure.repeatedToken)) {
+    return [];
+  }
+
+  return [
+    language === "en"
+      ? {
+          rule: "title-collapse",
+          severity: "warning",
+          description: `Episode title "${newTitle}" keeps leaning on the recent "${titlePressure.repeatedToken}" title shell.`,
+          suggestion: "Rename the episode around a new image, action, consequence, or character focus.",
+        }
+      : {
+          rule: "title-collapse",
+          severity: "warning",
+          description: `剧集标题"${newTitle}"仍在沿用近期围绕“${titlePressure.repeatedToken}”的命名壳。`,
+          suggestion: "换一个新的意象、动作、后果或人物焦点来命名。",
+        },
+  ];
+}
+
+function regenerateDuplicateTitle(
+  baseTitle: string,
+  existingTitles: ReadonlyArray<string>,
+  language: "zh" | "en",
+  content?: string,
+): string | undefined {
+  if (!content || !content.trim()) {
+    return undefined;
+  }
+
+  const qualifier = language === "en"
+    ? extractEnglishTitleQualifier(baseTitle, existingTitles, content)
+    : extractChineseTitleQualifier(baseTitle, existingTitles, content);
+  if (!qualifier) {
+    return undefined;
+  }
+
+  return language === "en"
+    ? `${baseTitle}: ${qualifier}`
+    : `${baseTitle}：${qualifier}`;
+}
+
+function regenerateCollapsedTitle(
+  baseTitle: string,
+  existingTitles: ReadonlyArray<string>,
+  language: "zh" | "en",
+  content?: string,
+): string | undefined {
+  if (!content || !content.trim()) {
+    return undefined;
+  }
+
+  const fresh = language === "en"
+    ? extractEnglishTitleQualifier(baseTitle, existingTitles, content)
+    : extractChineseTitleQualifier(baseTitle, existingTitles, content);
+  if (!fresh) {
+    return undefined;
+  }
+
+  return fresh === baseTitle ? undefined : fresh;
+}
+
+function extractEnglishTitleQualifier(
+  baseTitle: string,
+  existingTitles: ReadonlyArray<string>,
+  content: string,
+): string | undefined {
+  const blocked = new Set(extractEnglishTitleTerms([baseTitle, ...existingTitles].join(" ")));
+  const words = (content.match(/[A-Za-z]{4,}/g) ?? [])
+    .map((word) => word.toLowerCase())
+    .filter((word) => !ENGLISH_NAME_STOP_WORDS.has(capitalize(word)))
+    .filter((word) => !blocked.has(word));
+  const first = words[0];
+  if (!first) {
+    return undefined;
+  }
+
+  const second = words.find((word) => word !== first && !blocked.has(word));
+  return second
+    ? `${capitalize(first)} ${capitalize(second)}`
+    : capitalize(first);
+}
+
+function extractChineseTitleQualifier(
+  baseTitle: string,
+  existingTitles: ReadonlyArray<string>,
+  content: string,
+): string | undefined {
+  const blocked = new Set(extractChineseTitleTerms([baseTitle, ...existingTitles].join("")));
+  const segments = content.match(/[\u4e00-\u9fff]+/g) ?? [];
+
+  const isUsable = (candidate: string): boolean => {
+    if (candidate.length < 2) return false;
+    if (CHINESE_TITLE_STOP_WORDS.has(candidate)) return false;
+    if (CHINESE_TITLE_WEAK_WORD.test(candidate)) return false;
+    if (CHINESE_TITLE_WEAK_PREFIX.test(candidate)) return false;
+    if (CHINESE_TITLE_FUNCTION_START.test(candidate)) return false;
+    if (CHINESE_TITLE_PARTICLE_END.test(candidate)) return false;
+    if ([...candidate].some((char) => CHINESE_TITLE_STOP_CHARS.has(char))) return false;
+    if (blocked.has(candidate)) return false;
+    return true;
+  };
+
+  // Prefer compact 2-char noun-like qualifiers found anywhere in the content
+  // before falling back to 3/4-char fragments. A blocked fragment at one spot
+  // (e.g. an already-used "计时") must not force an awkward longer fragment
+  // ("计时长") from the same position when a fresh image exists elsewhere.
+  for (const size of [2, 3, 4] as const) {
+    for (const segment of segments) {
+      for (let start = 0; start + size <= segment.length; start += 1) {
+        const candidate = segment.slice(start, start + size).trim();
+        if (isUsable(candidate)) return candidate;
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Verbal particles and weak endings that make a title qualifier feel hollow
+ * ("预计", "终于", "开始…"). Prefer concrete nouns/imagery instead. */
+const CHINESE_TITLE_WEAK_WORD = /^(?:预计|将会|开始|已经|终于|突然|因为|所以|但是|如果|然后|接着|最后|直到|必须|需要|可能|应该|无法|没有|不是|也是|还是|就是|可以|正在|现在|这时|那时|此时|片刻|沉默|缓缓|慢慢|猛地|一下|一声|一眼|一回|也许|或许|似乎|仿佛|好像|时长|计时)$/u;
+const CHINESE_TITLE_WEAK_PREFIX = /^(?:预计|将会|开始|已经|终于|突然|可能|应该|必须|需要|无法|不能|没有|不是|只是|还是|就是|可以|正在|现在|这时|那时|因为|所以|但是|如果|然后|接着|最后|直到|也许|或许|似乎|仿佛)/u;
+const CHINESE_TITLE_FUNCTION_START = /^[她他它我这你被把将会已能可要想说看听去来到在是不没有和与或又再但而如只还]/u;
+const CHINESE_TITLE_PARTICLE_END = /[了着过的得地呢吗吧啊]$/u;
+
+function extractEnglishTitleTerms(text: string): string[] {
+  return [...new Set((text.match(/[A-Za-z]{4,}/g) ?? []).map((word) => word.toLowerCase()))];
+}
+
+function extractChineseTitleTerms(text: string): string[] {
+  const terms = new Set<string>();
+  const segments = text.match(/[\u4e00-\u9fff]+/g) ?? [];
+
+  for (const segment of segments) {
+    for (let start = 0; start < segment.length; start += 1) {
+      for (let size = 2; size <= 4; size += 1) {
+        const candidate = segment.slice(start, start + size).trim();
+        if (candidate.length < 2) continue;
+        if ([...candidate].some((char) => CHINESE_TITLE_STOP_CHARS.has(char))) continue;
+        terms.add(candidate);
+      }
+    }
+  }
+
+  return [...terms];
+}
+
+function capitalize(word: string): string {
+  return word.length === 0 ? word : `${word[0]!.toUpperCase()}${word.slice(1)}`;
+}

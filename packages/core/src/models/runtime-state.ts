@@ -1,0 +1,165 @@
+import { z } from "zod";
+
+export const RuntimeStateLanguageSchema = z.enum(["zh", "en"]);
+export type RuntimeStateLanguage = z.infer<typeof RuntimeStateLanguageSchema>;
+
+export const StateManifestSchema = z.object({
+  schemaVersion: z.literal(2),
+  language: RuntimeStateLanguageSchema,
+  lastAppliedEpisode: z.number().int().min(0),
+  projectionVersion: z.number().int().min(1),
+  migrationWarnings: z.array(z.string()).default([]),
+});
+
+export type StateManifest = z.infer<typeof StateManifestSchema>;
+
+export const HookStatusSchema = z.enum(["open", "progressing", "deferred", "resolved"]);
+export type HookStatus = z.infer<typeof HookStatusSchema>;
+
+export const HookPayoffTimingSchema = z.enum([
+  "immediate",
+  "near-term",
+  "mid-arc",
+  "slow-burn",
+  "endgame",
+]);
+export type HookPayoffTiming = z.infer<typeof HookPayoffTimingSchema>;
+
+export const HookRecordSchema = z.object({
+  hookId: z.string().min(1),
+  hookKind: z.enum(["plot", "emotion"]).optional(),
+  startEpisode: z.number().int().min(0),
+  type: z.string().min(1),
+  status: HookStatusSchema,
+  lastAdvancedEpisode: z.number().int().min(0),
+  expectedPayoff: z.string().default(""),
+  payoffTiming: HookPayoffTimingSchema.optional(),
+  notes: z.string().default(""),
+  audienceQuestion: z.string().optional(),
+  seedEpisode: z.number().int().min(1).optional(),
+  targetPayoffEpisode: z.number().int().min(1).optional(),
+  pressureSource: z.string().optional(),
+  // Phase 7 — hook causality / promotion metadata.
+  // All optional so hooks parsed from pre-Phase-7 markdown still validate
+  // and so callers constructing HookRecord inline can omit them.
+  dependsOn: z.array(z.string().min(1)).optional(),
+  paysOffInArc: z.string().optional(),
+  coreHook: z.boolean().optional(),
+  halfLifeEpisodes: z.number().int().positive().optional(),
+  advancedCount: z.number().int().min(0).optional(),
+  // Phase 7 hotfix 2 — promotion flag. Undefined on legacy 11/12-column
+  // ledgers; architect-seed and consolidator-rerun both populate it going
+  // forward. Reviewer uses it to gate critical severity for stale hooks.
+  promoted: z.boolean().optional(),
+});
+
+export type HookRecord = z.infer<typeof HookRecordSchema>;
+
+export const HooksStateSchema = z.object({
+  hooks: z.array(HookRecordSchema).default([]),
+});
+
+export type HooksState = z.infer<typeof HooksStateSchema>;
+
+export const EpisodeSummaryRowSchema = z.object({
+  episodeNumber: z.number().int().min(1),
+  title: z.string().min(1),
+  characters: z.string().default(""),
+  events: z.string().default(""),
+  stateChanges: z.string().default(""),
+  hookActivity: z.string().default(""),
+  mood: z.string().default(""),
+  episodeType: z.string().default(""),
+  payoff: z.string().optional(),
+  reversal: z.string().optional(),
+  relationshipChange: z.string().optional(),
+  emotionalHook: z.string().optional(),
+  endingQuestion: z.string().optional(),
+  estimatedDurationSeconds: z.number().finite().nonnegative().optional(),
+  shotCount: z.number().int().min(0).optional(),
+});
+
+export type EpisodeSummaryRow = z.infer<typeof EpisodeSummaryRowSchema>;
+
+export const EpisodeSummariesStateSchema = z.object({
+  rows: z.array(EpisodeSummaryRowSchema).default([]),
+});
+
+export type EpisodeSummariesState = z.infer<typeof EpisodeSummariesStateSchema>;
+
+export const CurrentStateFactSchema = z.object({
+  subject: z.string().min(1),
+  predicate: z.string().min(1),
+  object: z.string().min(1),
+  validFromEpisode: z.number().int().min(0),
+  validUntilEpisode: z.number().int().min(0).nullable(),
+  sourceEpisode: z.number().int().min(0),
+});
+
+export type CurrentStateFact = z.infer<typeof CurrentStateFactSchema>;
+
+export const CurrentStateStateSchema = z.object({
+  episode: z.number().int().min(0),
+  facts: z.array(CurrentStateFactSchema).default([]),
+});
+
+export type CurrentStateState = z.infer<typeof CurrentStateStateSchema>;
+
+const OptionalCurrentStatePatchValueSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  },
+  z.string().min(1).optional(),
+);
+
+export const CurrentStatePatchSchema = z.object({
+  currentLocation: OptionalCurrentStatePatchValueSchema,
+  protagonistState: OptionalCurrentStatePatchValueSchema,
+  currentGoal: OptionalCurrentStatePatchValueSchema,
+  currentConstraint: OptionalCurrentStatePatchValueSchema,
+  currentAlliances: OptionalCurrentStatePatchValueSchema,
+  currentConflict: OptionalCurrentStatePatchValueSchema,
+});
+
+export type CurrentStatePatch = z.infer<typeof CurrentStatePatchSchema>;
+
+export const HookOpsSchema = z.object({
+  upsert: z.array(HookRecordSchema).default([]),
+  mention: z.array(z.string().min(1)).default([]),
+  resolve: z.array(z.string().min(1)).default([]),
+  defer: z.array(z.string().min(1)).default([]),
+});
+
+export type HookOps = z.infer<typeof HookOpsSchema>;
+
+export const NewHookCandidateSchema = z.object({
+  type: z.string().min(1),
+  expectedPayoff: z.string().default(""),
+  payoffTiming: HookPayoffTimingSchema.optional(),
+  notes: z.string().default(""),
+});
+
+export type NewHookCandidate = z.infer<typeof NewHookCandidateSchema>;
+
+const LooseOpSchema = z.record(z.string(), z.unknown());
+
+export const EpisodeRuntimeStateDeltaSchema = z.object({
+  episode: z.number().int().min(1),
+  currentStatePatch: CurrentStatePatchSchema.optional(),
+  hookOps: HookOpsSchema.default({
+    upsert: [],
+    mention: [],
+    resolve: [],
+    defer: [],
+  }),
+  newHookCandidates: z.array(NewHookCandidateSchema).default([]),
+  episodeSummary: EpisodeSummaryRowSchema.optional(),
+  subplotOps: z.array(LooseOpSchema).default([]),
+  emotionalArcOps: z.array(LooseOpSchema).default([]),
+  characterMatrixOps: z.array(LooseOpSchema).default([]),
+  notes: z.array(z.string()).default([]),
+});
+
+export type EpisodeRuntimeStateDelta = z.infer<typeof EpisodeRuntimeStateDeltaSchema>;

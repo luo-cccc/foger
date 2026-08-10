@@ -1,0 +1,50 @@
+{
+  "name": "inkos",
+  "version": "1.6.3",
+  "private": true,
+  "packageManager": "pnpm@10.34.5",
+  "description": "AI production system for serialized vertical drama scripts",
+  "keywords": [
+    "story-creation-ai-agent",
+    "story-agent",
+    "ai-screenwriting",
+    "vertical-drama",
+    "episode-script",
+    "storyboard-script",
+    "ai-storytelling",
+    "litrpg",
+    "progression-fantasy",
+    "creative-writing-ai",
+    "cli"
+  ],
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/luo-cccc/foger.git"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "clean": "node scripts/clean-workspace.mjs",
+    "clean:build": "node scripts/clean-workspace.mjs --build",
+    "clean:dry-run": "node scripts/clean-workspace.mjs --dry-run",
+    "check:hygiene": "node scripts/check-code-hygiene.mjs",
+    "dev": "pnpm -r --parallel dev",
+    "test": "pnpm -r test",
+    "lint": "pnpm check:hygiene && pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "audit:semantic-patterns": "node scripts/audit-semantic-patterns.mjs",
+    "check:studio-bundle": "node scripts/verify-studio-bundle.mjs",
+    "verify:publish-manifests": "node scripts/verify-no-workspace-protocol.mjs packages/core packages/cli packages/studio",
+    "benchmark:studio-e2e": "node scripts/studio-e2e-benchmark.mjs",
+    "stress:process": "pnpm --filter @actalk/inkos-core build && node scripts/process-contention-stress.mjs",
+    "stress:unattended": "pnpm --filter @actalk/inkos-core build && node scripts/unattended-soak.mjs",
+    "test:linked": "pnpm --filter @actalk/inkos-studio test:linked",
+    "test:linked:live": "pnpm --filter @actalk/inkos-studio test:linked:live",
+    "verify": "pnpm check:hygiene && pnpm typecheck && pnpm audit:semantic-patterns && pnpm build && pnpm check:studio-bundle && pnpm test && pnpm verify:publish-manifests",
+    "release": "pnpm verify && pnpm audit --prod --registry=https://registry.npmjs.org && pnpm --filter @actalk/inkos-studio test:e2e"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  }
+}

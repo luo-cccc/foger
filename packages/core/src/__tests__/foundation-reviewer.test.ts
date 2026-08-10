@@ -1,0 +1,226 @@
+import { describe, expect, it, vi } from "vitest";
+import { FoundationReviewerAgent } from "../agents/foundation-reviewer.js";
+import type { LLMClient } from "../llm/provider.js";
+
+const TEST_CLIENT: LLMClient = {
+  provider: "openai",
+  apiFormat: "chat",
+  stream: false,
+} as unknown as LLMClient;
+
+const ZERO_USAGE = {
+  promptTokens: 0,
+  completionTokens: 0,
+  totalTokens: 0,
+} as const;
+
+describe("FoundationReviewerAgent", () => {
+  it("reviews original foundations against the requested episode count", async () => {
+    const agent = new FoundationReviewerAgent({
+      client: TEST_CLIENT,
+      model: "test-model",
+      projectRoot: process.cwd(),
+    });
+
+    const chatSpy = vi.spyOn(
+      agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> },
+      "chat",
+    ).mockResolvedValue({
+      content: [
+        "=== DIMENSION: 1 ===",
+        "分数：80",
+        "意见：可用",
+        "=== DIMENSION: 2 ===",
+        "分数：80",
+        "意见：可用",
+        "=== DIMENSION: 3 ===",
+        "分数：80",
+        "意见：可用",
+        "=== DIMENSION: 4 ===",
+        "分数：80",
+        "意见：可用",
+        "=== DIMENSION: 5 ===",
+        "分数：80",
+        "意见：可用",
+        "=== OVERALL ===",
+        "总分：80",
+        "通过：是",
+        "总评：可开写。",
+      ].join("\n"),
+      usage: ZERO_USAGE,
+    });
+
+    await agent.review({
+      language: "zh",
+      mode: "original",
+      targetEpisodes: 8,
+      foundation: {
+        storyBible: "故事框架",
+        volumeOutline: "8章大纲",
+        bookRules: "规则",
+        currentState: "状态",
+        pendingHooks: "伏笔",
+      },
+    });
+
+    const messages = chatSpy.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
+    expect(messages[0]?.content).toContain("用户要求的8集");
+    expect(messages[0]?.content).toContain("前5集");
+    expect(messages[0]?.content).toContain("覆盖全部8集");
+    expect(messages[0]?.content).toContain("逐集节拍合同");
+    expect(messages[0]?.content).toContain("目标、阻碍、转折、可观察交付");
+    expect(messages[0]?.content).toContain("高压关系");
+    expect(messages[0]?.content).toContain("新颖设定");
+    expect(messages[0]?.content).toContain("情绪追看钩子");
+    expect(messages[0]?.content).not.toContain("支撑40章");
+    expect(messages[0]?.content).not.toContain("连续10章");
+  });
+
+  it("deterministically rejects a multi-volume expansion of a compact complete book", async () => {
+    const agent = new FoundationReviewerAgent({
+      client: TEST_CLIENT,
+      model: "test-model",
+      projectRoot: process.cwd(),
+    });
+    vi.spyOn(
+      agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> },
+      "chat",
+    ).mockResolvedValue({
+      content: [
+        ...Array.from({ length: 5 }, (_, index) => [
+          `=== DIMENSION: ${index + 1} ===`,
+          "分数：90",
+          "意见：模型认为可用",
+        ]).flat(),
+        "=== OVERALL ===",
+        "总分：90",
+        "通过：是",
+        "总评：可开写。",
+      ].join("\n"),
+      usage: ZERO_USAGE,
+    });
+
+    const result = await agent.review({
+      language: "zh",
+      mode: "original",
+      targetEpisodes: 5,
+      foundation: {
+        storyBible: "故事框架",
+        volumeOutline: "全书共5卷。\n第1卷发现录音。\n第5卷解决事故。",
+        bookRules: "规则",
+        currentState: "状态",
+        pendingHooks: "伏笔",
+      },
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.totalScore).toBeLessThan(80);
+    expect(result.blockingIssues).toEqual(expect.arrayContaining([
+      expect.stringContaining("目标5集只能规划1个故事篇章"),
+    ]));
+    expect(result.dimensions.at(-1)?.score).toBe(40);
+  });
+
+  it("deterministically rejects a prose-only volume map that yields no runtime contract", async () => {
+    const agent = new FoundationReviewerAgent({
+      client: TEST_CLIENT,
+      model: "test-model",
+      projectRoot: process.cwd(),
+    });
+    vi.spyOn(
+      agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> },
+      "chat",
+    ).mockResolvedValue({
+      content: [
+        ...Array.from({ length: 5 }, (_, index) => [
+          `=== DIMENSION: ${index + 1} ===`,
+          "分数：90",
+          "意见：模型认为可用",
+        ]).flat(),
+        "=== OVERALL ===",
+        "总分：90",
+        "通过：是",
+        "总评：可开写。",
+      ].join("\n"),
+      usage: ZERO_USAGE,
+    });
+
+    const result = await agent.review({
+      language: "zh",
+      mode: "original",
+      targetEpisodes: 5,
+      foundation: {
+        storyBible: "故事框架",
+        volumeOutline: "本书共1卷。\n第1卷覆盖第1-5章，但没有执行合同字段。",
+        bookRules: "规则",
+        currentState: "状态",
+        pendingHooks: "伏笔",
+      },
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.blockingIssues).toEqual(expect.arrayContaining([
+      expect.stringContaining("实际解析到0个"),
+      expect.stringContaining("逐集节拍合同"),
+    ]));
+  });
+
+  it("does not silently truncate foundation, canon, or style inputs before review", async () => {
+    const agent = new FoundationReviewerAgent({
+      client: TEST_CLIENT,
+      model: "test-model",
+      projectRoot: process.cwd(),
+    });
+
+    const chatSpy = vi.spyOn(
+      agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> },
+      "chat",
+    ).mockResolvedValue({
+      content: [
+        "=== DIMENSION: 1 ===",
+        "分数：80",
+        "意见：可用",
+        "=== DIMENSION: 2 ===",
+        "分数：80",
+        "意见：可用",
+        "=== DIMENSION: 3 ===",
+        "分数：80",
+        "意见：可用",
+        "=== DIMENSION: 4 ===",
+        "分数：80",
+        "意见：可用",
+        "=== DIMENSION: 5 ===",
+        "分数：80",
+        "意见：可用",
+        "=== OVERALL ===",
+        "总分：80",
+        "通过：是",
+        "总评：可开写。",
+      ].join("\n"),
+      usage: ZERO_USAGE,
+    });
+
+    await agent.review({
+      language: "zh",
+      mode: "series",
+      sourceCanon: `${"正典".repeat(9000)}\nSOURCE_CANON_TAIL_MARKER`,
+      styleGuide: `${"文风".repeat(3000)}\nSTYLE_GUIDE_TAIL_MARKER`,
+      foundation: {
+        storyBible: `${"世界".repeat(5000)}\nSTORY_BIBLE_TAIL_MARKER`,
+        volumeOutline: `${"卷纲".repeat(5000)}\nVOLUME_OUTLINE_TAIL_MARKER`,
+        bookRules: `${"规则".repeat(3000)}\nBOOK_RULES_TAIL_MARKER`,
+        currentState: `${"状态".repeat(2000)}\nCURRENT_STATE_TAIL_MARKER`,
+        pendingHooks: `${"伏笔".repeat(2000)}\nPENDING_HOOKS_TAIL_MARKER`,
+      },
+    });
+
+    const messages = chatSpy.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
+    expect(messages[0]?.content).toContain("SOURCE_CANON_TAIL_MARKER");
+    expect(messages[0]?.content).toContain("STYLE_GUIDE_TAIL_MARKER");
+    expect(messages[1]?.content).toContain("STORY_BIBLE_TAIL_MARKER");
+    expect(messages[1]?.content).toContain("VOLUME_OUTLINE_TAIL_MARKER");
+    expect(messages[1]?.content).toContain("BOOK_RULES_TAIL_MARKER");
+    expect(messages[1]?.content).toContain("CURRENT_STATE_TAIL_MARKER");
+    expect(messages[1]?.content).toContain("PENDING_HOOKS_TAIL_MARKER");
+  });
+});

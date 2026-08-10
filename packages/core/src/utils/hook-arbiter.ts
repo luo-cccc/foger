@@ -1,0 +1,386 @@
+import {
+  EpisodeRuntimeStateDeltaSchema,
+  type HookRecord,
+  type NewHookCandidate,
+  type EpisodeRuntimeStateDelta,
+} from "../models/runtime-state.js";
+import { normalizeHookId } from "./story-markdown.js";
+import {
+  evaluateHookAdmission,
+  normalizeHookFamily,
+  normalizeHookTypeLabel,
+} from "./hook-governance.js";
+import { resolveHookPayoffTiming } from "./hook-lifecycle.js";
+
+export interface HookArbiterDecision {
+  readonly action: "created" | "mapped" | "mentioned" | "rejected";
+  readonly reason: string;
+  readonly hookId?: string;
+  readonly candidate: NewHookCandidate;
+}
+
+interface PendingHookCandidate extends NewHookCandidate {
+  readonly sourceHookId?: string;
+}
+
+export function arbitrateEpisodeRuntimeStateDeltaHooks(params: {
+  readonly hooks: ReadonlyArray<HookRecord>;
+  readonly delta: EpisodeRuntimeStateDelta;
+}): {
+  readonly resolvedDelta: EpisodeRuntimeStateDelta;
+  readonly decisions: ReadonlyArray<HookArbiterDecision>;
+} {
+  const delta = EpisodeRuntimeStateDeltaSchema.parse(params.delta);
+  const workingHooks = params.hooks.map((hook) => ({ ...hook }));
+  const knownHookIds = new Set(workingHooks.map((hook) => hook.hookId));
+  const upsertsById = new Map<string, HookRecord>();
+  const mentions = new Set(delta.hookOps.mention.map((hookId) => resolveKnownHookId(hookId, workingHooks)));
+  const resolves = uniqueStrings(delta.hookOps.resolve.map((hookId) => resolveKnownHookId(hookId, workingHooks)));
+  const defers = uniqueStrings(delta.hookOps.defer.map((hookId) => resolveKnownHookId(hookId, workingHooks)));
+  const fallbackCandidates: PendingHookCandidate[] = [];
+  const decisions: HookArbiterDecision[] = [];
+  const hookIdRewrites = new Map<string, string>();
+
+  for (const hook of delta.hookOps.upsert) {
+    const resolvedHookId = resolveKnownHookId(hook.hookId, workingHooks);
+    if (knownHookIds.has(resolvedHookId)) {
+      const existing = workingHooks.find((candidate) => candidate.hookId === resolvedHookId)!;
+      recordHookIdRewrite(hookIdRewrites, hook.hookId, existing.hookId);
+      // An explicit upsert for an existing id is a lifecycle update. Reject it
+      // only when the model also changes the hook family/type; novelty in the
+      // payoff or notes is expected during legitimate advancement.
+      if (normalizeHookType(existing.type) !== normalizeHookType(hook.type)) {
+        const candidate = {
+          type: hook.type,
+          expectedPayoff: hook.expectedPayoff,
+          notes: hook.notes,
+        };
+        fallbackCandidates.push(candidate);
+        decisions.push({
+          action: "rejected",
+          reason: "existing_id_identity_conflict",
+          hookId: existing.hookId,
+          candidate,
+        });
+        continue;
+      }
+      const normalized = {
+        ...hook,
+        hookId: existing.hookId,
+        type: normalizeHookTypeLabel(hook.type),
+      };
+      upsertsById.set(normalized.hookId, normalized);
+      replaceWorkingHook(workingHooks, normalized);
+      continue;
+    }
+
+    fallbackCandidates.push({
+      type: hook.type,
+      expectedPayoff: hook.expectedPayoff,
+      notes: hook.notes,
+      sourceHookId: hook.hookId,
+    });
+  }
+
+  const pendingCandidates: PendingHookCandidate[] = [
+    ...fallbackCandidates,
+    ...delta.newHookCandidates,
+  ];
+  for (const candidate of pendingCandidates) {
+    const activeHooks = workingHooks.filter((hook) => hook.status !== "resolved");
+    const admission = evaluateHookAdmission({
+      candidate,
+      activeHooks,
+    });
+
+    if (!admission.admit) {
+      if (admission.reason === "duplicate_family" && admission.matchedHookId) {
+        const matched = workingHooks.find((hook) => hook.hookId === admission.matchedHookId);
+        if (!matched) {
+          decisions.push({
+            action: "rejected",
+            reason: "duplicate_family_without_match",
+            candidate,
+          });
+          continue;
+        }
+
+        if (isPureRestatement(candidate, matched)) {
+          if (!upsertsById.has(matched.hookId) && !resolves.includes(matched.hookId) && !defers.includes(matched.hookId)) {
+            mentions.add(matched.hookId);
+          }
+          decisions.push({
+            action: "mentioned",
+            reason: "restated_existing_family",
+            hookId: matched.hookId,
+            candidate,
+          });
+          recordHookIdRewrite(hookIdRewrites, candidate.sourceHookId, matched.hookId);
+          continue;
+        }
+
+        const base = upsertsById.get(matched.hookId) ?? matched;
+        const mapped = mergeCandidateIntoExistingHook(base, candidate, delta.episode);
+        upsertsById.set(mapped.hookId, mapped);
+        mentions.delete(mapped.hookId);
+        replaceWorkingHook(workingHooks, mapped);
+        decisions.push({
+          action: "mapped",
+          reason: "duplicate_family_with_novelty",
+          hookId: matched.hookId,
+          candidate,
+        });
+        recordHookIdRewrite(hookIdRewrites, candidate.sourceHookId, matched.hookId);
+        continue;
+      }
+
+      decisions.push({
+        action: "rejected",
+        reason: admission.reason,
+        candidate,
+      });
+      continue;
+    }
+
+    const created = createCanonicalHook({
+      candidate,
+      episode: delta.episode,
+      existingIds: new Set([
+        ...workingHooks.map((hook) => hook.hookId),
+        ...upsertsById.keys(),
+      ]),
+    });
+    upsertsById.set(created.hookId, created);
+    workingHooks.push(created);
+    decisions.push({
+      action: "created",
+      reason: "admit",
+      hookId: created.hookId,
+      candidate,
+    });
+    recordHookIdRewrite(hookIdRewrites, candidate.sourceHookId, created.hookId);
+  }
+
+  const resolvedDelta = EpisodeRuntimeStateDeltaSchema.parse({
+    ...delta,
+    hookOps: {
+      upsert: [...upsertsById.values()].sort(sortHooks),
+      mention: [...mentions]
+        .filter((hookId) => !upsertsById.has(hookId))
+        .filter((hookId) => !resolves.includes(hookId))
+        .filter((hookId) => !defers.includes(hookId))
+        .sort(),
+      resolve: resolves,
+      defer: defers,
+    },
+    newHookCandidates: [],
+    episodeSummary: delta.episodeSummary
+      ? {
+          ...delta.episodeSummary,
+          hookActivity: rewriteHookIdReferences(delta.episodeSummary.hookActivity, hookIdRewrites),
+        }
+      : undefined,
+  });
+
+  return {
+    resolvedDelta,
+    decisions,
+  };
+}
+
+function mergeCandidateIntoExistingHook(
+  existing: HookRecord,
+  candidate: NewHookCandidate,
+  episode: number,
+): HookRecord {
+  return {
+    ...existing,
+    type: normalizeHookTypeLabel(existing.type) || normalizeHookTypeLabel(candidate.type),
+    status: existing.status === "resolved" ? "resolved" : "progressing",
+    lastAdvancedEpisode: Math.max(existing.lastAdvancedEpisode, episode),
+    expectedPayoff: preferRicherText(existing.expectedPayoff, candidate.expectedPayoff),
+    payoffTiming: resolveHookPayoffTiming({
+      payoffTiming: candidate.payoffTiming ?? existing.payoffTiming,
+      expectedPayoff: preferRicherText(existing.expectedPayoff, candidate.expectedPayoff),
+      notes: preferRicherText(existing.notes, candidate.notes),
+    }),
+    notes: preferRicherText(existing.notes, candidate.notes),
+  };
+}
+
+function createCanonicalHook(params: {
+  readonly candidate: PendingHookCandidate;
+  readonly episode: number;
+  readonly existingIds: ReadonlySet<string>;
+}): HookRecord {
+  return {
+    hookId: buildDerivedHookId(params.existingIds),
+    startEpisode: params.episode,
+    type: normalizeHookTypeLabel(params.candidate.type),
+    status: "open",
+    lastAdvancedEpisode: params.episode,
+    expectedPayoff: params.candidate.expectedPayoff.trim(),
+    payoffTiming: resolveHookPayoffTiming(params.candidate),
+    notes: params.candidate.notes.trim(),
+  };
+}
+
+function buildDerivedHookId(existingIds: ReadonlySet<string>): string {
+  let maxSequence = 0;
+  for (const hookId of existingIds) {
+    const match = normalizeHookId(hookId).match(/^D-?0*(\d+)$/i);
+    if (!match) continue;
+    maxSequence = Math.max(maxSequence, Number.parseInt(match[1]!, 10));
+  }
+  return `D${String(maxSequence + 1).padStart(3, "0")}`;
+}
+
+function resolveKnownHookId(value: string, hooks: ReadonlyArray<HookRecord>): string {
+  const normalized = normalizeHookId(value);
+  const exact = hooks.find((hook) => hook.hookId === normalized);
+  if (exact) return exact.hookId;
+
+  const comparisonKey = hookIdComparisonKey(normalized);
+  if (!comparisonKey) return normalized;
+  const matches = hooks.filter((hook) => hookIdComparisonKey(hook.hookId) === comparisonKey);
+  return matches.length === 1 ? matches[0]!.hookId : normalized;
+}
+
+function hookIdComparisonKey(value: string): string {
+  return normalizeHookId(value).toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, "");
+}
+
+function recordHookIdRewrite(
+  rewrites: Map<string, string>,
+  sourceHookId: string | undefined,
+  targetHookId: string,
+): void {
+  const source = normalizeHookId(sourceHookId);
+  if (!source || source === targetHookId) return;
+  rewrites.set(source, targetHookId);
+}
+
+function rewriteHookIdReferences(value: string, rewrites: ReadonlyMap<string, string>): string {
+  let rewritten = value;
+  for (const [source, target] of rewrites) {
+    rewritten = rewritten.replace(new RegExp(escapeRegExp(source), "gi"), target);
+  }
+  return rewritten;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function isPureRestatement(candidate: NewHookCandidate, existing: HookRecord): boolean {
+  const candidateText = normalizeText([
+    candidate.type,
+    candidate.expectedPayoff,
+    candidate.notes,
+  ].join(" "));
+  const existingText = normalizeText([
+    existing.type,
+    existing.expectedPayoff,
+    existing.notes,
+  ].join(" "));
+
+  if (!candidateText) return true;
+  if (candidateText === existingText) return true;
+
+  const candidateTerms = extractTerms(candidateText);
+  const existingTerms = extractTerms(existingText);
+  const novelTerms = [...candidateTerms].filter((term) => !existingTerms.has(term));
+
+  const candidateChinese = extractChineseBigrams(candidateText);
+  const existingChinese = extractChineseBigrams(existingText);
+  const novelChinese = [...candidateChinese].filter((term) => !existingChinese.has(term));
+
+  return novelTerms.length === 0 && novelChinese.length < 2;
+}
+
+function replaceWorkingHook(workingHooks: HookRecord[], hook: HookRecord): void {
+  const index = workingHooks.findIndex((candidate) => candidate.hookId === hook.hookId);
+  if (index >= 0) {
+    workingHooks[index] = hook;
+    return;
+  }
+
+  workingHooks.push(hook);
+}
+
+function normalizeHookType(value: string): string {
+  return normalizeHookFamily(value);
+}
+
+function sortHooks(left: HookRecord, right: HookRecord): number {
+  return left.startEpisode - right.startEpisode
+    || left.lastAdvancedEpisode - right.lastAdvancedEpisode
+    || left.hookId.localeCompare(right.hookId);
+}
+
+function uniqueStrings(values: ReadonlyArray<string>): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function preferRicherText(primary: string, fallback: string): string {
+  const left = primary.trim();
+  const right = fallback.trim();
+
+  if (!left) return right;
+  if (!right) return left;
+  if (left === right) return left;
+  return right.length > left.length ? right : left;
+}
+
+function normalizeText(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractTerms(value: string): Set<string> {
+  const english = value
+    .split(" ")
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 4)
+    .filter((term) => !STOP_WORDS.has(term));
+  const chinese = value.match(/[\u4e00-\u9fff]{2,6}/g) ?? [];
+  return new Set([...english, ...chinese]);
+}
+
+function extractChineseBigrams(value: string): Set<string> {
+  const segments = value.match(/[\u4e00-\u9fff]+/g) ?? [];
+  const terms = new Set<string>();
+
+  for (const segment of segments) {
+    if (segment.length < 2) {
+      continue;
+    }
+
+    for (let index = 0; index <= segment.length - 2; index += 1) {
+      terms.add(segment.slice(index, index + 2));
+    }
+  }
+
+  return terms;
+}
+
+const STOP_WORDS = new Set([
+  "that",
+  "this",
+  "with",
+  "from",
+  "into",
+  "still",
+  "just",
+  "have",
+  "will",
+  "reveal",
+  "about",
+  "already",
+  "question",
+  "episode",
+]);

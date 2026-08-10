@@ -1,0 +1,644 @@
+import type { AuditIssue, AuditResult } from "../agents/continuity.js";
+import type { ReviseMode, ReviseOutput } from "../agents/reviser.js";
+import type { WriteEpisodeOutput } from "../agents/writer.js";
+import type { EpisodeIntent, EpisodeMemo, ContextPackage, RuleStack } from "../models/input-governance.js";
+import type { LengthSpec } from "../models/length-governance.js";
+import type {
+  EpisodeReviewTelemetry,
+  EpisodeReviewTerminationReason,
+} from "../models/episode.js";
+import { hasCriticalIssue } from "./episode-review-quality-gate.js";
+import { resolveAuditIssueOwner } from "./episode-review-evidence.js";
+import { countEpisodeLength, isOutsideHardRange } from "../utils/length-metrics.js";
+import { EPISODE_DURATION_TARGET_SECONDS } from "../models/episode-script.js";
+import type { EpisodeContextSnapshot } from "./episode-context.js";
+
+export interface EpisodeReviewCycleUsage {
+  readonly promptTokens: number;
+  readonly completionTokens: number;
+  readonly totalTokens: number;
+}
+
+export interface EpisodeReviewCycleControlInput {
+  readonly episodeIntent: string;
+  readonly episodeMemo?: EpisodeMemo;
+  readonly episodeIntentData?: EpisodeIntent;
+  readonly contextPackage: ContextPackage;
+  readonly ruleStack: RuleStack;
+  readonly episodeContextSnapshot?: EpisodeContextSnapshot;
+}
+
+export interface EpisodeReviewCycleResult {
+  readonly finalContent: string;
+  readonly finalWordCount: number;
+  readonly preAuditNormalizedWordCount: number;
+  readonly revised: boolean;
+  readonly auditResult: AuditResult;
+  readonly totalUsage: EpisodeReviewCycleUsage;
+  readonly postReviseCount: number;
+  readonly normalizeApplied: boolean;
+  readonly reviewAttempts: ReadonlyArray<EpisodeReviewAttempt>;
+  readonly reviewTelemetry: EpisodeReviewTelemetry;
+}
+
+export interface EpisodeReviewAttempt {
+  readonly stage: "initial" | "revision";
+  readonly iteration: number;
+  readonly selected: boolean;
+  readonly score: number;
+  readonly passed: boolean;
+  readonly episodeDurationSeconds: number;
+  readonly lengthInRange: boolean;
+  readonly blockingCount: number;
+  readonly criticalCount: number;
+  readonly aiTellCount: number;
+  readonly actionableIssues: ReadonlyArray<AuditIssue>;
+}
+
+export interface EpisodeReviewEvaluation {
+  readonly auditResult: AuditResult;
+  readonly aiTellCount: number;
+  readonly blockingCount: number;
+  readonly criticalCount: number;
+  readonly revisionBlockingIssues: ReadonlyArray<AuditIssue>;
+}
+
+export interface EpisodeReviewEvaluationOptions {
+  readonly temperature?: number;
+  readonly verificationIssues?: ReadonlyArray<AuditIssue>;
+  /**
+   * Which revision path produced the candidate being verified. The rewrite
+   * fallback carries no preservation guarantee (P0-4 / REV-09), so the
+   * verifier must apply the full regression checklist to it as well — not
+   * only to deterministic patches.
+   */
+  readonly revisionKind?: "patch" | "rewrite";
+  readonly episodeContextSnapshot?: EpisodeContextSnapshot;
+}
+
+const DEFAULT_MAX_REVIEW_ITERATIONS = 2;
+const PASS_SCORE_THRESHOLD = 85;
+const NET_IMPROVEMENT_EPSILON = 3;
+
+interface ReviewSnapshot {
+  readonly content: string;
+  readonly episodeDurationSeconds: number;
+  readonly auditResult: AuditResult;
+  readonly score: number;
+  readonly lengthInRange: boolean;
+  readonly blockingCount: number;
+  readonly criticalCount: number;
+  readonly aiTellCount: number;
+  readonly revisionBlockingIssues: ReadonlyArray<AuditIssue>;
+}
+
+interface ReviewAssessment {
+  readonly auditResult: AuditResult;
+  readonly score: number;
+  readonly lengthInRange: boolean;
+  readonly blockingCount: number;
+  readonly criticalCount: number;
+  readonly aiTellCount: number;
+  readonly revisionBlockingIssues: ReadonlyArray<AuditIssue>;
+}
+
+export async function runEpisodeReviewCycle(params: {
+  readonly book: { readonly genre: string; readonly episodeDurationSeconds?: number };
+  readonly bookDir: string;
+  readonly episodeNumber: number;
+  readonly initialOutput: Pick<WriteEpisodeOutput, "content" | "episodeDurationSeconds" | "postWriteErrors" | "postWriteWarnings" | "episodeScriptMetrics">;
+  readonly reducedControlInput?: EpisodeReviewCycleControlInput;
+  readonly lengthSpec: LengthSpec;
+  readonly initialUsage: EpisodeReviewCycleUsage;
+  readonly episodeContextSnapshot?: EpisodeContextSnapshot;
+  readonly createReviser: () => {
+    reviseEpisode: (
+      bookDir: string,
+      episodeContent: string,
+      episodeNumber: number,
+      issues: ReadonlyArray<AuditIssue>,
+      mode?: ReviseMode,
+      genre?: string,
+      options?: {
+        episodeIntent?: string;
+        episodeMemo?: EpisodeMemo;
+        episodeIntentData?: EpisodeIntent;
+        contextPackage?: ContextPackage;
+        ruleStack?: RuleStack;
+        lengthSpec?: LengthSpec;
+        targetDurationSeconds?: number;
+        episodeContextSnapshot?: EpisodeContextSnapshot;
+      },
+    ) => Promise<ReviseOutput>;
+  };
+  readonly evaluateEpisode: (
+    content: string,
+    options?: EpisodeReviewEvaluationOptions,
+  ) => Promise<EpisodeReviewEvaluation>;
+  readonly validateRevisionCandidate?: (content: string) => {
+    readonly episodeDurationSeconds: number;
+  };
+  readonly normalizeDraftLengthIfNeeded: (episodeContent: string) => Promise<{
+    content: string;
+    episodeDurationSeconds: number;
+    applied: boolean;
+    tokenUsage?: EpisodeReviewCycleUsage;
+  }>;
+  readonly normalizePostWriteSurface?: (episodeContent: string) => string;
+  readonly assertEpisodeContentNotEmpty: (content: string, stage: string) => void;
+  readonly addUsage: (
+    left: EpisodeReviewCycleUsage,
+    right?: EpisodeReviewCycleUsage,
+  ) => EpisodeReviewCycleUsage;
+  readonly maxReviewIterations?: number;
+  readonly maxRevisionCalls?: number;
+  readonly logWarn: (message: { zh: string; en: string }) => void;
+  readonly logStage: (message: { zh: string; en: string }) => void;
+}): Promise<EpisodeReviewCycleResult> {
+  let totalUsage = params.initialUsage;
+  let normalizeApplied = false;
+  let finalContent = params.initialOutput.content;
+  let finalWordCount = params.initialOutput.episodeDurationSeconds;
+  let auditCalls = 0;
+  let revisionCalls = 0;
+  let normalizationCalls = 0;
+  const screenplayCount = params.initialOutput.episodeScriptMetrics
+    ? params.initialOutput.episodeScriptMetrics.estimatedDurationSeconds
+    : undefined;
+
+  // ---------------------------------------------------------------------------
+  // Length normalization: dedicated step, only runs for clear hard-range drift.
+  // Length is NOT mixed into the reviser's issues — normalize handles it.
+  // ---------------------------------------------------------------------------
+  const normalizeIfHardDrift = async (content: string): Promise<{
+    content: string;
+    episodeDurationSeconds: number;
+    applied: boolean;
+  }> => {
+    const episodeDurationSeconds = screenplayCount ?? countEpisodeLength(content, params.lengthSpec.countingMode);
+    if (screenplayCount !== undefined) {
+      return { content, episodeDurationSeconds, applied: false };
+    }
+    if (!isOutsideHardRange(episodeDurationSeconds, params.lengthSpec)) {
+      return { content, episodeDurationSeconds, applied: false };
+    }
+    normalizationCalls += 1;
+    const result = await params.normalizeDraftLengthIfNeeded(content);
+    totalUsage = params.addUsage(totalUsage, result.tokenUsage);
+    return result;
+  };
+
+  const normalizedBeforeAudit = await normalizeIfHardDrift(finalContent);
+  finalContent = params.normalizePostWriteSurface?.(normalizedBeforeAudit.content) ?? normalizedBeforeAudit.content;
+  finalWordCount = screenplayCount ?? countEpisodeLength(finalContent, params.lengthSpec.countingMode);
+  normalizeApplied = normalizeApplied || normalizedBeforeAudit.applied;
+  const preAuditNormalizedWordCount = finalWordCount;
+  params.assertEpisodeContentNotEmpty(finalContent, "draft generation");
+
+  // ---------------------------------------------------------------------------
+  // Helper: assess a episode (audit + deterministic checks + length + score)
+  // ---------------------------------------------------------------------------
+  const assess = async (
+    content: string,
+    options?: EpisodeReviewEvaluationOptions,
+  ): Promise<ReviewAssessment> => {
+    auditCalls += 1;
+    const evaluation = await params.evaluateEpisode(content, options);
+    const reportedScore = evaluation.auditResult.overallScore;
+    const score = reportedScore === undefined || (reportedScore <= 0 && evaluation.auditResult.passed)
+      ? 100
+      : reportedScore;
+    const auditResult = score === reportedScore
+      ? evaluation.auditResult
+      : { ...evaluation.auditResult, overallScore: score };
+    totalUsage = params.addUsage(totalUsage, auditResult.tokenUsage);
+    const episodeDurationSeconds = screenplayCount ?? countEpisodeLength(content, params.lengthSpec.countingMode);
+    const lengthInRange = screenplayCount !== undefined
+      || !isOutsideHardRange(episodeDurationSeconds, params.lengthSpec);
+
+    return {
+      auditResult,
+      score,
+      lengthInRange,
+      blockingCount: evaluation.blockingCount,
+      criticalCount: evaluation.criticalCount,
+      aiTellCount: evaluation.aiTellCount,
+      revisionBlockingIssues: evaluation.revisionBlockingIssues,
+    };
+  };
+
+  const addInitialPostWriteIssues = (assessment: ReviewAssessment): ReviewAssessment => {
+    const postWriteIssues: AuditIssue[] = [
+      ...params.initialOutput.postWriteErrors.map((issue): AuditIssue => ({
+        severity: "critical",
+        category: issue.rule,
+        description: issue.description,
+        suggestion: issue.suggestion,
+        repairScope: issue.repairScope,
+      })),
+      ...params.initialOutput.postWriteWarnings.map((issue): AuditIssue => ({
+        severity: "warning",
+        category: issue.rule,
+        description: issue.description,
+        suggestion: issue.suggestion,
+        repairScope: issue.repairScope,
+      })),
+    ];
+    if (postWriteIssues.length === 0) return assessment;
+
+    const revisionBlockingIssues = deduplicateIssues([
+      ...assessment.revisionBlockingIssues,
+      ...postWriteIssues,
+    ]);
+    const auditIssues = deduplicateIssues([
+      ...assessment.auditResult.issues,
+      ...postWriteIssues,
+    ]);
+    return {
+      ...assessment,
+      auditResult: {
+        ...assessment.auditResult,
+        passed: assessment.auditResult.passed
+          && !auditIssues.some((issue) => issue.severity === "critical"),
+        issues: auditIssues,
+      },
+      blockingCount: revisionBlockingIssues.filter(
+        (issue) => issue.severity === "warning" || issue.severity === "critical",
+      ).length,
+      criticalCount: revisionBlockingIssues.filter((issue) => issue.severity === "critical").length,
+      revisionBlockingIssues,
+    };
+  };
+
+  const isPassed = (assessment: ReviewAssessment): boolean =>
+    !hasCriticalIssue(assessment.auditResult.issues)
+    && assessment.score >= PASS_SCORE_THRESHOLD
+    && assessment.lengthInRange;
+
+  const actionableIssueFingerprint = (assessment: ReviewAssessment): string =>
+    assessment.revisionBlockingIssues
+      .filter((issue) => issue.severity !== "info")
+      .map((issue) => [
+        issue.severity,
+        normalizeFingerprintText(issue.category),
+        normalizeFingerprintText(issue.description),
+        issue.repairScope ?? "",
+      ].join("|"))
+      .sort()
+      .join("\n");
+
+  const hasMeaningfulProgress = (before: ReviewAssessment, after: ReviewAssessment): boolean =>
+    after.criticalCount < before.criticalCount
+    || after.blockingCount < before.blockingCount
+    || after.aiTellCount < before.aiTellCount
+    || (
+      after.score >= before.score + NET_IMPROVEMENT_EPSILON
+      && actionableIssueFingerprint(after) !== actionableIssueFingerprint(before)
+    );
+
+  // ---------------------------------------------------------------------------
+  // Scoring loop: assess → revise → assess. Default is two automatic repair
+  // passes so structural issues can converge without making retries unbounded.
+  // ---------------------------------------------------------------------------
+  const configuredReviewIterations = Math.max(
+    0,
+    Math.floor(params.maxReviewIterations ?? DEFAULT_MAX_REVIEW_ITERATIONS),
+  );
+  const configuredRevisionCalls = params.maxRevisionCalls === undefined
+    ? configuredReviewIterations
+    : Math.max(0, Math.floor(params.maxRevisionCalls));
+  const maxReviewIterations = Math.min(configuredReviewIterations, configuredRevisionCalls);
+  params.logStage({ zh: "审计草稿", en: "auditing draft" });
+  const initial = addInitialPostWriteIssues(await assess(finalContent));
+
+  const snapshots: ReviewSnapshot[] = [{
+    content: finalContent,
+    episodeDurationSeconds: finalWordCount,
+    auditResult: initial.auditResult,
+    score: initial.score,
+    lengthInRange: initial.lengthInRange,
+    blockingCount: initial.blockingCount,
+    criticalCount: initial.criticalCount,
+    aiTellCount: initial.aiTellCount,
+    revisionBlockingIssues: initial.revisionBlockingIssues,
+  }];
+
+  const buildReviewAttempts = (selected: ReviewSnapshot): ReadonlyArray<EpisodeReviewAttempt> =>
+    snapshots.map((snapshot, index) => ({
+      stage: index === 0 ? "initial" : "revision",
+      iteration: index,
+      selected: snapshot === selected,
+      score: snapshot.score,
+      passed: !hasCriticalIssue(snapshot.auditResult.issues)
+        && snapshot.score >= PASS_SCORE_THRESHOLD
+        && snapshot.lengthInRange,
+      episodeDurationSeconds: snapshot.episodeDurationSeconds,
+      lengthInRange: snapshot.lengthInRange,
+      blockingCount: snapshot.blockingCount,
+      criticalCount: snapshot.criticalCount,
+      aiTellCount: snapshot.aiTellCount,
+      actionableIssues: snapshot.revisionBlockingIssues.filter((issue) => issue.severity !== "info"),
+    }));
+
+  let currentAudit = initial;
+  let postReviseCount = 0;
+  let terminationReason: EpisodeReviewTerminationReason = isPassed(initial)
+    ? "initial-passed"
+    : "max-review-iterations";
+  const buildReviewTelemetry = (): EpisodeReviewTelemetry => ({
+    terminationReason,
+    auditCalls,
+    revisionCalls,
+    normalizationCalls,
+    reviewedCandidates: snapshots.length,
+    configuredMaxRevisions: maxReviewIterations,
+  });
+
+  if (initial.auditResult.parseFailed) {
+    terminationReason = "audit-parse-failed";
+    params.logWarn({
+      zh: "审稿输出解析失败，跳过自动修稿以避免误改正文",
+      en: "Audit output parsing failed; skipping automatic repair to avoid rewriting valid prose from an unreliable audit.",
+    });
+    return {
+      finalContent,
+      finalWordCount,
+      preAuditNormalizedWordCount,
+      revised: false,
+      auditResult: initial.auditResult,
+      totalUsage,
+      postReviseCount,
+      normalizeApplied,
+      reviewAttempts: buildReviewAttempts(snapshots[0]!),
+      reviewTelemetry: buildReviewTelemetry(),
+    };
+  }
+
+  if (!isPassed(initial)) {
+    for (let iteration = 0; iteration < maxReviewIterations; iteration++) {
+      // P0-2 owner routing (drama-skills review contract): only writer-owned
+      // issues go to the reviser. Planner/canon-owned issues would tempt the
+      // writer to patch upstream decisions in the execution layer, which the
+      // memo alignment contract forbids — they are reported instead and can
+      // stop the cycle with an explicit upstream-revision reason.
+      const blockingIssues = currentAudit.revisionBlockingIssues.filter(
+        (issue) => issue.severity !== "info",
+      );
+      const actionableIssues = blockingIssues.filter(
+        (issue) => resolveAuditIssueOwner(issue) === "writer",
+      );
+      const upstreamIssues = blockingIssues.filter(
+        (issue) => resolveAuditIssueOwner(issue) !== "writer",
+      );
+      if (upstreamIssues.length > 0) {
+        params.logWarn({
+          zh: `${upstreamIssues.length} 条问题属于上游负责人（planner/canon），不交给修稿环节：${upstreamIssues.map((issue) => issue.category).join("、")}`,
+          en: `${upstreamIssues.length} issue(s) belong to upstream owners (planner/canon) and are not sent to the reviser: ${upstreamIssues.map((issue) => issue.category).join(", ")}`,
+        });
+      }
+      if (actionableIssues.length === 0) {
+        if (upstreamIssues.length > 0) {
+          terminationReason = "requires-upstream-revision";
+          params.logWarn({
+            zh: "剩余阻塞问题全部属于上游负责人（planner/canon），修稿无权修改这些决策；流水线停在待上游修订状态",
+            en: "All remaining blocking issues belong to upstream owners (planner/canon); the reviser has no authority over those decisions. Stopping at requires-upstream-revision.",
+          });
+          break;
+        }
+        terminationReason = "no-actionable-issues";
+        params.logWarn({
+          zh: "审计未通过但没有可执行修复项，跳过自动修稿",
+          en: "Audit did not pass but exposed no actionable repair issues; skipping automatic revision.",
+        });
+        break;
+      }
+
+      params.logStage({
+        zh: `修复轮次 ${iteration + 1}/${maxReviewIterations}（当前 ${currentAudit.score} 分）`,
+        en: `repair iteration ${iteration + 1}/${maxReviewIterations} (current score: ${currentAudit.score})`,
+      });
+
+      const reviser = params.createReviser();
+      revisionCalls += 1;
+      const reviseOutput = await reviser.reviseEpisode(
+        params.bookDir,
+        finalContent,
+        params.episodeNumber,
+        actionableIssues,
+        "auto",
+        params.book.genre,
+        {
+          ...params.reducedControlInput,
+          lengthSpec: params.lengthSpec,
+          targetDurationSeconds: params.book.episodeDurationSeconds ?? EPISODE_DURATION_TARGET_SECONDS,
+          episodeContextSnapshot: params.episodeContextSnapshot,
+        },
+      );
+      totalUsage = params.addUsage(totalUsage, reviseOutput.tokenUsage);
+
+      if (reviseOutput.revisedContent.length === 0 || reviseOutput.revisedContent === finalContent) {
+        terminationReason = "revision-unchanged";
+        params.logWarn({
+          zh: `修复轮次 ${iteration + 1} 未产出新内容，退出循环`,
+          en: `repair iteration ${iteration + 1} produced no new content, exiting loop`,
+        });
+        break;
+      }
+
+      let validatedRevision: { readonly episodeDurationSeconds: number } | undefined;
+      if (params.validateRevisionCandidate) {
+        try {
+          validatedRevision = params.validateRevisionCandidate(reviseOutput.revisedContent);
+        } catch (error) {
+          terminationReason = "no-material-progress";
+          params.logWarn({
+            zh: `修复轮次 ${iteration + 1} 产出的结构化剧本无效，已拒绝该候选：${error instanceof Error ? error.message : String(error)}`,
+            en: `repair iteration ${iteration + 1} produced an invalid structured screenplay; candidate rejected: ${error instanceof Error ? error.message : String(error)}`,
+          });
+          continue;
+        }
+      }
+
+      params.assertEpisodeContentNotEmpty(reviseOutput.revisedContent, `repair iteration ${iteration + 1}`);
+      const normalizedRevision = await normalizeIfHardDrift(reviseOutput.revisedContent);
+      normalizeApplied = normalizeApplied || normalizedRevision.applied;
+      const revisedContent = params.normalizePostWriteSurface?.(normalizedRevision.content) ?? normalizedRevision.content;
+      const revisedWordCount = validatedRevision?.episodeDurationSeconds
+        ?? countEpisodeLength(revisedContent, params.lengthSpec.countingMode);
+
+      if (revisedContent === finalContent) {
+        terminationReason = "normalized-revision-unchanged";
+        params.logWarn({
+          zh: `修复轮次 ${iteration + 1} 经长度/表面归一化后与当前正文相同，跳过重复审计`,
+          en: `repair iteration ${iteration + 1} normalized back to the current episode; skipping duplicate audit`,
+        });
+        break;
+      }
+      if (snapshots.some((snapshot) => snapshot.content === revisedContent)) {
+        terminationReason = "revision-cycle-detected";
+        params.logWarn({
+          zh: `修复轮次 ${iteration + 1} 回到了已审版本，跳过重复审计并退出循环`,
+          en: `repair iteration ${iteration + 1} returned to an already reviewed version; skipping duplicate audit and exiting`,
+        });
+        break;
+      }
+
+      // Every repair is normalized before re-audit so a structural fix is not
+      // discarded solely because the reviser drifted outside hard bounds.
+      // P0-4: BOTH revision paths go through the regression-checklist
+      // verifier — the rewrite fallback has no preservation guarantee, so it
+      // needs the checklist even more than the deterministic patch path.
+      let nextAssessment = await assess(revisedContent, {
+        temperature: 0,
+        ...(reviseOutput.changeKind
+          ? { verificationIssues: actionableIssues, revisionKind: reviseOutput.changeKind }
+          : {}),
+      });
+      if (
+        !nextAssessment.auditResult.passed
+        && nextAssessment.auditResult.issues.length === 0
+        && currentAudit.auditResult.issues.length > 0
+      ) {
+        nextAssessment = {
+          ...nextAssessment,
+          auditResult: {
+            ...nextAssessment.auditResult,
+            issues: currentAudit.auditResult.issues,
+            summary: nextAssessment.auditResult.summary || currentAudit.auditResult.summary,
+          },
+          aiTellCount: currentAudit.aiTellCount,
+          blockingCount: currentAudit.blockingCount,
+          criticalCount: currentAudit.criticalCount,
+          revisionBlockingIssues: currentAudit.revisionBlockingIssues,
+        };
+      }
+
+      snapshots.push({
+        content: revisedContent,
+        episodeDurationSeconds: revisedWordCount,
+        auditResult: nextAssessment.auditResult,
+        score: nextAssessment.score,
+        lengthInRange: nextAssessment.lengthInRange,
+        blockingCount: nextAssessment.blockingCount,
+        criticalCount: nextAssessment.criticalCount,
+        aiTellCount: nextAssessment.aiTellCount,
+        revisionBlockingIssues: nextAssessment.revisionBlockingIssues,
+      });
+
+      // Check if passed
+      if (isPassed(nextAssessment)) {
+        terminationReason = "passed-after-revision";
+        params.logStage({
+          zh: `修复后达到通过线（${nextAssessment.score} 分），退出循环`,
+          en: `repair reached pass threshold (${nextAssessment.score}), exiting loop`,
+        });
+        finalContent = revisedContent;
+        finalWordCount = revisedWordCount;
+        postReviseCount = revisedWordCount;
+        currentAudit = nextAssessment;
+        break;
+      }
+
+      // Continue when actionable issues improved even if the model's numeric
+      // score did not move.
+      const issueSetUnchanged = actionableIssueFingerprint(currentAudit)
+        === actionableIssueFingerprint(nextAssessment);
+      const countImproved = nextAssessment.criticalCount < currentAudit.criticalCount
+        || nextAssessment.blockingCount < currentAudit.blockingCount
+        || nextAssessment.aiTellCount < currentAudit.aiTellCount;
+      if (issueSetUnchanged && !countImproved) {
+        terminationReason = "issue-set-unchanged";
+        params.logWarn({
+          zh: `修复轮次 ${iteration + 1} 的可执行问题集合未变化，忽略随机分数波动并退出循环`,
+          en: `repair iteration ${iteration + 1} left the actionable issue set unchanged; ignoring score noise and exiting`,
+        });
+        break;
+      }
+      if (hasMeaningfulProgress(currentAudit, nextAssessment)) {
+        finalContent = revisedContent;
+        finalWordCount = revisedWordCount;
+        postReviseCount = revisedWordCount;
+        currentAudit = nextAssessment;
+        // Continue to next iteration
+      } else {
+        terminationReason = "no-material-progress";
+        params.logWarn({
+          zh: `修复轮次 ${iteration + 1} 未净提升（分数 ${currentAudit.score} → ${nextAssessment.score}，critical ${currentAudit.criticalCount} → ${nextAssessment.criticalCount}，blocking ${currentAudit.blockingCount} → ${nextAssessment.blockingCount}），退出循环`,
+          en: `repair iteration ${iteration + 1} no net improvement (score ${currentAudit.score} → ${nextAssessment.score}, critical ${currentAudit.criticalCount} → ${nextAssessment.criticalCount}, blocking ${currentAudit.blockingCount} → ${nextAssessment.blockingCount}), exiting loop`,
+        });
+        break;
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Pick the best scoring snapshot for final output
+  // ---------------------------------------------------------------------------
+  const bestSnapshot = snapshots.reduce((best, snap) => {
+    if (snap.lengthInRange !== best.lengthInRange) return snap.lengthInRange ? snap : best;
+    if (snap.criticalCount !== best.criticalCount) {
+      return snap.criticalCount < best.criticalCount ? snap : best;
+    }
+    if (snap.blockingCount !== best.blockingCount) {
+      return snap.blockingCount < best.blockingCount ? snap : best;
+    }
+    return snap.score > best.score ? snap : best;
+  });
+
+  // If best snapshot differs from current content (repair made things worse
+  // but an earlier version was better), roll back to the best version.
+  if (bestSnapshot.content !== finalContent) {
+    params.logWarn({
+      zh: `回退到质量门禁排序更优版本（分数 ${bestSnapshot.score}，critical ${bestSnapshot.criticalCount}，blocking ${bestSnapshot.blockingCount}）`,
+      en: `rolling back to the best quality-gate snapshot (score ${bestSnapshot.score}, critical ${bestSnapshot.criticalCount}, blocking ${bestSnapshot.blockingCount})`,
+    });
+    finalContent = bestSnapshot.content;
+    finalWordCount = bestSnapshot.episodeDurationSeconds;
+    postReviseCount = bestSnapshot.content === params.initialOutput.content ? 0 : bestSnapshot.episodeDurationSeconds;
+    currentAudit = {
+      auditResult: bestSnapshot.auditResult,
+      score: bestSnapshot.score,
+      lengthInRange: bestSnapshot.lengthInRange,
+      blockingCount: bestSnapshot.blockingCount,
+      criticalCount: bestSnapshot.criticalCount,
+      aiTellCount: bestSnapshot.aiTellCount,
+      revisionBlockingIssues: bestSnapshot.revisionBlockingIssues,
+    };
+  }
+
+  return {
+    finalContent,
+    finalWordCount,
+    preAuditNormalizedWordCount,
+    revised: snapshots.length > 1 && finalContent !== params.initialOutput.content,
+    auditResult: currentAudit.auditResult,
+    totalUsage,
+    postReviseCount,
+    normalizeApplied,
+    reviewAttempts: buildReviewAttempts(bestSnapshot),
+    reviewTelemetry: buildReviewTelemetry(),
+  };
+}
+
+function normalizeFingerprintText(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\s\p{P}\p{S}]+/gu, " ")
+    .trim();
+}
+
+function deduplicateIssues(issues: ReadonlyArray<AuditIssue>): AuditIssue[] {
+  const seen = new Set<string>();
+  return issues.filter((issue) => {
+    const key = [
+      issue.severity,
+      normalizeFingerprintText(issue.category),
+      normalizeFingerprintText(issue.description),
+      issue.repairScope ?? "",
+    ].join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}

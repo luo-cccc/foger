@@ -1,0 +1,474 @@
+import { describe, it, expect } from "vitest";
+import {
+  parseHookLedger,
+  validatePlannedHookLedger,
+  validateHookLedger,
+} from "../utils/hook-ledger-validator.js";
+
+const ZH_MEMO = `## 当前任务
+林秋潜入账房取回账册。
+
+## 本章 hook 账
+open:
+- [new] 旧港眼线盯梢 || 理由：留给下一卷
+
+advance:
+- H007 "胖虎借条" → planted → pressured
+- H012 "雷架焦痕" → pressured → near_payoff
+
+resolve:
+- H003 "杂役腰牌" → 林秋主动摘下
+
+defer:
+- H009 "守拙诀来历" → 本章不动
+
+## 不要做
+- 不要点破母亲身份`;
+
+const EN_MEMO = `## Current task
+Lin Qiu lifts the ledger from the Old Port accounting hall.
+
+## Hook ledger for this episode
+open:
+- [new] Old Port tail || reason: save for later arc
+
+advance:
+- H007 "Huzi's IOU" → planted → pressured
+
+resolve:
+- H003 "errand badge" → Lin Qiu unpins it himself
+
+defer:
+- H009 "Shou-Zhuo Jue origin" → timing not right
+
+## Do not
+- Do not reveal the mother's name`;
+
+describe("parseHookLedger", () => {
+  it("extracts all four sub-lists from a zh memo", () => {
+    const ledger = parseHookLedger(ZH_MEMO);
+    expect(ledger.advance.map((e) => e.id)).toEqual(["H007", "H012"]);
+    expect(ledger.resolve.map((e) => e.id)).toEqual(["H003"]);
+    expect(ledger.defer.map((e) => e.id)).toEqual(["H009"]);
+    // open uses [new] so no hook_id is extracted
+    expect(ledger.open).toEqual([]);
+  });
+
+  it("accepts bold-markdown subsection headings like **advance:**", () => {
+    const memo = [
+      "## 本集 Hook ledger",
+      "**open:**",
+      "- 无",
+      "",
+      "**advance:**",
+      "- H001 \"虞允文玉佩\" → 沈砚用它叩开襄阳城门（deferred → activated）",
+      "",
+      "**resolve:**",
+      "- H002 \"系统真相\" → 火种渡海，真相落地（resolved）",
+      "",
+      "**defer:**",
+      "- H009 \"火种营扩编\" → 本集不动",
+      "",
+    ].join("\n");
+    const ledger = parseHookLedger(memo);
+    expect(ledger.advance.map((entry) => entry.id)).toEqual(["H001"]);
+    expect(ledger.resolve.map((entry) => entry.id)).toEqual(["H002"]);
+    expect(ledger.defer.map((entry) => entry.id)).toEqual(["H009"]);
+  });
+
+  it("captures descriptor + keywords for each entry", () => {
+    const ledger = parseHookLedger(ZH_MEMO);
+    const h007 = ledger.advance[0]!;
+    expect(h007.id).toBe("H007");
+    expect(h007.descriptor).toContain("胖虎借条");
+    expect(h007.keywords).toContain("胖虎");
+    expect(h007.keywords).toContain("借条");
+
+    const h003 = ledger.resolve[0]!;
+    expect(h003.keywords).toContain("杂役");
+    expect(h003.keywords).toContain("腰牌");
+  });
+
+  it("uses the action text as evidence when a long id is followed directly by an arrow", () => {
+    const hookId = "mystery-废弃十三号信-号塔为何在-不可修复";
+    const memo = `## 本章 hook 账
+advance:
+- ${hookId} → 林澈发现塔内设备被改造为信号中继节点，废弃状态为伪造
+`;
+    const draft = "便携检测仪确认塔内设备仍在供电，这里实际是一处信号中继节点。";
+
+    const ledger = parseHookLedger(memo);
+    expect(ledger.advance[0]?.keywords).toContain("中继");
+    expect(validateHookLedger(memo, draft)).toEqual([]);
+  });
+
+  it("extracts all four sub-lists from an en memo", () => {
+    const ledger = parseHookLedger(EN_MEMO);
+    expect(ledger.advance.map((e) => e.id)).toEqual(["H007"]);
+    expect(ledger.resolve.map((e) => e.id)).toEqual(["H003"]);
+    expect(ledger.defer.map((e) => e.id)).toEqual(["H009"]);
+  });
+
+  it("returns empty lists when no ledger section is present", () => {
+    const ledger = parseHookLedger("## 当前任务\n正文\n\n## 不要做\n- 无");
+    expect(ledger).toEqual({
+      open: [],
+      advance: [],
+      resolve: [],
+      defer: [],
+      newOpenCount: 0,
+      newOpenDescriptions: [],
+    });
+  });
+
+  it("counts [new] placeholder lines under open as new hooks opened", () => {
+    const memo = `## 本章 hook 账
+open:
+- [new] 下一卷伏笔 || 理由
+- [new] 第二条埋点 || 理由
+advance:
+- H001 "x" → y
+`;
+    const ledger = parseHookLedger(memo);
+    expect(ledger.open).toEqual([]); // [new] lines have no id → not in .open
+    expect(ledger.newOpenCount).toBe(2);
+    expect(ledger.newOpenDescriptions).toHaveLength(2);
+  });
+
+  it("stops at the next H2 heading and does not pollute across sections", () => {
+    const memo = `## 本章 hook 账
+advance:
+- H007 "xxx" → ...
+
+## 不要做
+- H999 looks-like-a-hook-but-its-under-do-not`;
+    const ledger = parseHookLedger(memo);
+    expect(ledger.advance.map((e) => e.id)).toEqual(["H007"]);
+    expect(ledger.defer).toEqual([]);
+  });
+
+  it("ignores placeholder tokens like 无 / none / n/a under empty slots", () => {
+    const memo = `## 本章 hook 账
+advance:
+- 无
+- none
+- H007 "真的钩子" → planted
+resolve:
+- 暂无
+defer:
+- n/a
+`;
+    const ledger = parseHookLedger(memo);
+    expect(ledger.advance.map((e) => e.id)).toEqual(["H007"]);
+    expect(ledger.resolve).toEqual([]);
+    expect(ledger.defer).toEqual([]);
+  });
+
+  it("ignores descriptive Chinese no-action placeholders", () => {
+    const memo = `## 本章 hook 账
+advance:
+- 本章无陈旧 hook
+resolve:
+- 所有卷级伏笔：本章不处理
+defer:
+- 无需推进
+`;
+
+    const ledger = parseHookLedger(memo);
+    expect(ledger.advance).toEqual([]);
+    expect(ledger.resolve).toEqual([]);
+    expect(ledger.defer).toEqual([]);
+  });
+
+  it("ignores natural-language notes under hook action lists instead of inventing Chinese hook ids", () => {
+    const memo = `## 本章 hook 账
+defer:
+- 其余H003以后再处理
+- 输入存在信息边界
+- 角色关系暂不推进
+- H009 "姐姐回声" → 留到后续
+`;
+
+    const ledger = parseHookLedger(memo);
+
+    expect(ledger.defer.map((entry) => entry.id)).toEqual(["H009"]);
+  });
+
+  it("preserves long generated hook ids instead of truncating them", () => {
+    const mysteryId = "mystery-废弃十三号信-号塔为何在-不可修复";
+    const relationshipId = "relationship-林澈发现三年-前未提交的加-密算法被升级";
+    const memo = `## 本章 hook 账
+advance:
+- ${mysteryId} "十三号信号塔" → 发现新证据
+defer:
+- ${relationshipId} "加密算法" → 留到后续
+`;
+
+    const ledger = parseHookLedger(memo);
+    expect(ledger.advance[0]?.id).toBe(mysteryId);
+    expect(ledger.defer[0]?.id).toBe(relationshipId);
+  });
+
+  it("reclassifies advance lines carrying a terminal → resolved transition as resolve", () => {
+    // The finale planner declared terminal payoffs under `advance:` with a
+    // `（pressured → resolved）` marker. Without reclassification the reducer
+    // leaves H010/H003 stuck in progressing/deferred after their payoff.
+    const memo = `## 本集 Hook ledger
+advance:
+- H010 "午夜电话规则" → 林岚接听最后一次电话，装置关闭，规则终结（pressured → resolved）
+- H012 "雷架焦痕" → 安全局核查员到场，周沉面临职务处置（pressured → near_payoff）
+resolve:
+- H003 "杂役腰牌" → 林秋主动摘下（clear）
+defer:
+- H009 "守拙诀来历" → 本集不动
+`;
+    const ledger = parseHookLedger(memo);
+    expect(ledger.advance.map((entry) => entry.id)).toEqual(["H012"]);
+    expect(ledger.resolve.map((entry) => entry.id)).toEqual(["H010", "H003"]);
+    expect(ledger.defer.map((entry) => entry.id)).toEqual(["H009"]);
+  });
+
+  it("treats Chinese terminal markers like → 已回收 as resolve instructions", () => {
+    const memo = `## 本集 Hook ledger
+advance:
+- H002 "城市能源实验" → 已回收，林岚关闭装置
+defer:
+- H007 "装置进度" → 留到下一集
+`;
+    const ledger = parseHookLedger(memo);
+    expect(ledger.advance.map((entry) => entry.id)).toEqual([]);
+    expect(ledger.resolve.map((entry) => entry.id)).toEqual(["H002"]);
+    expect(ledger.defer.map((entry) => entry.id)).toEqual(["H007"]);
+  });
+
+  it("reclassifies bare → resolve / → resolving-style markers, not only → resolved", () => {
+    // Regression: the terminal-marker regex used to require the literal
+    // `resolved`, so a planner writing `→ resolve` (bare verb) kept the hook
+    // in `advance` and the reducer never flipped it to resolved.
+    const memo = `## 本集 Hook ledger
+advance:
+- H005 "当铺契约" → 沈夜撕毁契约（open → resolve）
+- H006 "夜班规矩" → 规矩被改写（progressing → clearing）
+defer:
+- H007 "装置进度" → 留到下一集
+`;
+    const ledger = parseHookLedger(memo);
+    expect(ledger.advance.map((entry) => entry.id)).toEqual(["H006"]);
+    expect(ledger.resolve.map((entry) => entry.id)).toEqual(["H005"]);
+    expect(ledger.defer.map((entry) => entry.id)).toEqual(["H007"]);
+  });
+});
+
+describe("validatePlannedHookLedger", () => {
+  const existingHooks = [
+    { hookId: "H008", expectedPayoff: "archive case", notes: "blacked-out paragraph" },
+    { hookId: "H009", expectedPayoff: "sister's warning echo", notes: "later episode" },
+  ];
+
+  it("rejects derivative [new] hooks that cite an existing hook id", () => {
+    const memo = `## 本章 hook 账
+open:
+- [new] 姐姐留下的半句话 || 理由：为H009提前埋语言碎片
+advance:
+- H008 "旧档案" → 本章出现新证据
+resolve:
+- 无
+defer:
+- H009 "姐姐回声" → 留到后续
+`;
+
+    expect(validatePlannedHookLedger(memo, existingHooks)).toContainEqual(
+      expect.stringContaining("references existing hook H009"),
+    );
+  });
+
+  it("rejects invented ids, range ids, and conflicting actions", () => {
+    const memo = `## 本章 hook 账
+open:
+- H010 invented hook
+advance:
+- H008 "旧档案" → 推进
+- H008-H009 → 批量处理
+resolve:
+- H008 "旧档案" → 回收
+defer:
+- 无
+`;
+
+    const issues = validatePlannedHookLedger(memo, existingHooks).join("\n");
+    expect(issues).toContain("inventing hook id H010");
+    expect(issues).toContain("unknown hook id H008-H009");
+    expect(issues).toContain("multiple actions");
+  });
+
+  it("accepts explicit existing actions plus an independent id-less new hook", () => {
+    const memo = `## 本章 hook 账
+open:
+- [new] 港口新换的无主铜牌 || 理由：独立身份谜团
+advance:
+- H008 "旧档案" → 本章出现新证据
+resolve:
+- 无
+defer:
+- H009 "姐姐回声" → 留到后续
+`;
+
+    expect(validatePlannedHookLedger(memo, existingHooks)).toEqual([]);
+  });
+
+  it("accepts exact long generated ids from the durable hook registry", () => {
+    const mysteryId = "mystery-废弃十三号信-号塔为何在-不可修复";
+    const relationshipId = "relationship-林澈发现三年-前未提交的加-密算法被升级";
+    const memo = `## 本章 hook 账
+advance:
+- ${mysteryId} "十三号信号塔" → 发现新证据
+defer:
+- ${relationshipId} "加密算法" → 留到后续
+`;
+
+    expect(validatePlannedHookLedger(memo, [
+      { hookId: mysteryId },
+      { hookId: relationshipId },
+    ])).toEqual([]);
+  });
+
+  it("accepts separator drift for a unique legacy long id", () => {
+    const durableId = "mystery-废弃十三号信-号塔为何在-不可修复";
+    const memo = `## 本章 hook 账
+advance:
+- mystery废弃十三号信号塔为何在不可修复 "十三号信号塔" → 发现新证据
+resolve:
+- 无
+defer:
+- 无
+`;
+
+    expect(validatePlannedHookLedger(memo, [{ hookId: durableId }])).toEqual([]);
+  });
+});
+
+describe("validateHookLedger", () => {
+  it("passes when draft echoes keyword from each committed ledger entry", () => {
+    // Draft mentions 胖虎/借条 (→H007), 雷架 or 焦痕 (→H012), 杂役 or 腰牌 (→H003).
+    const draft =
+      "林秋在账房找到胖虎借条，又在后巷被雷架焦痕刮到眼角。他摘下杂役腰牌后退入暗处。";
+    const violations = validateHookLedger(ZH_MEMO, draft);
+    expect(violations).toEqual([]);
+  });
+
+  it("flags a warning for each un-echoed advance/resolve entry", () => {
+    // Only 胖虎 (H007) present; 雷架/焦痕 (H012) and 杂役/腰牌 (H003) missing.
+    const draft = "林秋只摸出胖虎借条，其他都没写。";
+    const violations = validateHookLedger(ZH_MEMO, draft);
+    expect(violations).toHaveLength(2);
+    expect(violations.every((v) => v.severity === "warning")).toBe(true);
+    expect(violations.map((v) => v.description).join(" ")).toContain("H012");
+    expect(violations.map((v) => v.description).join(" ")).toContain("H003");
+  });
+
+  it("does not turn semantic near-misses into critical failures", () => {
+    const memo = `## 本章 hook 账
+advance:
+- H002 "读数差额" → 主角找到抄表本撕页残留和数字342
+`;
+    const draft = "我在配电房地板上拨开碎纸屑，背面露出一排数字的下半截：342。旁边还有抄表本撕下来的毛边。";
+    const violations = validateHookLedger(memo, draft);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.severity).toBe("warning");
+    expect(violations[0]!.category).toContain("语义复核");
+  });
+
+  it("does NOT flag hooks that are only under defer", () => {
+    // H009 is deferred — keyword 守拙诀 absence is fine.
+    const draft = "林秋翻出胖虎借条与雷架焦痕推进情节，随后摘下杂役腰牌。";
+    const violations = validateHookLedger(ZH_MEMO, draft);
+    expect(violations).toEqual([]);
+  });
+
+  it("does NOT flag [new] open entries (they have no pre-existing id)", () => {
+    const memo = `## 本章 hook 账
+open:
+- [new] 新钩子 || 理由
+advance:
+- H001 "测试项" → x
+`;
+    const draft = "正文提到测试项的细节。";
+    const violations = validateHookLedger(memo, draft);
+    expect(violations).toEqual([]);
+  });
+
+  it("returns empty array when memo has no ledger section at all", () => {
+    const violations = validateHookLedger("## 别的东西\n正文", "draft");
+    expect(violations).toEqual([]);
+  });
+
+  it("falls back to strict ID match when ledger line has no descriptor", () => {
+    const memo = `## 本章 hook 账
+advance:
+- H1
+`;
+    // Draft contains H12 — must NOT accidentally satisfy H1 commitment.
+    const draft = "剧情涉及 H12 和 H123。";
+    const violations = validateHookLedger(memo, draft);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.severity).toBe("warning");
+    expect(violations[0]!.description).toContain("H1");
+  });
+
+  it("accepts english keyword match for en memos", () => {
+    const draft =
+      "Lin Qiu finds Huzi's IOU folded inside the ledger and tucks it away. Later he unpins the errand badge before slipping out.";
+    const violations = validateHookLedger(EN_MEMO, draft);
+    expect(violations).toEqual([]);
+  });
+
+  it("flags 揭 1 埋 1 violation when a episode resolves hooks without opening any", () => {
+    const memo = `## 本章 hook 账
+advance:
+- H007 "胖虎借条" → planted
+resolve:
+- H003 "杂役腰牌" → 林秋主动摘下
+`;
+    const draft = "林秋翻看胖虎借条，随后摘下杂役腰牌。";
+    const violations = validateHookLedger(memo, draft);
+    expect(violations).toHaveLength(0);
+  });
+
+  it("accepts 揭 1 埋 1 floor when a [new] line balances the resolved hook", () => {
+    const memo = `## 本章 hook 账
+open:
+- [new] 母亲留下的半枚玉佩 || 理由：下一卷线索
+advance:
+- H007 "胖虎借条" → planted
+resolve:
+- H003 "杂役腰牌" → 林秋主动摘下
+`;
+    const draft = "林秋翻看胖虎借条，随后摘下杂役腰牌。";
+    const violations = validateHookLedger(memo, draft);
+    expect(violations).toEqual([]);
+  });
+
+  it("does not let placeholder 无 raise a false critical", () => {
+    const memo = `## 本章 hook 账
+open:
+- [new] 下一卷伏笔 || 理由
+advance:
+- 无
+resolve:
+- H005 "通行印验号" → ok
+`;
+    const draft = "主峰的通行印验号按部就班完成。";
+    const violations = validateHookLedger(memo, draft);
+    expect(violations).toEqual([]);
+  });
+
+  it("accepts middle keywords from a longer Chinese hook name", () => {
+    const memo = `## 本章 hook 账
+advance:
+- H007 "被定位的安全威胁" → evoked → pressured
+`;
+    const draft = "旧手机弹出定位结果，林知夏发现店外有人盯梢，安全空间塌了。";
+    const violations = validateHookLedger(memo, draft);
+    expect(violations).toEqual([]);
+  });
+});

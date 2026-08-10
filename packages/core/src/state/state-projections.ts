@@ -1,0 +1,281 @@
+import type {
+  EpisodeSummariesState,
+  CurrentStateState,
+  HooksState,
+} from "../models/runtime-state.js";
+import {
+  localizeHookPayoffTiming,
+  resolveHookPayoffTiming,
+} from "../utils/hook-lifecycle.js";
+import {
+  computeHookDiagnostics,
+  renderHookDiagnosticMarker,
+} from "../utils/hook-stale-detection.js";
+
+export function renderHooksProjection(
+  state: HooksState,
+  language: "zh" | "en" = "zh",
+  options?: { readonly currentEpisode?: number },
+): string {
+  const title = language === "en" ? "# Pending Hooks" : "# 伏笔池";
+  // Phase 7 + hotfixes 1 & 2: depends_on / pays_off_in_arc / core_hook / half_life / promoted
+  // are visible columns, so writer and reviewer both see the causal chain, planned payoff arc,
+  // stale threshold, and promotion flag. stale / blocked diagnostic flags are appended to the
+  // status cell.
+  const headers = language === "en"
+    ? [
+      "| hook_id | start_episode | type | status | last_advanced_episode | expected_payoff | payoff_timing | depends_on | pays_off_in_arc | core_hook | half_life | promoted | notes |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    : [
+      "| hook_id | 起始剧集 | 类型 | 状态 | 最近推进 | 预期回收 | 回收节奏 | 上游依赖 | 回收篇章 | 核心 | 半衰期 | 升级 | 备注 |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ];
+
+  const currentEpisode = options?.currentEpisode;
+  const diagnostics = typeof currentEpisode === "number"
+    ? computeHookDiagnostics({ hooks: state.hooks, currentEpisode })
+    : null;
+
+  const rows = [...state.hooks]
+    .sort((left, right) => (
+      left.startEpisode - right.startEpisode
+      || left.lastAdvancedEpisode - right.lastAdvancedEpisode
+      || left.hookId.localeCompare(right.hookId)
+    ))
+    .map((hook) => {
+      const diag = diagnostics?.get(hook.hookId);
+      const marker = diag ? renderHookDiagnosticMarker(diag, language) : "";
+      const statusCell = marker
+        ? `${hook.status} (${marker})`
+        : hook.status;
+      return `| ${
+        [
+          hook.hookId,
+          hook.startEpisode,
+          hook.type,
+          statusCell,
+          hook.lastAdvancedEpisode,
+          hook.expectedPayoff,
+          localizeHookPayoffTiming(resolveHookPayoffTiming(hook), language),
+          renderDependsOnCell(hook.dependsOn ?? [], language),
+          hook.paysOffInArc ?? "",
+          renderCoreHookCell(hook.coreHook === true, language),
+          renderHalfLifeCell(hook.halfLifeEpisodes),
+          renderPromotedCell(hook.promoted, language),
+          hook.notes,
+        ].map(escapeTableCell).join(" | ")
+      } |`;
+    });
+
+  return [title, "", ...headers, ...rows, ""].join("\n");
+}
+
+function renderDependsOnCell(ids: ReadonlyArray<string>, language: "zh" | "en"): string {
+  if (ids.length === 0) return language === "en" ? "none" : "无";
+  return `[${ids.join(", ")}]`;
+}
+
+function renderCoreHookCell(isCore: boolean, language: "zh" | "en"): string {
+  if (language === "en") return isCore ? "true" : "false";
+  return isCore ? "是" : "否";
+}
+
+function renderHalfLifeCell(value: number | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return "";
+  return String(Math.trunc(value));
+}
+
+function renderPromotedCell(value: boolean | undefined, language: "zh" | "en"): string {
+  if (value === undefined) return "";
+  if (language === "en") return value ? "true" : "false";
+  return value ? "是" : "否";
+}
+
+export function renderEpisodeSummariesProjection(
+  state: EpisodeSummariesState,
+  language: "zh" | "en" = "zh",
+): string {
+  const title = language === "en" ? "# Episode Summaries" : "# 剧集摘要";
+  const hasEpisodeFields = state.rows.some((summary) => (
+    summary.payoff !== undefined
+    || summary.reversal !== undefined
+    || summary.relationshipChange !== undefined
+    || summary.emotionalHook !== undefined
+    || summary.endingQuestion !== undefined
+    || summary.estimatedDurationSeconds !== undefined
+    || summary.shotCount !== undefined
+  ));
+  const headers = language === "en"
+    ? hasEpisodeFields ? [
+      "| Episode | Title | Characters | Key Events | State Changes | Hook Activity | Mood | Episode Type | Payoff | Reversal | Relationship Change | Emotional Hook | Ending Question | Duration (s) | Shots |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ] : [
+      "| Episode | Title | Characters | Key Events | State Changes | Hook Activity | Mood | Episode Type |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    : [
+      ...(hasEpisodeFields ? [
+        "| 剧集 | 标题 | 出场人物 | 关键事件 | 状态变化 | 伏笔动态 | 情绪基调 | 剧集类型 | 爽点 | 反转 | 关系变化 | 情绪钩子 | 结尾问题 | 时长（秒） | 镜头数 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      ] : [
+        "| 剧集 | 标题 | 出场人物 | 关键事件 | 状态变化 | 伏笔动态 | 情绪基调 | 剧集类型 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+      ]),
+    ];
+
+  const rows = [...state.rows]
+    .sort((left, right) => left.episodeNumber - right.episodeNumber)
+    .map((summary) => `| ${(
+      [
+        summary.episodeNumber,
+        summary.title,
+        summary.characters,
+        summary.events,
+        summary.stateChanges,
+        summary.hookActivity,
+        summary.mood,
+        summary.episodeType,
+        ...(hasEpisodeFields ? [
+          summary.payoff ?? "",
+          summary.reversal ?? "",
+          summary.relationshipChange ?? "",
+          summary.emotionalHook ?? "",
+          summary.endingQuestion ?? "",
+          summary.estimatedDurationSeconds ?? "",
+          summary.shotCount ?? "",
+        ] : []),
+      ].map(escapeTableCell).join(" | ")
+    )} |`);
+
+  return [title, "", ...headers, ...rows, ""].join("\n");
+}
+
+export function renderCurrentStateProjection(
+  state: CurrentStateState,
+  language: "zh" | "en" = "zh",
+): string {
+  const layout = language === "en"
+    ? {
+      title: "# Current State",
+      tableHeader: "| Field | Value |",
+      labels: {
+        episode: "Current Episode",
+        location: "Current Location",
+        protagonistState: "Protagonist State",
+        goal: "Current Goal",
+        constraint: "Current Constraint",
+        alliances: "Current Alliances",
+        conflict: "Current Conflict",
+      },
+      placeholders: "(not set)",
+      additionalTitle: "## Additional State",
+    }
+    : {
+      title: "# 当前状态",
+      tableHeader: "| 字段 | 值 |",
+      labels: {
+        episode: "当前剧集",
+        location: "当前位置",
+        protagonistState: "主角状态",
+        goal: "当前目标",
+        constraint: "当前限制",
+        alliances: "当前敌我",
+        conflict: "当前冲突",
+      },
+      placeholders: "（未设定）",
+      additionalTitle: "## 其他状态",
+    };
+
+  const slots = [
+    {
+      label: layout.labels.location,
+      aliases: ["Current Location", "当前位置"],
+    },
+    {
+      label: layout.labels.protagonistState,
+      aliases: ["Protagonist State", "主角状态"],
+    },
+    {
+      label: layout.labels.goal,
+      aliases: ["Current Goal", "当前目标"],
+    },
+    {
+      label: layout.labels.constraint,
+      aliases: ["Current Constraint", "当前限制"],
+    },
+    {
+      label: layout.labels.alliances,
+      aliases: ["Current Alliances", "Current Relationships", "当前敌我"],
+    },
+    {
+      label: layout.labels.conflict,
+      aliases: ["Current Conflict", "当前冲突"],
+    },
+  ] as const;
+
+  const knownPredicates = new Set(
+    slots.flatMap((slot) => slot.aliases.map(normalizePredicate)),
+  );
+  const lines = [
+    layout.title,
+    "",
+    layout.tableHeader,
+    "| --- | --- |",
+    `| ${layout.labels.episode} | ${escapeTableCell(state.episode)} |`,
+    ...slots.map((slot) => {
+      const value = findFactValue(state, slot.aliases) ?? layout.placeholders;
+      return `| ${slot.label} | ${escapeTableCell(value)} |`;
+    }),
+  ];
+
+  const additionalFacts = [...state.facts]
+    .filter((fact) => !knownPredicates.has(normalizePredicate(fact.predicate)))
+    .sort((left, right) => compareAdditionalFacts(left.predicate, right.predicate));
+
+  if (additionalFacts.length === 0) {
+    return [...lines, ""].join("\n");
+  }
+
+  return [
+    ...lines,
+    "",
+    layout.additionalTitle,
+    ...additionalFacts.map((fact) => renderAdditionalFact(fact.predicate, fact.object)),
+    "",
+  ].join("\n");
+}
+
+function findFactValue(
+  state: CurrentStateState,
+  aliases: ReadonlyArray<string>,
+): string | undefined {
+  const aliasSet = new Set(aliases.map(normalizePredicate));
+  return state.facts.find((fact) => aliasSet.has(normalizePredicate(fact.predicate)))?.object;
+}
+
+function renderAdditionalFact(predicate: string, object: string): string {
+  if (/^note_\d+$/i.test(predicate)) {
+    return `- ${object}`;
+  }
+  return `- ${predicate}: ${object}`;
+}
+
+function compareAdditionalFacts(left: string, right: string): number {
+  const leftNote = left.match(/^note_(\d+)$/i);
+  const rightNote = right.match(/^note_(\d+)$/i);
+  if (leftNote && rightNote) {
+    return Number.parseInt(leftNote[1] ?? "0", 10) - Number.parseInt(rightNote[1] ?? "0", 10);
+  }
+  if (leftNote) return -1;
+  if (rightNote) return 1;
+  return left.localeCompare(right);
+}
+
+function normalizePredicate(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function escapeTableCell(value: string | number): string {
+  return String(value).replace(/\|/g, "\\|").trim();
+}

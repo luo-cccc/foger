@@ -1,0 +1,368 @@
+import { describe, expect, it, vi } from "vitest";
+import type { AuditIssue, AuditResult } from "../agents/continuity.js";
+import type { ValidationResult } from "../agents/state-validator.js";
+import type { WriteEpisodeOutput } from "../agents/writer.js";
+import type { BookConfig } from "../models/book.js";
+import { validateEpisodeTruthPersistence } from "../pipeline/episode-truth-validation.js";
+import { buildEpisodeContextSnapshot } from "../pipeline/episode-context.js";
+
+const ZERO_USAGE = {
+  promptTokens: 0,
+  completionTokens: 0,
+  totalTokens: 0,
+} as const;
+
+function createAuditResult(overrides?: Partial<AuditResult>): AuditResult {
+  return {
+    passed: true,
+    issues: [],
+    summary: "clean",
+    tokenUsage: ZERO_USAGE,
+    ...overrides,
+  };
+}
+
+function createValidationResult(overrides?: Partial<ValidationResult>): ValidationResult {
+  return {
+    passed: true,
+    warnings: [],
+    ...overrides,
+  };
+}
+
+function createWriterOutput(overrides: Partial<WriteEpisodeOutput> = {}): WriteEpisodeOutput {
+  return {
+    episodeNumber: 1,
+    title: "Test Episode",
+    content: "Healthy episode body with the copper token in his coat.",
+    episodeDurationSeconds: "Healthy episode body with the copper token in his coat.".length,
+    preWriteCheck: "check",
+    stateProjection: "projected",
+    updatedState: "writer state",
+    updatedLedger: "writer ledger",
+    updatedHooks: "writer hooks",
+    episodeSummary: "| 1 | Original summary |",
+    updatedSubplots: "writer subplots",
+    updatedEmotionalArcs: "writer emotions",
+    updatedCharacterMatrix: "writer matrix",
+    postWriteErrors: [],
+    postWriteWarnings: [],
+    tokenUsage: ZERO_USAGE,
+    ...overrides,
+  };
+}
+
+const BOOK: BookConfig = {
+  id: "book-1",
+  title: "Book",
+  platform: "other",
+  genre: "xuanhuan",
+  status: "active",
+  schemaVersion: "inkos-episode-v2" as const,
+  format: "screenplay" as const,
+  targetEpisodes: 10,
+  episodeDurationSeconds: 90,
+  createdAt: "2026-04-01T00:00:00.000Z",
+  updatedAt: "2026-04-01T00:00:00.000Z",
+};
+
+const EPISODE_CONTEXT_SNAPSHOT = buildEpisodeContextSnapshot({
+  episode: 2,
+  model: "stub",
+  service: "test",
+  entries: [
+    { source: "story/current_state.md", content: "old state" },
+    { source: "story/pending_hooks.md", content: "old hooks" },
+  ],
+});
+
+describe("validateEpisodeTruthPersistence", () => {
+  it("retries settlement when PASS still reports missing truth updates", async () => {
+    const validator = {
+      validate: vi.fn()
+        .mockResolvedValueOnce(createValidationResult({
+          passed: true,
+          warnings: [{
+            category: "missing_hook_update",
+            description: "H001 advanced in the body but stayed unchanged in truth.",
+          }],
+        }))
+        .mockResolvedValueOnce(createValidationResult()),
+    };
+    const writer = {
+      replayEpisodeState: vi.fn().mockResolvedValue(createWriterOutput({
+        updatedState: "recovered state",
+        updatedHooks: "recovered hooks",
+      })),
+    };
+
+    const result = await validateEpisodeTruthPersistence({
+      writer,
+      validator,
+      book: BOOK,
+      bookDir: "/tmp/book",
+      episodeNumber: 2,
+      title: "Test Episode",
+      content: "H001 advances in episode 2.",
+      persistenceOutput: createWriterOutput({
+        updatedState: "stale state",
+        updatedHooks: "stale hooks",
+      }),
+      episodeContextSnapshot: EPISODE_CONTEXT_SNAPSHOT,
+      auditResult: createAuditResult(),
+      previousTruth: {
+        oldState: "old state",
+        oldHooks: "old hooks",
+        oldLedger: "old ledger",
+      },
+      language: "en",
+      logWarn: vi.fn(),
+      logger: { warn: vi.fn() },
+    });
+
+    expect(writer.replayEpisodeState).toHaveBeenCalledTimes(1);
+    expect(result.episodeStatus).toBeNull();
+    expect(result.persistenceOutput.updatedHooks).toBe("recovered hooks");
+  });
+
+  it("uses recovered settlement output when retry succeeds", async () => {
+    const validator = {
+      validate: vi.fn()
+        .mockResolvedValueOnce(createValidationResult({
+          passed: false,
+          warnings: [{
+            category: "unsupported_change",
+            description: "正文写铜牌在怀里，但 state 说未携带。",
+          }],
+        }))
+        .mockResolvedValueOnce(createValidationResult()),
+    };
+    const writer = {
+      replayEpisodeState: vi.fn().mockResolvedValue(
+        createWriterOutput({
+          updatedState: "fixed state",
+          updatedHooks: "fixed hooks",
+          updatedLedger: "fixed ledger",
+        }),
+      ),
+    };
+    const logWarn = vi.fn();
+    const logger = { warn: vi.fn() };
+
+    const result = await validateEpisodeTruthPersistence({
+      writer,
+      validator,
+      book: BOOK,
+      bookDir: "/tmp/book",
+      episodeNumber: 3,
+      title: "Test Episode",
+      content: "Healthy episode body with the copper token in his coat.",
+      persistenceOutput: createWriterOutput({
+        updatedState: "broken state",
+        updatedHooks: "broken hooks",
+        updatedLedger: "broken ledger",
+      }),
+      episodeContextSnapshot: EPISODE_CONTEXT_SNAPSHOT,
+      auditResult: createAuditResult(),
+      previousTruth: {
+        oldState: "stable state",
+        oldHooks: "stable hooks",
+        oldLedger: "stable ledger",
+      },
+      language: "zh",
+      logWarn,
+      logger,
+    });
+
+    expect(writer.replayEpisodeState).toHaveBeenCalledTimes(1);
+    expect(writer.replayEpisodeState).toHaveBeenCalledWith(expect.objectContaining({
+      episodeNumber: 3,
+      title: "Test Episode",
+      validationFeedback: expect.stringContaining("铜牌在怀里"),
+    }));
+    expect(result.episodeStatus).toBeNull();
+    expect(result.persistenceOutput.updatedState).toBe("fixed state");
+    expect(result.persistenceOutput.updatedHooks).toBe("fixed hooks");
+    expect(result.auditResult.issues).toEqual([]);
+    expect(logger.warn).toHaveBeenCalledWith("  [unsupported_change] 正文写铜牌在怀里，但 state 说未携带。");
+  });
+
+  it("uses analyzer recovery instead of a second settlement call when the limit is one", async () => {
+    const initialValidation = createValidationResult({
+      passed: false,
+      warnings: [{
+        category: "missing_state_change",
+        description: "The settlement removed the current episode state.",
+      }],
+    });
+    const validator = { validate: vi.fn().mockResolvedValue(initialValidation) };
+    const writer = { replayEpisodeState: vi.fn() };
+    const recoverAfterSettlementLimit = vi.fn().mockResolvedValue({
+      output: createWriterOutput({
+        updatedState: "analyzer state",
+        updatedHooks: "analyzer hooks",
+      }),
+      validation: createValidationResult(),
+    });
+
+    const result = await validateEpisodeTruthPersistence({
+      writer,
+      validator,
+      book: BOOK,
+      bookDir: "/tmp/book",
+      episodeNumber: 2,
+      title: "Test Episode",
+      content: "Episode 2 changes the protagonist state.",
+      persistenceOutput: createWriterOutput({
+        updatedState: "broken state",
+        updatedHooks: "broken hooks",
+      }),
+      episodeContextSnapshot: EPISODE_CONTEXT_SNAPSHOT,
+      auditResult: createAuditResult(),
+      previousTruth: {
+        oldState: "old state",
+        oldHooks: "old hooks",
+        oldLedger: "old ledger",
+      },
+      language: "en",
+      maxSettlementCalls: 1,
+      recoverAfterSettlementLimit,
+      logWarn: vi.fn(),
+      logger: { warn: vi.fn() },
+    });
+
+    expect(writer.replayEpisodeState).not.toHaveBeenCalled();
+    expect(recoverAfterSettlementLimit).toHaveBeenCalledWith(initialValidation);
+    expect(result.episodeStatus).toBeNull();
+    expect(result.persistenceOutput.updatedState).toBe("analyzer state");
+    expect(result.persistenceOutput.updatedHooks).toBe("analyzer hooks");
+  });
+
+  it("degrades gracefully when validator throws (e.g. LLM returned empty response)", async () => {
+    const validator = {
+      validate: vi.fn().mockRejectedValue(new Error("LLM returned empty response")),
+    };
+    const writer = {
+      replayEpisodeState: vi.fn(),
+    };
+    const logWarn = vi.fn();
+    const logger = { warn: vi.fn() };
+
+    const result = await validateEpisodeTruthPersistence({
+      writer,
+      validator,
+      book: BOOK,
+      bookDir: "/tmp/book",
+      episodeNumber: 1,
+      title: "Test Episode",
+      content: "Episode content.",
+      persistenceOutput: createWriterOutput({
+        updatedState: "new state",
+        updatedHooks: "new hooks",
+        updatedLedger: "new ledger",
+      }),
+      episodeContextSnapshot: EPISODE_CONTEXT_SNAPSHOT,
+      auditResult: createAuditResult(),
+      previousTruth: {
+        oldState: "old state",
+        oldHooks: "old hooks",
+        oldLedger: "old ledger",
+      },
+      language: "zh",
+      logWarn,
+      logger,
+    });
+
+    expect(result.episodeStatus).toBe("state-degraded");
+    expect(result.persistenceOutput.updatedState).toBe("old state");
+    expect(result.persistenceOutput.updatedHooks).toBe("old hooks");
+    expect(result.persistenceOutput.updatedLedger).toBe("old ledger");
+    expect(result.degradedIssues).toEqual([
+      expect.objectContaining({
+        severity: "warning",
+        category: "state-validation",
+      }),
+    ]);
+    // Should NOT have attempted settlement retry
+    expect(writer.replayEpisodeState).not.toHaveBeenCalled();
+  });
+
+  it("degrades persistence output and appends audit issues when retry still fails", async () => {
+    const validator = {
+      validate: vi.fn()
+        .mockResolvedValueOnce(createValidationResult({
+          passed: false,
+          warnings: [{
+            category: "unsupported_change",
+            description: "第一次校验失败。",
+          }],
+        }))
+        .mockResolvedValueOnce(createValidationResult({
+          passed: false,
+          warnings: [{
+            category: "unsupported_change",
+            description: "重试后仍然失败。",
+          }],
+        })),
+    };
+    const writer = {
+      replayEpisodeState: vi.fn().mockResolvedValue(
+        createWriterOutput({
+          updatedState: "still broken state",
+          updatedHooks: "still broken hooks",
+          updatedLedger: "still broken ledger",
+        }),
+      ),
+    };
+    const baseIssue: AuditIssue = {
+      severity: "warning",
+      category: "title-dedup",
+      description: "title adjusted",
+      suggestion: "check title",
+    };
+
+    const result = await validateEpisodeTruthPersistence({
+      writer,
+      validator,
+      book: BOOK,
+      bookDir: "/tmp/book",
+      episodeNumber: 4,
+      title: "Test Episode",
+      content: "Healthy episode body with the copper token in his coat.",
+      persistenceOutput: createWriterOutput({
+        updatedState: "broken state",
+        updatedHooks: "broken hooks",
+        updatedLedger: "broken ledger",
+      }),
+      episodeContextSnapshot: EPISODE_CONTEXT_SNAPSHOT,
+      auditResult: createAuditResult({ issues: [baseIssue] }),
+      previousTruth: {
+        oldState: "stable state",
+        oldHooks: "stable hooks",
+        oldLedger: "stable ledger",
+      },
+      language: "zh",
+      logWarn: vi.fn(),
+      logger: { warn: vi.fn() },
+    });
+
+    expect(result.episodeStatus).toBe("state-degraded");
+    expect(result.degradedIssues).toEqual([
+      expect.objectContaining({
+        severity: "warning",
+        category: "state-validation",
+        description: "重试后仍然失败。",
+      }),
+    ]);
+    expect(result.persistenceOutput.updatedState).toBe("stable state");
+    expect(result.persistenceOutput.updatedHooks).toBe("stable hooks");
+    expect(result.persistenceOutput.updatedLedger).toBe("stable ledger");
+    expect(result.auditResult.issues).toEqual([
+      baseIssue,
+      expect.objectContaining({
+        category: "state-validation",
+        description: "重试后仍然失败。",
+      }),
+    ]);
+  });
+});

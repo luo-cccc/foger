@@ -1,0 +1,229 @@
+import { describe, expect, it } from "vitest";
+import {
+  compileEpisodeClaims,
+  renderClaimBrief,
+  saveEpisodeClaimArtifacts,
+  type EpisodeClaimContext,
+} from "../utils/episode-claim-compiler.js";
+import type { CanonClaim } from "../models/canon.js";
+
+function claim(overrides: Partial<CanonClaim> & Pick<CanonClaim, "id">): CanonClaim {
+  return {
+    domain: "world",
+    claimType: "objective_rule",
+    content: "一个客观规则。",
+    status: "active",
+    scope: { appliesTo: ["all"] },
+    authority: { source: "story_frame", priority: "hard" },
+    visibility: { characterKnownBy: [], hiddenFrom: [] },
+    constraints: { requiresCost: [], forbiddenUses: [] },
+    ...overrides,
+  };
+}
+
+const SECRET_BEFORE_CH30 = claim({
+  id: "s-1",
+  claimType: "secret_truth",
+  content: "宗门高层早已知道真相。",
+  visibility: { readerKnownFrom: 30, characterKnownBy: ["宗主"], hiddenFrom: ["主角"] },
+});
+
+const PROTAGONIST_EXCEPTION = claim({
+  id: "p-1",
+  domain: "protagonist",
+  claimType: "character_exception",
+  content: "主角能听到器物低语。",
+  scope: { appliesTo: ["主角"] },
+  authority: { source: "roles/主角", priority: "strong" },
+  constraints: { nonGeneralizable: true, requiresCost: [], forbiddenUses: ["不得给配角"] },
+});
+
+const COST_CLAIM = claim({
+  id: "c-1",
+  domain: "power",
+  claimType: "objective_rule",
+  content: "施法消耗寿元。",
+  constraints: { requiresCost: ["寿元"], forbiddenUses: [] },
+});
+
+const COSTLESS_REAL_WORLD_RULES = [
+  claim({
+    id: "world-002",
+    content: "世界的质感是湿冷且带铁锈味的。港城的冬天不下雪，街边茶餐厅的鸳鸯奶茶冒着白气。",
+    constraints: { requiresCost: [], forbiddenUses: [] },
+  }),
+  claim({
+    id: "world-003",
+    content: "所有核心物证必须是账本、凭证、银行流水、合同、邮件、录音等可验证的金融或法律文档。",
+    constraints: { requiresCost: [], forbiddenUses: [] },
+  }),
+] satisfies ReadonlyArray<CanonClaim>;
+
+describe("compileEpisodeClaims", () => {
+  it("hides a secret_truth not yet revealed to the reader", () => {
+    const ctx: EpisodeClaimContext = { episodeNumber: 10 };
+    const compiled = compileEpisodeClaims([SECRET_BEFORE_CH30], ctx);
+    expect(compiled.usable).toHaveLength(0);
+    expect(compiled.mustHide.map((c) => c.id)).toContain("s-1");
+  });
+
+  it("reveals a secret_truth once readerKnownFrom is reached", () => {
+    const ctx: EpisodeClaimContext = { episodeNumber: 30 };
+    const compiled = compileEpisodeClaims([SECRET_BEFORE_CH30], ctx);
+    expect(compiled.usable.map((c) => c.id)).toContain("s-1");
+  });
+
+  it("treats previously revealed claims as reader-visible before their static episode threshold", () => {
+    const ctx: EpisodeClaimContext = { episodeNumber: 10, revealedClaimIds: ["s-1"] };
+    const compiled = compileEpisodeClaims([SECRET_BEFORE_CH30], ctx);
+    expect(compiled.usable.map((c) => c.id)).toContain("s-1");
+    expect(compiled.mustHide.map((c) => c.id)).not.toContain("s-1");
+  });
+
+  it("keeps a protagonist exception in noGeneralize and never leaks it to other POVs", () => {
+    const ctx: EpisodeClaimContext = { episodeNumber: 5, pov: "配角A" };
+    const compiled = compileEpisodeClaims([PROTAGONIST_EXCEPTION], ctx);
+    // protagonist-only scope means it is out of scope for a different POV.
+    expect(compiled.usable).toHaveLength(0);
+    expect(compiled.mustHide.map((c) => c.id)).toContain("p-1");
+  });
+
+  it("includes a protagonist exception when POV is the protagonist", () => {
+    const ctx: EpisodeClaimContext = { episodeNumber: 5, pov: "主角" };
+    const compiled = compileEpisodeClaims([PROTAGONIST_EXCEPTION], ctx);
+    expect(compiled.usable.map((c) => c.id)).toContain("p-1");
+    expect(compiled.noGeneralize.map((c) => c.id)).toContain("p-1");
+    expect(compiled.costRequired).toHaveLength(0);
+  });
+
+  it("flags cost-required claims separately", () => {
+    const ctx: EpisodeClaimContext = { episodeNumber: 5 };
+    const compiled = compileEpisodeClaims([COST_CLAIM], ctx);
+    expect(compiled.costRequired.map((c) => c.id)).toContain("c-1");
+  });
+
+  it("keeps costless world texture and evidence rules out of the cost-required set", () => {
+    const compiled = compileEpisodeClaims(COSTLESS_REAL_WORLD_RULES, { episodeNumber: 1 });
+
+    expect(compiled.usable.map((entry) => entry.id)).toEqual(["world-002", "world-003"]);
+    expect(compiled.costRequired).toEqual([]);
+  });
+
+  it("keeps style and POV constraints usable even when extracted with visibility boundaries", () => {
+    const style = claim({
+      id: "style-pov",
+      domain: "style",
+      content: "叙事视角严格锁定在主角感知范围内。",
+      visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["主角"] },
+    });
+
+    const compiled = compileEpisodeClaims([style], { episodeNumber: 1, pov: "主角" });
+
+    expect(compiled.usable.map((entry) => entry.id)).toContain("style-pov");
+    expect(compiled.mustHide).toEqual([]);
+  });
+
+  it("surfaces a hidden claim when the memo names it for revelation", () => {
+    const ctx: EpisodeClaimContext = { episodeNumber: 10, memo: "本章揭晓 s-1 宗门真相" };
+    const compiled = compileEpisodeClaims([SECRET_BEFORE_CH30], ctx);
+    expect(compiled.usable.map((c) => c.id)).toContain("s-1");
+    expect(compiled.revealNow.map((c) => c.id)).toContain("s-1");
+    expect(compiled.mustHide.map((c) => c.id)).not.toContain("s-1");
+  });
+
+  it("surfaces a hidden claim committed via paraphrase reveal intent in the memo", () => {
+    const ctx: EpisodeClaimContext = {
+      episodeNumber: 10,
+      memo: "本章要揭示七号门背后的真相，让主角终于得知高层知情。",
+    };
+    const compiled = compileEpisodeClaims([SECRET_BEFORE_CH30], ctx);
+    expect(compiled.revealNow.map((c) => c.id)).toContain("s-1");
+    expect(compiled.mustHide.map((c) => c.id)).not.toContain("s-1");
+  });
+
+  it("does not force a reveal when the memo only mentions the subject without a reveal cue", () => {
+    const ctx: EpisodeClaimContext = {
+      episodeNumber: 10,
+      memo: "主角仍在猜七号门真相，但本章只是铺垫。",
+    };
+    const compiled = compileEpisodeClaims([SECRET_BEFORE_CH30], ctx);
+    expect(compiled.revealNow.map((c) => c.id)).toEqual([]);
+  });
+
+  it("respects an explicit deferral and keeps the claim hidden", () => {
+    const ctx: EpisodeClaimContext = {
+      episodeNumber: 10,
+      memo: "本章暂不揭示七号门真相，保留悬念。",
+    };
+    const compiled = compileEpisodeClaims([SECRET_BEFORE_CH30], ctx);
+    expect(compiled.revealNow.map((c) => c.id)).toEqual([]);
+    expect(compiled.mustHide.map((c) => c.id)).toContain("s-1");
+  });
+
+  it("does not turn a deferred character relationship into a reveal from a generic role mention", () => {
+    const deferredRelationship = claim({
+      id: "claim-010",
+      domain: "character",
+      claimType: "character_exception",
+      content: "老周作为档案室技术员，认识沈鸢并答应过她不告诉林澈；他通过维修磁带机间接协助林澈。",
+      scope: { appliesTo: ["老周"] },
+      visibility: { readerKnownFrom: 1, characterKnownBy: ["老周"], hiddenFrom: ["林澈"] },
+      constraints: { nonGeneralizable: true, requiresCost: ["老周被停职"], forbiddenUses: [] },
+    });
+    const compiled = compileEpisodeClaims([deferredRelationship], {
+      episodeNumber: 1,
+      pov: "林澈",
+      memo: "暂不掀：老周认识母亲，本章只让老周作为同事出现，不暴露任何记忆。",
+    });
+
+    expect(compiled.revealNow).toEqual([]);
+    expect(compiled.usable).toEqual([]);
+    expect(compiled.costRequired).toEqual([]);
+    expect(compiled.mustHide.map((entry) => entry.id)).toEqual(["claim-010"]);
+  });
+
+  it("records conflict resolution edges", () => {
+    const a = claim({ id: "w-a", relations: { conflictsWith: ["w-b"], resolvesBy: "w-b 优先" } });
+    const b = claim({ id: "w-b" });
+    const ctx: EpisodeClaimContext = { episodeNumber: 5 };
+    const compiled = compileEpisodeClaims([a, b], ctx);
+    expect(compiled.conflictResolve).toEqual([
+      expect.objectContaining({ resolvesBy: "w-b 优先" }),
+    ]);
+  });
+});
+
+describe("renderClaimBrief", () => {
+  it("renders sections with usable / mustHide / noGeneralize", () => {
+    const ctx: EpisodeClaimContext = { episodeNumber: 5, pov: "主角" };
+    const compiled = compileEpisodeClaims([PROTAGONIST_EXCEPTION, SECRET_BEFORE_CH30], ctx);
+    const brief = renderClaimBrief(compiled, ctx);
+    expect(brief).toContain("本集可用设定");
+    expect(brief).toContain("不可泛化");
+    expect(brief).toContain("必须隐藏");
+    expect(brief).toContain("[p-1]");
+    expect(brief).toContain("主角能听到器物低语");
+  });
+});
+
+describe("saveEpisodeClaimArtifacts", () => {
+  it("writes claims.json and claim-brief.md", async () => {
+    const fs = require("node:fs");
+    const os = require("node:os");
+    const path = require("node:path");
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inkos-claims-"));
+    try {
+      const ctx: EpisodeClaimContext = { episodeNumber: 5, pov: "主角" };
+      const compiled = compileEpisodeClaims([PROTAGONIST_EXCEPTION], ctx);
+      const paths = await saveEpisodeClaimArtifacts(tmp, compiled, ctx);
+      expect(fs.existsSync(paths.claimsPath)).toBe(true);
+      expect(fs.existsSync(paths.briefPath)).toBe(true);
+      const written = JSON.parse(fs.readFileSync(paths.claimsPath, "utf-8"));
+      expect(written.usable[0].id).toBe("p-1");
+      expect(written.revealNow).toEqual([]);
+      expect(written.noGeneralize[0].id).toBe("p-1");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
