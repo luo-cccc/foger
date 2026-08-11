@@ -857,6 +857,25 @@ export function detectDuplicateTitle(
       });
       break;
     }
+
+    // Dedup-suffix variants: the dedup pass renames duplicates by appending a
+    // "：限定词" suffix. A later bare title of the same name is still a duplicate
+    // of e.g. "我在：开场", so "我在" and "我在：开场" must not coexist — the
+    // writer keeps re-emitting the bare title otherwise. Only applied when the
+    // *new* title is bare: a newly generated "X：限定词" must not be rejected
+    // for being a suffixed variant of an existing bare "X", or the generator
+    // would be unable to produce any qualifying title at all.
+    const stripSuffix = (s: string) => s.replace(/[：:][^：:]{1,6}$/u, "").trim();
+    const bareBase = stripSuffix(normalized);
+    if (bareBase === normalized && bareBase.length > 0 && bareBase === stripSuffix(existingNorm)) {
+      violations.push({
+        rule: "duplicate-title-variant",
+        severity: "warning",
+        description: `剧集标题"${newTitle}"与已有标题"${existing}"仅差去重后缀，视为重复`,
+        suggestion: "更换一个不同的剧集标题",
+      });
+      break;
+    }
   }
 
   return violations;

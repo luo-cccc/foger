@@ -1269,7 +1269,12 @@ export class PipelineRunner {
       await this.state.ensureControlDocumentsAt(
         stagingBookDir,
         book.language ?? gp.language,
-        options.authorIntent ?? effectiveExternalContext,
+        // author_intent.md is a verbatim long-horizon direction card loaded into
+        // every episode context. Falling back to the full creative brief here
+        // duplicated a multi-token document into the protected context tier and
+        // blew the per-episode input budget. Without an explicit authorIntent,
+        // leave the placeholder so the brief stays only in story/brief.md.
+        options.authorIntent,
       );
       if (options.currentFocus?.trim()) {
         await writeFile(
@@ -1959,6 +1964,17 @@ export class PipelineRunner {
           settingsIndex,
         )
       : [];
+    // Deterministic early-payoff guard on the standalone audit path (the write
+    // path already applies it): re-auditing a persisted episode should surface
+    // the same premature-reveal warning the writer gate would have emitted.
+    if (episodeScript) {
+      const hooksMarkdown = await readFile(join(bookDir, "story", "pending_hooks.md"), "utf-8").catch(() => "");
+      if (hooksMarkdown) {
+        const { auditEarlyHookPayoff } = await import("./episode-quality-gate.js");
+        const { parsePendingHooksMarkdown } = await import("../utils/story-markdown.js");
+        episodeIssues.push(...auditEarlyHookPayoff(episodeScript, parsePendingHooksMarkdown(hooksMarkdown)));
+      }
+    }
     const result: AuditResult = {
       ...evaluation.auditResult,
       issues: deduplicateAuditIssues([...evaluation.auditResult.issues, ...episodeIssues]),
@@ -3141,6 +3157,24 @@ export class PipelineRunner {
         title: finalTitleResolution.title,
       };
     }
+    // Keep the authoritative JSON script and its markdown projection in sync
+    // with the deduplicated title. Previously only the index/file name changed,
+    // leaving the script title and md header on the original (now duplicate)
+    // value — the same title kept reappearing because the dedup index no longer
+    // matched what the writer saw.
+    if (persistenceOutput.episodeScript && persistenceOutput.episodeScript.title !== persistenceOutput.title) {
+      const { renderEpisodeScriptMarkdown } = await import("../models/episode-script.js");
+      const renamedScript = { ...persistenceOutput.episodeScript, title: persistenceOutput.title };
+      persistenceOutput = {
+        ...persistenceOutput,
+        episodeScript: renamedScript,
+        content: renderEpisodeScriptMarkdown(renamedScript),
+        episodeHandoffCapsule: buildEpisodeHandoffCapsule(
+          renamedScript,
+          `${JSON.stringify(renamedScript, null, 2)}\n`,
+        ),
+      };
+    }
     if (persistenceOutput.title !== output.title) {
       const description = pipelineLang === "en"
         ? `Episode title "${output.title}" was auto-adjusted to "${persistenceOutput.title}".`
@@ -3166,6 +3200,23 @@ export class PipelineRunner {
           settingsIndex,
         )
       : [];
+    // Deterministic early-payoff guard: a hook whose scheduled payoff episode
+    // lies ahead must not have its key facts consumed on screen already.
+    if (persistenceOutput.episodeScript) {
+      const { auditEarlyHookPayoff } = await import("./episode-quality-gate.js");
+      const { parsePendingHooksMarkdown } = await import("../utils/story-markdown.js");
+      const hooksMarkdown = writeInput.episodeContextSnapshot
+        ? getEpisodeContextContent(writeInput.episodeContextSnapshot, "story/pending_hooks.md")
+        : "";
+      if (hooksMarkdown) {
+        episodeScriptIssues.push(
+          ...auditEarlyHookPayoff(
+            persistenceOutput.episodeScript,
+            parsePendingHooksMarkdown(hooksMarkdown),
+          ),
+        );
+      }
+    }
     if (persistenceOutput.episodeScript) {
       const episodeJson = `${JSON.stringify(persistenceOutput.episodeScript, null, 2)}\n`;
       persistenceOutput = {
@@ -3692,7 +3743,14 @@ export class PipelineRunner {
     this.logStage(stageLanguage, { zh: "根据已编辑正文同步真相文件与索引", en: "syncing truth files and indexes from edited episode body" });
     const { profile: gp } = await this.loadGenreProfile(book.genre);
     const pipelineLang = book.language ?? gp.language;
-    const content = await this.readEpisodeContent(bookDir, targetEpisode);
+    // The authoritative episode JSON wins over the markdown projection: editors
+    // (and this session's deterministic fixes) often patch the .json directly,
+    // and the .md sidecar then carries a stale embedded script. Prefer the .json
+    // and re-project it into markdown so both files converge on the same script.
+    const authoritativeScript = await loadPersistedEpisodeScript(bookDir, targetEpisode);
+    const content = authoritativeScript
+      ? renderEpisodeScriptMarkdown(authoritativeScript)
+      : await this.readEpisodeContent(bookDir, targetEpisode);
     const storyDir = join(bookDir, "story");
 
     // Resync must replay the edited episode from the previous durable truth.

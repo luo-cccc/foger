@@ -77,6 +77,13 @@ function tryParseEpisodeScript(
   episodeNumber: number,
   targetDurationSeconds?: number,
 ): { readonly script: EpisodeScript } | undefined {
+  // Fast-path guard: pure free-form prose without any JSON marker is not a
+  // parse failure worth a regeneration round-trip — it is a contract violation
+  // ("EPISODE_SCRIPT_REQUIRED") and stays a plain error. Anything that *looks*
+  // structured (marked blocks, fences, embedded sidecar, leading brace) is
+  // attempted so every genuinely malformed script is wrapped with the stable
+  // WRITER_OUTPUT_PARSE_FAILED code + rawOutput, which the runner uses to
+  // regenerate once and dump the raw output.
   const hasStructuredMarker = /===\s*(?:EPISODE_SCRIPT_JSON|PRE_WRITE_CHECK)\b/i.test(content);
   const hasJsonFence = /```json\s*\{/i.test(content);
   const hasEmbeddedJson = /<!--\s*inkos-episode-script-json/i.test(content);

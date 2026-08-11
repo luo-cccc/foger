@@ -79,6 +79,14 @@ export interface ContextBudget {
 
 export const DEFAULT_ATTENTION_INPUT_TOKENS = 8_000;
 
+/**
+ * Hard read-side cap for `story/author_intent.md` when it is loaded into the
+ * per-episode protected context. CJK counts roughly one token per character,
+ * so this keeps the direction card well inside the input budget even when the
+ * file was seeded with an oversized document (see runner initBook).
+ */
+export const AUTHOR_INTENT_MAX_CHARS = 3_000;
+
 export interface CompressibleContextCompileRequest {
   readonly episodeNumber: number;
   readonly goal: string;
@@ -892,8 +900,16 @@ function collectSelectedContextFromSnapshot(
     ["story/parent_canon.md", "Parent-series canon constraints."],
   ] as const;
   for (const [source, reason] of stableSources) {
-    const excerpt = getEpisodeContextContent(snapshot, source).trim();
-    if (excerpt) entries.push({ source, reason, excerpt });
+    let excerpt = getEpisodeContextContent(snapshot, source).trim();
+    if (!excerpt) continue;
+    // author_intent.md is a verbatim tier source that is never compiled away.
+    // Guard against an oversized direction card (e.g. a pasted brief) blowing
+    // the protected-context input budget; truncate to a readable tail instead
+    // of failing the whole episode operation.
+    if (source === "story/author_intent.md" && excerpt.length > AUTHOR_INTENT_MAX_CHARS) {
+      excerpt = `${excerpt.slice(0, AUTHOR_INTENT_MAX_CHARS)}\n…（作者意图过长，已截断）`;
+    }
+    entries.push({ source, reason, excerpt });
   }
 
   const previousEpisode = getEpisodeContextRecentEpisodes(snapshot).at(-1)?.trim();

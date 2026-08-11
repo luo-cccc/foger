@@ -116,12 +116,29 @@ export function evaluateSeriesCompletion(params: {
     }
   }
 
+  const finalSurface = params.finalEpisodeScript
+    ? episodeTextSurface(params.finalEpisodeScript)
+    : "";
   for (const hook of params.runtimeState?.hooks.hooks ?? []) {
     if (hook.status === "resolved" || hook.status === "deferred") continue;
     const kind = hook.hookKind ?? "plot";
-    const severity = hook.coreHook || kind === "emotion" ? "critical" : "warning";
+    const baseSeverity = hook.coreHook || kind === "emotion" ? "critical" : "warning";
+    // Lenient escape: the ledger can lag behind the on-screen story. If the
+    // final episode's shots/resolution already surface this hook's named facts
+    // (quoted in the hook's own notes), the payoff was delivered even though
+    // the planner memo never recorded a resolve annotation. Downgrade to a
+    // warning that asks for manual ledger reconciliation instead of blocking
+    // completion on a bookkeeping gap.
+    if (finalSurface && hookSeemsPaidOff(hook, finalSurface)) {
+      issues.push({
+        severity: "warning",
+        code: kind === "emotion" ? "open-emotion-hook" : "open-core-hook",
+        message: `Open ${kind} hook ${hook.hookId} appears paid off in the final episode, but the ledger still shows "${hook.status}". Reconcile the hook ledger (e.g. a resolve note in the planner memo) before final release.`,
+      });
+      continue;
+    }
     issues.push({
-      severity,
+      severity: baseSeverity,
       code: kind === "emotion" ? "open-emotion-hook" : "open-core-hook",
       message: `Open ${kind} hook ${hook.hookId}: ${hook.audienceQuestion || hook.expectedPayoff || hook.type}.`,
     });
@@ -224,4 +241,49 @@ function explicitlyLeavesOutcomeUnfinished(claim: string): boolean {
     /\b(?:left|kept)\s+(?:the\s+)?(?:conflict|desire|arc|relationship|outcome)?\s*unresolved\b/iu,
   ];
   return unfinishedPatterns.some((pattern) => pattern.test(normalized));
+}
+
+function episodeTextSurface(script: EpisodeScript): string {
+  return (script.scenes ?? [])
+    .flatMap((scene) => scene.shots.flatMap((shot) => [
+      shot.visual,
+      shot.action ?? "",
+      shot.narration ?? "",
+      ...shot.dialogue.map((line) => `${line.speaker} ${line.text}`),
+      ...(script.seriesResolution
+        ? [
+            script.seriesResolution.mainConflict,
+            script.seriesResolution.protagonistDesire,
+            ...script.seriesResolution.characterArcs.map((arc) => arc.outcome),
+            ...script.seriesResolution.relationships.map((relationship) => relationship.outcome),
+          ]
+        : []),
+    ]))
+    .join(" ")
+    .toLowerCase();
+}
+
+/**
+ * True when the hook's own notes/questions name facts that already appear in
+ * the final episode surface. Quoted 「」/"..." phrases are the most reliable
+ * signal: the ledger seeds them for exactly the objects whose on-screen
+ * appearance constitutes the payoff.
+ */
+function hookSeemsPaidOff(
+  hook: Readonly<{
+    readonly notes?: string;
+    readonly audienceQuestion?: string;
+  }>,
+  surface: string,
+): boolean {
+  const source = `${hook.notes ?? ""}\n${hook.audienceQuestion ?? ""}`;
+  const keywords = new Set<string>();
+  for (const quoted of source.matchAll(/「([^」]{2,12})」/gu)) {
+    keywords.add(quoted[1]!.toLowerCase());
+  }
+  for (const quoted of source.matchAll(/"([^"]{2,12})"/gu)) {
+    keywords.add(quoted[1]!.toLowerCase());
+  }
+  const hits = [...keywords].filter((keyword) => surface.includes(keyword));
+  return hits.length >= 1;
 }

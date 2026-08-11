@@ -132,7 +132,113 @@ function auditContractSurfaceEvidence(script: EpisodeScript): AuditIssue[] {
   }
   check(script.contract.localDramaticResult.stateChange, `episode:${script.episode}:contract.localDramaticResult.stateChange`, "Local dramatic result");
   check(script.contract.outgoingPressure.startedDecisionDangerOrQuestion, `episode:${script.episode}:contract.outgoingPressure.startedDecisionDangerOrQuestion`, "Outgoing pressure");
+  // Handoff commitments are continuity boundaries, not creative choices: each
+  // should have a visible carrier so the next episode's incoming state is not
+  // a dangling promise. Only *screenable* handoff promises are checked: a
+  // concrete physical object (玉/剑/卡/铃/信/丹/棺/灯…) that the contract says
+  // exists but the shots never show. Cognitive knowledge, abstract power /
+  // relationship shifts, and negative states ("无修为", "裂纹未新增") are
+  // continuation notes for the planner, not promises that need a shot, and
+  // would otherwise spam the audit.
+  for (const [index, fact] of script.contract.handoffState.physical.slice(0, 4).entries()) {
+    if (!isScreenableHandoffFact(fact)) continue;
+    if (hasSurfaceEvidence(fact, surface)) continue;
+    issues.push({
+      severity: "warning",
+      category: "contract-without-screen-evidence",
+      repairScope: "structural",
+      ruleClass: "reviewed_invariant",
+      evidenceRefs: [`episode:${script.episode}:contract.handoffState.physical[${index}]`, `episode:${script.episode}:scenes[].shots[]`],
+      description: `Handoff physical fact "${fact.slice(0, 40)}" is declared in the episode contract but has no visible or audible carrier in the shots.`,
+      suggestion: "Either show this object on screen this episode, or keep it in incoming state carried from an earlier episode.",
+    });
+  }
   return issues;
+}
+
+/**
+ * A handoff physical fact qualifies for the on-screen check only when it names
+ * a concrete prop or location and is not a negative/abstract state. "玉上裂纹
+ * 维持两线未新增" and "他在门外" are states, not promises; "他掌心多了一张
+ * 实体彩卡" is a promise that must be shown.
+ */
+const HANDOFF_PROP_WORDS = /(?:玉|剑|卡|铃|信|遗书|丹|棺|灯|面具|符|镜|舟|印|珠|塔|门|渊|崖|冢|城|宫)/u;
+function isScreenableHandoffFact(fact: string): boolean {
+  if (fact.length < 4 || fact.length > 48) return false;
+  if (!HANDOFF_PROP_WORDS.test(fact)) return false;
+  // Negative / zero states cannot be shown as a beat.
+  if (/(?:无|未|没有|尚未|还未|仍未|不|维持|归零|见底|未复|耗尽)/u.test(fact)) return false;
+  // Cognitive / volitional phrasing is a mental state, not a screen event.
+  if (/(?:知道|确认|掌握|认为|决定|打算|意识到|记得|怀疑|清楚|明白|拥有|失去|获得|保有|握着|带着|揣着|藏着|转为|主动权|话语权|隐瞒|消耗|张力|只剩|关联)/u.test(fact)) return false;
+  return true;
+}
+
+/**
+ * Deterministic early-payoff guard. Each ledger hook records an intended
+ * payoff episode (e.g. "第29集"). If the current episode is *before* that
+ * payoff and its shots already surface the hook's named facts, the reveal was
+ * consumed early — the exact failure mode observed across paid production
+ * runs (e.g. a tomb that was scheduled for episode 29 appearing at episode 6).
+ *
+ * Warning severity on purpose: a named mention can be legitimate setup, and the
+ * heuristic keys on explicit nouns, so we flag rather than block.
+ */
+export function auditEarlyHookPayoff(
+  script: EpisodeScript,
+  hooks: ReadonlyArray<{ readonly hookId: string; readonly expectedPayoff?: string; readonly targetPayoffEpisode?: number; readonly notes?: string; readonly audienceQuestion?: string }>,
+): AuditIssue[] {
+  const issues: AuditIssue[] = [];
+  const surface = episodeSurface(script);
+  for (const hook of hooks) {
+    const payoffEpisode = hook.targetPayoffEpisode ?? parseEpisodeNumber(hook.expectedPayoff ?? "");
+    if (!payoffEpisode || script.episode >= payoffEpisode) continue;
+    const keywords = extractHookKeywords(hook.notes ?? "", hook.audienceQuestion ?? "");
+    if (keywords.length === 0) continue;
+    const hits = keywords.filter((keyword) => surface.includes(keyword));
+    if (hits.length === 0) continue;
+    issues.push({
+      severity: "warning",
+      category: "early-hook-payoff",
+      repairScope: "structural",
+      ruleClass: "reviewed_invariant",
+      evidenceRefs: [
+        `hooks:${hook.hookId}`,
+        `episode:${script.episode}:scenes[].shots[]`,
+      ],
+      description: `Hook ${hook.hookId} is scheduled to pay off at episode ${payoffEpisode}, but its key facts (${hits.join("、")}) already appear on screen in episode ${script.episode}. If this is the reveal, advance or resolve the hook ledger; if it is only a setup mention, keep it as a tease without showing the payoff.`,
+      suggestion: "Move the reveal to the scheduled episode, or record an advance in the planner memo so the ledger reflects this progress.",
+    });
+  }
+  return issues;
+}
+
+/** Extract the first episode number from strings like "第29集", "29", "ep 3". */
+function parseEpisodeNumber(value: string): number | undefined {
+  const match = value.match(/(\d{1,3})/u);
+  if (!match) return undefined;
+  const parsed = Number(match[1]);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+/**
+ * Pull explicit nouns from a hook's notes/question: 「」-quoted names, quoted
+ * phrases, and short CJK words ending in a concrete-object suffix. These are
+ * the facts whose premature appearance signals an early payoff.
+ */
+function extractHookKeywords(notes: string, question: string): string[] {
+  const source = `${notes}\n${question}`;
+  const keywords = new Set<string>();
+  for (const quoted of source.matchAll(/「([^」]{1,12})」/gu)) {
+    keywords.add(quoted[1]!);
+  }
+  for (const quoted of source.matchAll(/"([^"]{2,12})"/gu)) {
+    keywords.add(quoted[1]!);
+  }
+  for (const match of source.matchAll(/[\u4e00-\u9fff]{2,6}(?:冢|玉|剑|诀|渊|灯|铃|丹|卡|书|信|棺|阵|痕|墓)/gu)) {
+    keywords.add(match[0]!);
+  }
+  const noise = new Set(["初始状态", "等待千年", "望归渊等待", "望归玉等待", "回收条件", "伏笔回收", "核心钩子", "情绪钩子", "剧情进度"]);
+  return [...keywords].filter((keyword) => keyword.length >= 2 && !noise.has(keyword));
 }
 
 function hasWithholdingOnlyResult(text: string): boolean {

@@ -460,8 +460,13 @@ function extractJsonCandidates(raw: string): string[] {
 }
 
 function stripMarkedPreamble(raw: string): string | undefined {
-  if (!/^\s*===/u.test(raw)) return undefined;
-  const firstBrace = raw.indexOf("{");
+  // The PRE_WRITE_CHECK block does not always lead the response: writers can
+  // emit prose first and then a `=== ... ===` section before the JSON object.
+  // Drop everything up to the first `{` that follows a marked block, instead of
+  // only handling a response that starts with `===`.
+  const markerMatch = raw.match(/===\s*[A-Z_]+[^\n]*\n?/u);
+  const sliceStart = markerMatch ? (markerMatch.index ?? 0) + markerMatch[0].length : 0;
+  const firstBrace = raw.indexOf("{", sliceStart);
   if (firstBrace < 0) return undefined;
   return raw.slice(firstBrace).trim();
 }

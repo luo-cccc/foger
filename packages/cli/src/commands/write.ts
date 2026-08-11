@@ -140,7 +140,7 @@ writeCommand
   .command("rewrite")
   .description("Re-generate a specific episode: rewrite [book-id] <episode>")
   .argument("<args...>", "Book ID (optional) and episode number")
-  .option("--force", "Skip confirmation prompt")
+  .option("--force", "Skip confirmation prompt (rewrite deletes this episode and all later episodes)")
   .option("--duration <seconds>", "Target duration per episode (overrides book config)")
   .option("--brief <text>", "One-off creative guidance for this rewrite only")
   .option("--json", "Output JSON")
@@ -167,8 +167,18 @@ writeCommand
 
       if (!opts.force) {
         const rl = createInterface({ input: process.stdin, output: process.stdout });
+        // Surface how destructive the rewrite really is: it rolls the book back
+        // to episode-1, deleting every later episode. Showing the count up front
+        // prevents accidentally nuking a long tail (observed in production when
+        // a mid-series rewrite silently discarded a dozen later episodes).
+        const stateForPrompt = new StateManager(root);
+        const indexForPrompt = await stateForPrompt.loadEpisodeIndex(bookId);
+        const laterCount = indexForPrompt.filter((entry) => entry.episodeNumber > episode).length;
+        const scopeHint = laterCount > 0
+          ? ` This will delete episode ${episode} and ${laterCount} later episode(s) (${episode + 1}–${episode + laterCount}).`
+          : ` This will delete episode ${episode}.`;
         const answer = await new Promise<string>((resolve) => {
-          rl.question(`Rewrite episode ${episode} of "${bookId}"? This will delete episode ${episode} and all later episodes. (y/N) `, resolve);
+          rl.question(`Rewrite episode ${episode} of "${bookId}"?${scopeHint} (y/N) `, resolve);
         });
         rl.close();
         if (answer.toLowerCase() !== "y") {
@@ -245,7 +255,7 @@ writeCommand
 
 writeCommand
   .command("sync")
-  .description("Rebuild truth files and SQLite indexes from the latest edited episode body")
+  .description("Rebuild truth files and SQLite indexes from the authoritative episode JSON (re-projected into markdown)")
   .argument("<args...>", "Book ID (optional) and episode number")
   .option("--brief <text>", "One-off guidance for how to interpret the edited episode while syncing")
   .option("--json", "Output JSON")
