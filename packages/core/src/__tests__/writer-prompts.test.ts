@@ -70,6 +70,25 @@ describe("buildWriterSystemPrompt", () => {
     expect(prompt).toContain("不得输出小说散文");
   });
 
+  it("injects beat-variation rules to avoid same-shape episodes (zh + en)", () => {
+    const zh = buildWriterSystemPrompt(
+      BOOK, GENRE, null, "", "", "", undefined, 5, "creative", "zh", "governed",
+    );
+    expect(zh).toContain("节拍变奏（防同构模板）");
+    expect(zh).toContain("不要每集都走\"开场钩子 → 升级 → 反转 → 情绪问题\"的同一曲线");
+    expect(zh).toContain("不要为了凑槽位硬造反转");
+    expect(zh).toContain("与最近几集轮换");
+
+    const en = buildWriterSystemPrompt(
+      BOOK,
+      { ...GENRE, language: "en" },
+      null, "", "", "", undefined, 5, "creative", "en", "governed",
+    );
+    expect(en).toContain("Beat variation (avoid same-shape episodes)");
+    expect(en).toContain("do not manufacture a reversal just to fill the slot");
+    expect(en).toContain("rotate");
+  });
+
   it("uses the configured episode duration in screenplay constraints", () => {
     const prompt = buildWriterSystemPrompt(
       { ...BOOK, format: "screenplay" as const, episodeDurationSeconds: 105 },

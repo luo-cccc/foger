@@ -920,6 +920,22 @@ export function resolveDuplicateTitle(
 
   const collapseIssues = detectTitleCollapse(trimmed, existingTitles, language);
   if (collapseIssues.length === 0) {
+    const shapeIssue = detectTitleShapeRepeat(trimmed, existingTitles, language);
+    if (shapeIssue.length > 0) {
+      // Title *shape* repeats (three consecutive "X的Y" or two-word shells) read
+      // as template even when every noun is fresh. Try to rename around a fresh
+      // content image; if no safe qualifier exists, keep the title — this is a
+      // craft concern, not a blocker.
+      const regenerated = regenerateCollapsedTitle(trimmed, existingTitles, language, options?.content);
+      if (
+        regenerated
+        && detectDuplicateTitle(regenerated, existingTitles).length === 0
+        && detectTitleShapeRepeat(regenerated, existingTitles, language).length === 0
+      ) {
+        return { title: regenerated, issues: shapeIssue };
+      }
+      return { title: trimmed, issues: shapeIssue };
+    }
     return { title: trimmed, issues: [] };
   }
 
@@ -978,6 +994,67 @@ function detectTitleCollapse(
           severity: "warning",
           description: `剧集标题"${newTitle}"仍在沿用近期围绕“${titlePressure.repeatedToken}”的命名壳。`,
           suggestion: "换一个新的意象、动作、后果或人物焦点来命名。",
+        },
+  ];
+}
+
+/**
+ * Title syntactic shells whose repetition reads as template even when every
+ * noun is fresh (e.g. "装订孔里的破绽 / 夹层里的方字 / 母亲的当票" — three
+ * consecutive "X的Y" titles). Exact/token dedup cannot see these; shape can.
+ */
+const TITLE_SHAPE_PATTERNS: ReadonlyArray<{ readonly id: string; readonly re: RegExp }> = [
+  { id: "possessive-zh", re: /^[\u4e00-\u9fff]{1,6}的[\u4e00-\u9fff]{1,6}$/u },
+  { id: "duo-zh", re: /^[\u4e00-\u9fff]{2}$/u },
+  { id: "possessive-en", re: /^[A-Za-z]{3,12} of [A-Za-z]{3,12}$/i },
+  { id: "duo-en", re: /^[A-Za-z]{3,10} [A-Za-z]{3,10}$/i },
+];
+
+/**
+ * Warn (and let resolveDuplicateTitle attempt a rename) when the recent title
+ * window — last three written plus this one — has three titles sharing one
+ * syntactic shell. A single convention use is fine; a streak is the template
+ * pattern paid-production runs exhibit.
+ */
+export function detectTitleShapeRepeat(
+  newTitle: string,
+  existingTitles: ReadonlyArray<string>,
+  language: "zh" | "en" = "zh",
+): ReadonlyArray<PostWriteViolation> {
+  const window = [...existingTitles, newTitle]
+    .map((title) => title.trim())
+    .filter(Boolean)
+    .slice(-4);
+  if (window.length < 3) {
+    return [];
+  }
+
+  const shape = TITLE_SHAPE_PATTERNS.find((pattern) => pattern.re.test(newTitle.trim()));
+  if (!shape) {
+    return [];
+  }
+
+  const hits = window.filter((title) => shape.re.test(title)).length;
+  if (hits < 3) {
+    return [];
+  }
+
+  const message = language === "en"
+    ? `Episode titles keep sharing the "${shape.id}" syntactic shell (${hits} of the last few, including this one). The nouns are fresh but the structure is the same — it reads as template.`
+    : `剧集标题连续 ${hits} 次共用"${shape.id === "possessive-zh" ? "X的Y" : "双字"}"句式，名词虽新但结构同构，观感模板化。`;
+  return [
+    language === "en"
+      ? {
+          rule: "title-shape-repeat",
+          severity: "warning",
+          description: message,
+          suggestion: "Switch to a different title syntax: a subject-action line, a time marker, a character beat, or an X-vs-Y pairing.",
+        }
+      : {
+          rule: "title-shape-repeat",
+          severity: "warning",
+          description: message,
+          suggestion: "换一种句式：主谓句、时间点、人物动作或“X与Y”对举，避免连续同构标题。",
         },
   ];
 }

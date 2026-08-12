@@ -128,13 +128,31 @@ function buildScreenplayExecutionRules(language: "zh" | "en", targetDurationSeco
 - Write a production-oriented episodic screenplay, not novel prose.
 - Every beat must be visible or audible: shot, action, dialogue, narration, sound, or transition.
 - Each episode needs a concrete payoff, relationship pressure, a causally prepared reversal, and a specific emotional question at the end.
-- Keep the visual action and dialogue short enough for a roughly ${targetDurationSeconds}-second episode.`;
+- Keep the visual action and dialogue short enough for a roughly ${targetDurationSeconds}-second episode.
+
+## Beat variation (avoid same-shape episodes)
+Do NOT run every episode through the same curve "opening hook → escalation → reversal → emotional question". When this episode is a slow-burn / transition / aftermath / setup episode, vary the beats:
+- The reversal slot may become "pressure stalls, a new threat mounts", or "an old problem slides to a new breaking point" — do not manufacture a reversal just to fill the slot.
+- The emotional question may be low-volume (silence, a withheld beat, a suspended choice) — not every episode must end on a fresh question sentence.
+- Change exactly one state dimension (information / power / relationship / survival) this episode; let the others hold inertia.
+- A variation episode is NOT a weaker episode: it must lean harder on concrete action and performance detail, never on exposition to fill rhythm.
+- A variation episode may land anywhere in the soft duration range: do not pad a quiet episode with filler shots or actions to reach the target, and do not slow a fast episode down just for uniformity.
+- Pick this episode's payoff type from the genre payoff pool and rotate: do not reuse the same payoff type (humiliation / breakthrough / payoff / reveal / trump card …) across consecutive episodes.`;
   }
   return `## 漫剧执行合同
 - 输出面向制作的连续漫剧分镜稿，不写小说正文。
 - 每个节拍必须能被看见或听见：镜头、动作、对白、旁白、音效或转场。
 - 每集必须有具体爽点、关系压力、有铺垫的反转，以及结尾明确的情绪问题。
-- 画面和对白要控制在约 ${targetDurationSeconds} 秒的可执行范围内。`;
+- 画面和对白要控制在约 ${targetDurationSeconds} 秒的可执行范围内。
+
+## 节拍变奏（防同构模板）
+不要每集都走"开场钩子 → 升级 → 反转 → 情绪问题"的同一曲线。当本集是慢热/过渡/后效/布局集时，允许变奏：
+- "反转"槽位可以替换为"压力停滞 + 新威胁压顶"，或"旧问题在旧关系上滑向新的临界点"——不要为了凑槽位硬造反转。
+- 情绪问题可以是低音量的静默、悬置或按下不表——不必每集都以一个新疑问句收尾。
+- 一集只允许改变一个状态维度（信息/权力/关系/生存择一），其余维度保持惯性。
+- 变奏集不是弱集：它必须比常规集更依赖具体动作与表演细节，禁止用说明文填节奏。
+- 变奏集时长允许落在软区间（120-180 秒）任意位置：慢集不要为了凑满时长硬加镜头或动作，快集不要为了整齐强行放缓。
+- 本集爽点类型从题材爽点池中选择，且要与最近几集轮换：打脸/升级/兑现/揭示/底牌等不要连续集重复同一类。`;
 }
 
 function buildGovernedInputContract(language: "zh" | "en", governed: boolean): string {

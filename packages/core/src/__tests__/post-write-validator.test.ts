@@ -4,6 +4,7 @@ import {
   detectDuplicateTitle,
   detectParagraphLengthDrift,
   detectParagraphShapeWarnings,
+  detectTitleShapeRepeat,
   resolveDuplicateTitle,
   normalizePostWriteSurface,
   validatePostWrite,
@@ -482,5 +483,49 @@ describe("validatePostWrite", () => {
     expect(result.issues.some((issue) => issue.rule === "title-collapse")).toBe(true);
     expect(result.title).not.toContain("名单");
     expect(result.title).toContain("塔楼");
+  });
+
+  it("flags a third consecutive possessive-shell title as a shape repeat", () => {
+    const issues = detectTitleShapeRepeat(
+      "装订孔里的破绽",
+      ["指甲掐痕", "夹层里的方字", "母亲的当票"],
+      "zh",
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.rule).toBe("title-shape-repeat");
+    expect(issues[0]?.severity).toBe("warning");
+  });
+
+  it("ignores a single possessive-shell title inside a varied window", () => {
+    const issues = detectTitleShapeRepeat(
+      "装订孔里的破绽",
+      ["听风", "早一天", "转赎"],
+      "zh",
+    );
+    expect(issues).toEqual([]);
+  });
+
+  it("renames a possessive-shell title when three recent titles share the shell", () => {
+    const result = resolveDuplicateTitle(
+      "装订孔里的破绽",
+      ["夹层里的方字", "母亲的当票", "血书对合"],
+      "zh",
+      {
+        content: "装订孔里的破绽被她一把按住，白纸黑字，她决定当场拆穿。",
+      },
+    );
+    expect(result.issues.some((issue) => issue.rule === "title-shape-repeat")).toBe(true);
+    // The rename must break the possessive shell rather than keep "X的Y".
+    expect(/^[\u4e00-\u9fff]{1,6}的[\u4e00-\u9fff]{1,6}$/u.test(result.title)).toBe(false);
+  });
+
+  it("flags a third consecutive two-word title as a shape repeat", () => {
+    const issues = detectTitleShapeRepeat(
+      "纸纹",
+      ["听风", "转赎", "补页"],
+      "zh",
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.rule).toBe("title-shape-repeat");
   });
 });
