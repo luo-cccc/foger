@@ -84,10 +84,11 @@ const EN_BEHAVIOR_TOKENS = [
   "shout", "whisper", "duck", "rush",
 ];
 
-function shotSurfaceText(script: EpisodeScript): string {
+export function shotSurfaceText(script: EpisodeScript): string {
   return script.scenes.flatMap((scene) => scene.shots.flatMap((shot) => [
     shot.visual,
     shot.action ?? "",
+    shot.narration ?? "",
     ...shot.dialogue.map((line) => line.text),
   ])).join("\n");
 }

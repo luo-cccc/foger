@@ -28,7 +28,6 @@ configCommand
       const KNOWN_KEYS = new Set([
         "llm.provider", "llm.baseUrl", "llm.model", "llm.temperature",
         "llm.thinkingBudget", "llm.proxyUrl", "llm.apiFormat", "llm.stream",
-        "inputGovernanceMode",
         "foundation.reviewRetries",
         "writing.reviewMode",
         "writing.reviewRetries",

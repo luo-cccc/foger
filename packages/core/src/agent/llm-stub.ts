@@ -340,10 +340,7 @@ const FOUNDATION_SECTIONS = [
 
 function renderStubFoundation(prompt: string): string {
   const targetEpisodes = extractTargetEpisodes(prompt);
-  const plan = buildFoundationScalePlan(
-    targetEpisodes,
-    /(?:目标集数|episode duration|100-episode|漫剧)/iu.test(prompt) ? { unit: "episodes" } : {},
-  );
+  const plan = buildFoundationScalePlan(targetEpisodes);
   const volumeMap = [
     "# Volume Map",
     "",

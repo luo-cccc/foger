@@ -108,7 +108,7 @@ export function parseLLMOverridesFromArgv(argv: readonly string[]): LLMConfigCli
 export function buildPipelineConfig(
   config: ProjectConfig,
   root: string,
-  extra?: Partial<Pick<PipelineConfig, "notifyChannels" | "externalContext" | "inputGovernanceMode" | "episodeReviewMode" | "revisionGate">> & {
+  extra?: Partial<Pick<PipelineConfig, "notifyChannels" | "externalContext" | "episodeReviewMode" | "revisionGate">> & {
     readonly quiet?: boolean;
     readonly logFile?: NodeJS.WritableStream;
   },
@@ -154,7 +154,6 @@ export function buildPipelineConfig(
     revisionGate: extra?.revisionGate,
     modelOverrides: config.modelOverrides,
     contentPolicyFallback: config.contentPolicyFallback,
-    inputGovernanceMode: extra?.inputGovernanceMode ?? config.inputGovernanceMode,
     notifyChannels: extra?.notifyChannels ?? config.notify,
     externalContext: extra?.externalContext,
     logger,

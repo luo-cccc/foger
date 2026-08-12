@@ -55,7 +55,6 @@ import {
   resolveLLMTimeoutMs,
   resolveEffectiveLLMConfig,
   ReviseModeSchema,
-  InputGovernanceModeSchema,
   GLOBAL_ENV_PATH,
   Scheduler,
   SessionKindSchema,
@@ -3219,23 +3218,6 @@ export function createStudioServer(
     } catch (e) {
       return c.json({ error: String(e) }, 500);
     }
-  });
-
-  app.get("/api/v1/project/input-governance-mode", async (c) => {
-    const raw = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8"));
-    return c.json({ mode: raw.inputGovernanceMode === "legacy" ? "legacy" : "v2" });
-  });
-
-  app.put("/api/v1/project/input-governance-mode", async (c) => {
-    const { mode } = await c.req.json<{ mode?: unknown }>();
-    const parsed = InputGovernanceModeSchema.safeParse(mode);
-    if (!parsed.success) {
-      return c.json({ error: "mode must be legacy or v2" }, 400);
-    }
-    await mutateRawConfig(root, (raw) => {
-      raw.inputGovernanceMode = parsed.data;
-    });
-    return c.json({ ok: true, mode: parsed.data });
   });
 
   app.get("/api/v1/project/detection", async (c) => {

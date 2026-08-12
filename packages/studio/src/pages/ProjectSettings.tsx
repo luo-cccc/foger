@@ -79,9 +79,7 @@ export function ProjectSettings({ nav, theme, t }: { nav: Nav; theme: Theme; t: 
   const c = useColors(theme);
   const { data: modelRoutingData, refetch: refetchModelRouting } = useApi<ModelRoutingSummary>("/project/model-routing");
   const { data: notifyData, refetch: refetchNotify } = useApi<{ channels: unknown[] }>("/project/notify");
-  const { data: modeData, refetch: refetchMode } = useApi<{ mode: "legacy" | "v2" }>("/project/input-governance-mode");
   const { data: detectionData, refetch: refetchDetection } = useApi<{ detection: unknown | null }>("/project/detection");
-  const [mode, setMode] = useState<"legacy" | "v2">("v2");
   const [defaultService, setDefaultService] = useState("");
   const [defaultModel, setDefaultModel] = useState("");
   const [overrideRows, setOverrideRows] = useState<OverrideRow[]>([]);
@@ -91,10 +89,6 @@ export function ProjectSettings({ nav, theme, t }: { nav: Nav; theme: Theme; t: 
   const [saving, setSaving] = useState<string | null>(null);
   const toolDetailsDefaultOpen = usePreferencesStore((s) => s.toolDetailsDefaultOpen);
   const setToolDetailsDefaultOpen = usePreferencesStore((s) => s.setToolDetailsDefaultOpen);
-
-  useEffect(() => {
-    if (modeData?.mode) setMode(modeData.mode);
-  }, [modeData]);
 
   useEffect(() => {
     if (!modelRoutingData) return;
@@ -170,29 +164,6 @@ export function ProjectSettings({ nav, theme, t }: { nav: Nav; theme: Theme; t: 
           {notice.message}
         </div>
       )}
-
-      <SettingsCard title={t("settings.inputGovernance")} description={t("settings.inputGovernanceHint")} icon={<Radar size={18} />}>
-        <div className="flex flex-wrap items-center gap-3">
-          <select
-            value={mode}
-            onChange={(e) => setMode(e.target.value === "legacy" ? "legacy" : "v2")}
-            className="rounded-lg border border-border bg-secondary/30 px-3 py-2 text-sm outline-none"
-          >
-            <option value="v2">v2</option>
-            <option value="legacy">legacy</option>
-          </select>
-          <button
-            onClick={() => runSave("mode", async () => {
-              await putApi("/project/input-governance-mode", { mode });
-              await refetchMode();
-            }, t("settings.saved"))}
-            disabled={saving === "mode"}
-            className={`rounded-lg px-4 py-2 text-sm font-bold ${c.btnPrimary} disabled:opacity-40`}
-          >
-            {saving === "mode" ? t("config.saving") : t("config.save")}
-          </button>
-        </div>
-      </SettingsCard>
 
       {/* Chat UI preferences — applied immediately, persisted in this browser's localStorage */}
       <SettingsCard title={t("settings.chatUi")} description={t("settings.chatUiHint")} icon={<MessageSquare size={18} />}>

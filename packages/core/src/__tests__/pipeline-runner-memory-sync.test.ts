@@ -230,7 +230,6 @@ describe("PipelineRunner structured-state memory sync", () => {
       } as ConstructorParameters<typeof PipelineRunner>[0]["client"],
       model: "test-model",
       projectRoot: root,
-      inputGovernanceMode: "legacy",
     });
 
     const { createEpisodeScript, createEpisodeScriptMarkdown } = await import("./episode-test-fixtures.js");

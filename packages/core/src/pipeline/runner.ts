@@ -8,7 +8,6 @@ import type {
   LLMConfig,
   AgentLLMOverride,
   ContentPolicyFallbackConfig,
-  InputGovernanceMode,
 } from "../models/project.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import { ArchitectAgent, type ArchitectOutput } from "../agents/architect.js";
@@ -411,7 +410,6 @@ export interface PipelineConfig {
   readonly externalContext?: string;
   readonly modelOverrides?: Record<string, string | AgentLLMOverride>;
   readonly contentPolicyFallback?: ContentPolicyFallbackConfig;
-  readonly inputGovernanceMode?: InputGovernanceMode;
   readonly logger?: Logger;
   readonly onStreamProgress?: OnStreamProgress;
   readonly onContextCompression?: ContextCompressionCallback;
@@ -4163,7 +4161,7 @@ ${matrix}`,
 
       // Step 2: Sequential replay
       log?.info(this.localize(resolvedLanguage, {
-        zh: `步骤 2：从第 ${startFrom} 章开始顺序回放...`,
+        zh: `步骤 2：从第 ${startFrom} 集开始顺序回放...`,
         en: `Step 2: Sequential replay from episode ${startFrom}...`,
       }));
       const writerCtx = this.agentCtxFor("writer", input.bookId);

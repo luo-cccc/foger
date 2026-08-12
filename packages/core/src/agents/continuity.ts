@@ -9,6 +9,7 @@ import { renderMemoAsNarrativeBlock } from "../utils/narrative-control.js";
 import { estimateTextTokens } from "../llm/provider.js";
 import { resolvePromptCompactionTarget, truncatePromptBlock } from "../utils/prompt-budget.js";
 import { buildNarrativeDriveContract } from "./narrative-drive-contract.js";
+import { EN_AI_TELL_WORDS } from "./post-write-validator.js";
 import {
   getEpisodeContextContent,
   getEpisodeContextRecentEpisodes,
@@ -157,7 +158,7 @@ function buildDimensionNote(
 
   if (id === 10 && words.length > 0) {
     return language === "en"
-      ? `Fatigue words: ${words.join(", ")}. Also check universal AI-tell markers (delve, tapestry, testament, intricate, pivotal, vibrant, comprehensive, nuanced, embark, foster, underscore, bolstered, crucial); warn when any appears more than once per 3,000 words.`
+      ? `Fatigue words: ${words.join(", ")}. Also check universal AI-tell markers (${EN_AI_TELL_WORDS.join(", ")}); warn when any appears more than once per 3,000 words.`
       : `高疲劳词：${words.join("、")}。同时检查AI标记词（仿佛/不禁/宛如/竟然/忽然/猛地）密度，每3000字超过1次即warning`;
   }
 

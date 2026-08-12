@@ -6,6 +6,7 @@ import { buildWriterSystemPrompt } from "./writer-prompts.js";
 import { readGenreProfile, readBookRules } from "./rules-reader.js";
 import {
   detectCrossEpisodeRepetition,
+  detectEnglishAITellWordDensity,
   detectParagraphLengthDrift,
   normalizePostWriteSurface,
   validatePostWrite,
@@ -59,6 +60,7 @@ import type { EpisodeHandoffCapsule } from "../pipeline/episode-handoff.js";
 import type { EpisodePerformanceReport } from "../pipeline/episode-performance.js";
 import type { EpisodeReviewEvidence } from "../pipeline/episode-review-evidence.js";
 import { loadPersistedPlan } from "../pipeline/persisted-governed-plan.js";
+import { shotSurfaceText } from "../pipeline/episode-quality-gate.js";
 
 const LEGACY_WRITER_CONTEXT_BUDGET = {
   storyBible: 14_000,
@@ -488,16 +490,27 @@ export class WriterAgent extends BaseAgent {
     const surfaceNormalizedWordCount = countEpisodeLength(surfaceNormalizedContent, resolvedLengthSpec.countingMode);
     const authoritativeEpisodeDuration = creative.episodeScriptMetrics?.estimatedDurationSeconds
       ?? surfaceNormalizedWordCount;
+    // Free-text (legacy novel) checks only apply to non-screenplay output. For
+    // screenplay, the deterministic structural gate (auditEpisodeScript) owns
+    // contract invariants; the AI-tell analysis below runs on the shot surface.
     const ruleViolations = creative.episodeScript
-      ? []
+      ? (resolvedLanguage === "en"
+          ? [...detectEnglishAITellWordDensity(shotSurfaceText(creative.episodeScript))]
+          : [])
       : [
           ...validatePostWrite(surfaceNormalizedContent, genreProfile, bookRules, resolvedLanguage),
           ...detectCrossEpisodeRepetition(surfaceNormalizedContent, fingerprintEpisodes, resolvedLanguage),
           ...detectParagraphLengthDrift(surfaceNormalizedContent, fingerprintEpisodes, resolvedLanguage),
         ];
-    const aiTellIssues = creative.episodeScript
-      ? []
-      : analyzeAITells(surfaceNormalizedContent, resolvedLanguage).issues;
+    // AI-tell analysis runs for BOTH formats: for free text it inspects the
+    // normalized prose; for screenplay it inspects the shot surface (visual /
+    // action / narration / dialogue) so hedge density, transition repetition,
+    // list-like cadence and English AI-tell vocabulary are still caught even
+    // though the free-text branch above is short-circuited.
+    const aiTellSurface = creative.episodeScript
+      ? shotSurfaceText(creative.episodeScript)
+      : surfaceNormalizedContent;
+    const aiTellIssues = analyzeAITells(aiTellSurface, resolvedLanguage).issues;
 
     const postWriteErrors = ruleViolations.filter(v => v.severity === "error");
     const postWriteWarnings = ruleViolations.filter(v => v.severity === "warning");

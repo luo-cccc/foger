@@ -73,6 +73,18 @@ interface ParagraphShape {
 /** AI转折/惊讶标记词 */
 const SURPRISE_MARKERS = ["仿佛", "忽然", "竟然", "猛地", "猛然", "不禁", "宛如"];
 
+/**
+ * Universal English AI-tell vocabulary — the single authority for "AI-sounding"
+ * web-fiction words. Previously three divergent copies lived in
+ * en-prompt-sections.ts (dead), validatePostWriteEnglish (9 words), and the
+ * auditor's lexical-fatigue note (13 words). Consolidated here; the auditor
+ * renders this same list into its prompt.
+ */
+export const EN_AI_TELL_WORDS: ReadonlyArray<string> = [
+  "delve", "tapestry", "testament", "intricate", "pivotal", "vibrant",
+  "comprehensive", "nuanced", "embark", "foster", "underscore", "bolstered", "crucial",
+];
+
 /** 元叙事/编剧旁白模式 */
 const META_NARRATION_PATTERNS = [
   /到这里[，,]?算是/,
@@ -603,17 +615,14 @@ export function detectParagraphLengthDrift(
   ];
 }
 
-/** English-specific post-write validation rules. */
-function validatePostWriteEnglish(
-  content: string,
-  genreProfile: GenreProfile,
-  bookRules: BookRules | null,
-): ReadonlyArray<PostWriteViolation> {
+/**
+ * English AI-tell word-density check (single authority: EN_AI_TELL_WORDS).
+ * Exposed separately so the screenplay path can run it against the shot
+ * surface even though validatePostWrite is short-circuited for screenplay.
+ */
+export function detectEnglishAITellWordDensity(content: string): ReadonlyArray<PostWriteViolation> {
   const violations: PostWriteViolation[] = [];
-
-  // 1. AI-tell word density (from en-prompt-sections IRON LAW 3)
-  const aiTellWords = ["delve", "tapestry", "testament", "intricate", "pivotal", "vibrant", "embark", "comprehensive", "nuanced"];
-  for (const word of aiTellWords) {
+  for (const word of EN_AI_TELL_WORDS) {
     const regex = new RegExp(`\\b${word}\\b`, "gi");
     const matches = content.match(regex);
     if (matches && matches.length > Math.ceil(content.length / 3000)) {
@@ -625,6 +634,19 @@ function validatePostWriteEnglish(
       });
     }
   }
+  return violations;
+}
+
+/** English-specific post-write validation rules. */
+function validatePostWriteEnglish(
+  content: string,
+  genreProfile: GenreProfile,
+  bookRules: BookRules | null,
+): ReadonlyArray<PostWriteViolation> {
+  const violations: PostWriteViolation[] = [];
+
+  // 1. AI-tell word density (single authority: EN_AI_TELL_WORDS)
+  violations.push(...detectEnglishAITellWordDensity(content));
 
   // 2. Paragraph overflow (same rule applies to English)
   const paragraphs = content.split(/\n\s*\n/).filter((p) => p.trim().length > 0);

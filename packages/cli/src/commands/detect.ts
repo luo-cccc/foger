@@ -57,8 +57,8 @@ export const detectCommand = new Command("detect")
           log(`  Pass rate: ${(stats.passRate * 100).toFixed(0)}%`);
           if (stats.episodeBreakdown.length > 0) {
             log(`  Episodes:`);
-            for (const ch of stats.episodeBreakdown) {
-              log(`    Ep.${ch.episodeNumber}: ${ch.originalScore.toFixed(3)} → ${ch.finalScore.toFixed(3)} (${ch.rewriteAttempts} rewrites)`);
+            for (const episode of stats.episodeBreakdown) {
+              log(`    Ep.${episode.episodeNumber}: ${episode.originalScore.toFixed(3)} → ${episode.finalScore.toFixed(3)} (${episode.rewriteAttempts} rewrites)`);
             }
           }
         }
@@ -69,9 +69,9 @@ export const detectCommand = new Command("detect")
 
       if (opts.all) {
         const index = await state.loadEpisodeIndex(bookId);
-        for (const ch of index) {
-          const content = await readEpisodeContent(bookDir, ch.episodeNumber);
-          const result = await detectEpisode(detectionConfig, content, ch.episodeNumber);
+        for (const episode of index) {
+          const content = await readEpisodeContent(bookDir, episode.episodeNumber);
+          const result = await detectEpisode(detectionConfig, content, episode.episodeNumber);
           printResult(result, opts.json);
         }
       } else {

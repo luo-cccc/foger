@@ -320,7 +320,6 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     loadLLMEnvLayers: actual.loadLLMEnvLayers,
     resolveLLMTimeoutMs: resolveLLMTimeoutMsMock,
     resolveEffectiveLLMConfig: actual.resolveEffectiveLLMConfig,
-    InputGovernanceModeSchema: actual.InputGovernanceModeSchema,
     isExplicitWriteEpisodeCommand: actual.isExplicitWriteEpisodeCommand,
     isWriteNextInstruction: actual.isWriteNextInstruction,
     normalizeActionSource: actual.normalizeActionSource,
@@ -4735,18 +4734,9 @@ describe("createStudioServer daemon lifecycle", () => {
     });
   });
 
-  it("project advanced settings expose input governance and detection config", async () => {
+  it("project advanced settings expose detection config", async () => {
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
-
-    const modeInitial = await app.request("http://localhost/api/v1/project/input-governance-mode");
-    await expect(modeInitial.json()).resolves.toMatchObject({ mode: "v2" });
-
-    const modePut = await app.request("http://localhost/api/v1/project/input-governance-mode", {
-      method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "legacy" }),
-    });
-    await expect(modePut.json()).resolves.toMatchObject({ ok: true, mode: "legacy" });
 
     const detectionPut = await app.request("http://localhost/api/v1/project/detection", {
       method: "PUT", headers: { "Content-Type": "application/json" },
@@ -4774,12 +4764,7 @@ describe("createStudioServer daemon lifecycle", () => {
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
 
-    const [modeResponse, detectionResponse] = await Promise.all([
-      app.request("http://localhost/api/v1/project/input-governance-mode", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "legacy" }),
-      }),
+    const [detectionResponse, notifyResponse] = await Promise.all([
       app.request("http://localhost/api/v1/project/detection", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -4795,12 +4780,16 @@ describe("createStudioServer daemon lifecycle", () => {
           },
         }),
       }),
+      app.request("http://localhost/api/v1/project/notify", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ channels: [] }),
+      }),
     ]);
 
-    expect(modeResponse.status).toBe(200);
     expect(detectionResponse.status).toBe(200);
+    expect(notifyResponse.status).toBe(200);
     const saved = JSON.parse(await readFile(join(root, "inkos.json"), "utf-8"));
-    expect(saved.inputGovernanceMode).toBe("legacy");
     expect(saved.detection).toMatchObject({ provider: "custom", threshold: 0.6 });
   });
 

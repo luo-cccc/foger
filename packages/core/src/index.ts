@@ -12,7 +12,6 @@ export * from './agents/consolidator.js';
 export * from './agents/continuity.js';
 export * from './agents/detection-insights.js';
 export * from './agents/detector.js';
-export * from './agents/en-prompt-sections.js';
 export * from './agents/foundation-reviewer.js';
 export * from './agents/planner-context.js';
 export * from './agents/planner-prompts.js';

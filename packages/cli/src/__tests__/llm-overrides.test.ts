@@ -45,7 +45,6 @@ describe("parseLLMOverridesFromArgv", () => {
       writing: { reviewRetries: 1 },
       notify: [],
       modelOverrides: {},
-      inputGovernanceMode: "v2",
     } as never, process.cwd(), { quiet: true });
 
     expect(config.defaultTimeoutMs).toBe(4321);

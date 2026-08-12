@@ -12,7 +12,6 @@ import {
   ProjectConfigSchema,
   LLMConfigSchema,
   NotifyChannelSchema,
-  InputGovernanceModeSchema,
 } from "../models/project.js";
 import {
   EpisodeIntentSchema,
@@ -420,11 +419,6 @@ describe("ProjectConfigSchema", () => {
     expect(result.notify).toEqual([]);
   });
 
-  it("defaults input governance mode to v2", () => {
-    const result = ProjectConfigSchema.parse(validProject);
-    expect(result.inputGovernanceMode).toBe("v2");
-  });
-
   it("rejects wrong version", () => {
     expect(() =>
       ProjectConfigSchema.parse({ ...validProject, version: "1.0.0" }),
@@ -441,16 +435,6 @@ describe("ProjectConfigSchema", () => {
     expect(() =>
       ProjectConfigSchema.parse({ name: "p", version: "0.1.0" }),
     ).toThrow();
-  });
-});
-
-describe("InputGovernanceModeSchema", () => {
-  it.each(["legacy", "v2"] as const)("accepts '%s'", (value) => {
-    expect(InputGovernanceModeSchema.parse(value)).toBe(value);
-  });
-
-  it("rejects unknown input governance modes", () => {
-    expect(() => InputGovernanceModeSchema.parse("planner")).toThrow();
   });
 });
 

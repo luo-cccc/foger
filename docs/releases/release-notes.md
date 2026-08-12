@@ -1,5 +1,14 @@
 # InkOS 更新记录
 
+### 2026-08-13（旧小说时代残留治理：短路与死代码清零）
+
+- **修复 screenplay 下 AI 味检测被短路**：`analyzeAITells`（套话密度/转折词重复/列表式）与英文 AI-tell 词密度检查此前只在自由文本分支运行（`creative.episodeScript ? [] : ...`），分镜格式下完全失效。现在 screenplay 路径对镜头表面（visual/action/narration/dialogue）跑 `analyzeAITells`，英文场景额外跑 `detectEnglishAITellWordDensity`。
+- **统一英文 AI-tell 词表为单一权威**：原先同一份词表分散在 3 处且子集不一致（`en-prompt-sections.ts` 13 词死代码、`post-write-validator.ts` 9 词被短路、auditor 13 词）。现收敛为 `EN_AI_TELL_WORDS`（post-write-validator 导出），auditor 复用同一常量；删除零引用的 `en-prompt-sections.ts` 及 5 个死导出函数。
+- **删除 `inputGovernanceMode` 死字段**：runner 声明但从不消费该配置（CLI/Studio 还在读写它，纯属误导）。删除 schema 字段、runner 配置项、CLI 传参、Studio API 端点与前端 UI 卡片。
+- **删除 `foundation-scale` 的 `episodic` 死开关**：4 个调用点全传 `{ unit: "episodes" }`，非 episodic 分支（章/卷/全书文案）永不执行。固化 episodes 语义并删除 `unit` 字段。
+- **旧措辞清理**：runner 导入回放提示"章"→"集"；`detect.ts` 的 `ch` 循环变量改名 `episode`。
+- 验证：core 148 文件 1449 测试、studio 420 测试全绿；typecheck/hygiene/污染守卫通过。
+
 ### 2026-08-13（跨集凑时长重复检测）
 
 - **补上 screenplay 下缺失的跨集重复门禁**：旧的 `detectCrossEpisodeRepetition` 只跑在自由文本分支（`creative.episodeScript ? [] : [...]`），分镜格式下整条被短路——放大制作时模型会复用上一集的镜头写法/舞台调度来凑时长，且无任何确定性拦截。新增 `auditCrossEpisodeShotRepeat`（`episode-quality-gate.ts`），用两个确定性信号检测：① 镜头表面短语跨集重复（zh 6-gram / en 3-word）；② 行为签名 Jaccard 重合（从镜头 action/visual 抽取动作词，≥60% 重合即报）。warning 级、reviewed_invariant，接入 `auditEpisodeScript` 的新可选 `recentScripts` 参数，runner 的 4 个审计点（standalone audit、revise 门禁合并、review 循环、write 落盘）统一传入最近 3 集。

@@ -227,7 +227,6 @@ ${reviseFrom.userFeedback || "（无）"}
     const scaleGuidance = renderFoundationScaleGuidance(
       targetEpisodes,
       "zh",
-      { unit: "episodes" },
     );
     return `你是这部连续漫剧的总架构师。你的唯一输出是**可执行的全剧基础设定**：稳定总纲、篇章地图、角色关系、规则和 Hook 债务。它必须让 Planner 能拆出单集契约，让 Writer 能写成 ${book.episodeDurationSeconds ?? EPISODE_DURATION_TARGET_SECONDS} 秒可制作分镜，让 Auditor 能校准连续性与因果。${contextBlock}${reviewFeedbackBlock}
 
@@ -445,7 +444,6 @@ ${gp.eraResearch ? `## 年代限制
     const scaleGuidance = renderFoundationScaleGuidance(
       book.targetEpisodes ?? 100,
       "en",
-      { unit: "episodes" },
     );
     return `You are the lead architect of a serialized comic-drama. Produce an executable series foundation: stable story frame, arc map, relationship pressure, rules, and hook debt. It must let Planner derive one-episode contracts, Writer create production-ready ${book.episodeDurationSeconds ?? EPISODE_DURATION_TARGET_SECONDS}-second EpisodeScript JSON, and Auditor verify causality and continuity.${contextBlock}${reviewFeedbackBlock}
 
@@ -790,7 +788,6 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
           effectiveVolumeMapRaw,
           targetEpisodes,
           language,
-          { unit: "episodes" },
         );
     if (!effectiveStoryFrame) missing.push("story_frame");
     if (!effectiveVolumeMap) missing.push("volume_map");
@@ -1133,7 +1130,6 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
     const scaleGuidance = renderFoundationScaleGuidance(
       book.targetEpisodes ?? 100,
       resolvedLanguage,
-      { unit: "episodes" },
     );
 
     const continuationDirective = resolvedLanguage === "en"
@@ -1510,7 +1506,7 @@ ${trimmed}\n`;
     const { language, targetEpisodes } = params;
     const isEn = language === "en";
     const compact = targetEpisodes <= FOUNDATION_COMPACT_MAX_EPISODES;
-    const scaleGuidance = renderFoundationScaleGuidance(targetEpisodes, language, { unit: "episodes" });
+    const scaleGuidance = renderFoundationScaleGuidance(targetEpisodes, language);
     const systemPrompt = isEn
       ? `You are a professional comic-drama series architect. Your ONLY output is a rewritten volume_map section that covers ${targetEpisodes} episodes, preserving the existing world, characters and established episodes. Do not touch story_frame, roles, book_rules or pending_hooks. Output the volume_map markdown only (no === SECTION: === markers, no extra commentary).`
       : `你是专业的漫剧总架构师。你唯一的输出是重写后的 volume_map 段，覆盖 ${targetEpisodes} 集，并保留既有世界观、角色与已发生剧集。不要改动 story_frame、roles、book_rules 或 pending_hooks。只输出 volume_map 的 Markdown 正文（不要 === SECTION: === 标记，不要额外说明）。`;

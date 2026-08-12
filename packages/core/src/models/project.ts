@@ -125,9 +125,6 @@ export const ContentPolicyFallbackConfigSchema = AgentLLMOverrideSchema.extend({
 
 export type ContentPolicyFallbackConfig = z.infer<typeof ContentPolicyFallbackConfigSchema>;
 
-export const InputGovernanceModeSchema = z.enum(["legacy", "v2"]);
-export type InputGovernanceMode = z.infer<typeof InputGovernanceModeSchema>;
-
 const ModelOverrideValueSchema = z.union([z.string(), AgentLLMOverrideSchema]);
 
 const CronExpressionSchema = z.string().trim().min(1).refine((value) => {
@@ -155,7 +152,6 @@ export const ProjectConfigSchema = z.object({
   modelOverrides: z.record(z.string(), ModelOverrideValueSchema).optional(),
   /** Explicit one-shot cross-provider route for provider content-policy rejections. */
   contentPolicyFallback: ContentPolicyFallbackConfigSchema.optional(),
-  inputGovernanceMode: InputGovernanceModeSchema.default("v2"),
   daemon: z.object({
     schedule: z.object({
       writeCron: CronExpressionSchema.default("*/15 * * * *"),

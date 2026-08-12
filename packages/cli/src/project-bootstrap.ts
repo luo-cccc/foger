@@ -75,7 +75,6 @@ function buildProjectConfig(projectDir: string, language: "zh" | "en") {
       stream: true,
     },
     notify: [],
-    inputGovernanceMode: "v2" as const,
     daemon: {
       schedule: {
         writeCron: "*/15 * * * *",
