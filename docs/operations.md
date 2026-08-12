@@ -46,6 +46,21 @@ inkos canon refresh <book-id>
 - `pnpm audit:contamination`（已接入 `pnpm verify`）：拒绝付费测试书专名（角色/门派/地名/书名）出现在生产源码、提示词与 Studio 文案中。新付费书产生的角色请先登记到 `scripts/audit-contamination.mjs` 的 `KNOWN_CONTAMINATION`，并保持不进提示词与管线代码。
 - 内置题材（`packages/core/genres/*.md`）维护规则：`fatigueWords` 只放题材特有词——通用 AI 味词（中文：仿佛/不禁/宛如/竟然/忽然/猛地；英文：delve/tapestry/testament 等）由 auditor 统一硬编码检查，不要写回题材文件；爽点池保持 ≥8 类以支撑长卷轮换。`genre-config.test.ts` 会强制这些约束。
 
+## 输出长度（max-tokens）
+
+writer / reviser / canon-extractor 的每次调用输出上限为 `min(32768, 模型卡片 maxOutput)`，随模型能力自适应：
+
+- 大模型（如 deepseek-v4-flash，maxOutput 393216）用满 32768。
+- 小模型（如 gpt-4o，maxOutput 16384）自动回落到自身 16384，不会触发 API 的 max_tokens 超限。
+
+需要整体收紧输出时，设置环境变量（只降不升）：
+
+```bash
+INKOS_MAX_OUTPUT_TOKENS_PER_CALL=8192
+```
+
+放大制作（更长单集、更多镜头、更长对白）无需任何配置即可受益——只要模型卡片声明更大的 maxOutput，上限就自动放宽。
+
 ## 清理
 
 仓库自带安全清理脚本：

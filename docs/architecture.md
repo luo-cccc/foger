@@ -85,6 +85,9 @@ Composer 将 `ContextPackage` 与 `RuleStack` 挂载到原 snapshot 并更新哈
 - **标题句式轮换检测**：`detectTitleShapeRepeat` 对连续 3 集共用同一句式壳（中文"X的Y"/双字，英文 "X of Y"/双词）报 warning 并自动从正文换新意象改名，与既有重复/折叠检测并列。
 - **题材配置去模板化**：15 个内置题材的 `fatigueWords` 全部唯一——通用 AI 味词由 auditor 统一硬编码检查（中英文各一份），题材文件只保留题材特有词；爽点池统一 ≥8 类支撑长卷轮换；`auditDimensions` 按题材差异化（关系动态/读者期待等专用维度）。
 - **污染守卫**：`scripts/audit-contamination.mjs` 维护付费测试书专名词表（角色/门派/地名/书名），拒绝其出现在生产源码、提示词与 Studio 文案中，作为 `pnpm verify` 门禁。所有历史污染均源自"付费书剧情 → 回归测试夹具 → 抄入生产代码"的同一条链；新付费书角色须先登记词表，再保持不进提示词与管线代码。
+- **跨集镜头重复检测（防凑时长）**：`auditCrossEpisodeShotRepeat` 用两个确定性信号检测剧本复用上一集舞台调度来填充时长——① 镜头表面短语跨集重复（zh 6-gram / en 3-word）；② 行为签名 Jaccard 重合（从镜头 action/visual 抽取动作词，≥60% 报 warning）。接入 `auditEpisodeScript` 的可选 `recentScripts` 参数，runner 的 4 个审计点（standalone audit、revise 门禁合并、review 循环、write 落盘）统一传最近 3 集。补上了旧自由文本跨集重复检查在分镜格式下被短路的缺口。
+- **输出上限跟随模型能力**：writer / reviser / canon-extractor 的 per-call `maxTokens` 从硬编码 8192 改为 `min(32768, 模型卡片 maxOutput)`——大模型（deepseek-v4-flash maxOutput 393216）用满 32768，小模型自动回落自身上限，避免 API 的 max_tokens 超限；`INKOS_MAX_OUTPUT_TOKENS_PER_CALL` 仍可对整体输出收紧。composer 的 8192 是上下文压缩输出，保持不动。
+- **AI 味检测分镜短路修复**：`analyzeAITells`（套话密度/转折词重复/列表式）与英文 AI-tell 词密度此前只在自由文本分支运行（`creative.episodeScript ? [] : ...`），剧本格式下完全失效。现在分镜对镜头表面（visual/action/narration/dialogue）跑 `analyzeAITells`，英文场景额外跑 `detectEnglishAITellWordDensity`；英文 AI-tell 词表收敛为单一权威 `EN_AI_TELL_WORDS`（auditor 复用），删除三份不一致副本。
 
 ## 审计分级
 
