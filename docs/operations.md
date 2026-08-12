@@ -14,6 +14,7 @@
 pnpm check:hygiene
 pnpm typecheck
 pnpm audit:semantic-patterns
+pnpm audit:contamination
 pnpm build
 pnpm test
 pnpm verify:publish-manifests
@@ -39,6 +40,11 @@ inkos canon refresh <book-id>
 ```
 
 每集持久化时，未被既有 claim 覆盖的交接知识/状态变化会确定性收集到 `story/canon/unclaimed_facts.json`（幂等，供 `canon refresh` 消费）。卷合同超纲（待写集号超出大纲卷范围）会在写结果中给出非阻断警告，请先运行 `inkos foundation extend` 再继续写作。
+
+## 污染守卫与题材配置
+
+- `pnpm audit:contamination`（已接入 `pnpm verify`）：拒绝付费测试书专名（角色/门派/地名/书名）出现在生产源码、提示词与 Studio 文案中。新付费书产生的角色请先登记到 `scripts/audit-contamination.mjs` 的 `KNOWN_CONTAMINATION`，并保持不进提示词与管线代码。
+- 内置题材（`packages/core/genres/*.md`）维护规则：`fatigueWords` 只放题材特有词——通用 AI 味词（中文：仿佛/不禁/宛如/竟然/忽然/猛地；英文：delve/tapestry/testament 等）由 auditor 统一硬编码检查，不要写回题材文件；爽点池保持 ≥8 类以支撑长卷轮换。`genre-config.test.ts` 会强制这些约束。
 
 ## 清理
 
