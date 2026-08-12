@@ -1,5 +1,10 @@
 # InkOS 更新记录
 
+### 2026-08-13（跨集凑时长重复检测）
+
+- **补上 screenplay 下缺失的跨集重复门禁**：旧的 `detectCrossEpisodeRepetition` 只跑在自由文本分支（`creative.episodeScript ? [] : [...]`），分镜格式下整条被短路——放大制作时模型会复用上一集的镜头写法/舞台调度来凑时长，且无任何确定性拦截。新增 `auditCrossEpisodeShotRepeat`（`episode-quality-gate.ts`），用两个确定性信号检测：① 镜头表面短语跨集重复（zh 6-gram / en 3-word）；② 行为签名 Jaccard 重合（从镜头 action/visual 抽取动作词，≥60% 重合即报）。warning 级、reviewed_invariant，接入 `auditEpisodeScript` 的新可选 `recentScripts` 参数，runner 的 4 个审计点（standalone audit、revise 门禁合并、review 循环、write 落盘）统一传入最近 3 集。
+- 验证：core 148 文件 1453 测试全绿（新增跨集重复 4 项单元测试）。
+
 ### 2026-08-13（max-tokens 提升：跟随模型能力）
 
 - **创作输出上限从 8192 提升到 32768**：writer（分镜主写 + 解析失败修复）、reviser（整集重写）和 canon-extractor 的 per-call `maxTokens` 从硬编码 8192 改为 `min(安全上限 32768, 模型卡片 maxOutput)`——deepseek-v4-flash 等大模型（maxOutput 393216）用满 32768 上限，小模型自动回落到自身 maxOutput，不会触发 API 的 max_tokens 超限错误。放大制作（更长单集、更多镜头、更长对白）不再被输出长度截断。`INKOS_MAX_OUTPUT_TOKENS_PER_CALL` 仍可对整体输出做上限收紧。

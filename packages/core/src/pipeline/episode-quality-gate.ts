@@ -62,6 +62,149 @@ const FUNCTIONAL_ROLE_TOKEN = /(?:哨|卒|兵|长|将|官|吏|匠|役|丁|头目
 const SPEAKER_QUALIFIER = /[（(][^）)]*[）)]/gu;
 const SPEAKER_LEADING_MODIFIER = /^(?:年轻的|年老的|中年的|此时的|画面中的|记忆中的|录音中的|电话中的|门口的|窗外的|远处的|身后的)/u;
 
+/**
+ * Behavior tokens extracted from shot action/visual text to form an
+ * episode-level "behavior signature". Two episodes whose action beats reuse
+ * the same tokens are doing the same stage business — a filler pattern that
+ * the phrase n-gram check cannot see because the sentences differ.
+ */
+const ZH_BEHAVIOR_TOKENS = [
+  "进入", "离开", "走出", "回到", "打开", "关上", "拿出", "放下", "取出", "递上", "接过",
+  "检查", "查看", "翻看", "端详", "打量", "威胁", "警告", "逼近", "后退", "抓住", "按住",
+  "跪下", "起身", "转身", "抬头", "低头", "沉默", "摇头", "点头", "攥紧", "捏", "拍", "敲",
+  "扔", "撕", "烧", "捡", "扶", "坐下", "站起", "对视", "拦住", "推", "拽", "拔", "指",
+  "吼", "压低", "挡住", "躲开", "冲到", "转身就走", "坐下", "翻出",
+];
+const EN_BEHAVIOR_TOKENS = [
+  "enter", "leave", "return", "open", "close", "takes out", "put down", "hand",
+  "receive", "check", "examine", "inspect", "threaten", "warn", "approach",
+  "step back", "grab", "kneel", "stand up", "turn around", "look up", "look down",
+  "silent", "shake", "nod", "clench", "toss", "tear", "burn", "pick up", "hold",
+  "sit", "rise", "glance", "stare", "block", "push", "pull", "draw", "point",
+  "shout", "whisper", "duck", "rush",
+];
+
+function shotSurfaceText(script: EpisodeScript): string {
+  return script.scenes.flatMap((scene) => scene.shots.flatMap((shot) => [
+    shot.visual,
+    shot.action ?? "",
+    ...shot.dialogue.map((line) => line.text),
+  ])).join("\n");
+}
+
+function behaviorSignature(script: EpisodeScript, language: "zh" | "en"): Set<string> {
+  const tokens = language === "en" ? EN_BEHAVIOR_TOKENS : ZH_BEHAVIOR_TOKENS;
+  const surface = shotSurfaceText(script).toLowerCase();
+  const signature = new Set<string>();
+  for (const token of tokens) {
+    if (surface.includes(token)) signature.add(token);
+  }
+  return signature;
+}
+
+function jaccard(left: Set<string>, right: Set<string>): number {
+  if (left.size === 0 || right.size === 0) return 0;
+  let intersection = 0;
+  for (const token of left) if (right.has(token)) intersection += 1;
+  return intersection / (left.size + right.size - intersection);
+}
+
+/**
+ * Deterministic cross-episode shot-fill detection (screenplay format). The
+ * legacy free-text check (detectCrossEpisodeRepetition) is short-circuited for
+ * screenplay output, and a 150s target invites the model to pad beats by
+ * reusing the previous episode's stage business. Two signals are checked
+ * against recent episodes:
+ *
+ *  1. shot-surface phrase repetition (zh 6-gram / en 3-word), reusing the
+ *     legacy n-gram approach on the *shots* rather than the whole projection;
+ *  2. behavior-signature overlap (Jaccard on extracted action tokens).
+ *
+ * Warning only — a shared location or one repeated beat can be legitimate.
+ */
+export function auditCrossEpisodeShotRepeat(
+  current: EpisodeScript,
+  previousScripts: ReadonlyArray<EpisodeScript>,
+  language: "zh" | "en" = "zh",
+): AuditIssue[] {
+  if (previousScripts.length === 0) return [];
+  const issues: AuditIssue[] = [];
+
+  const currentSurface = shotSurfaceText(current);
+  const repeatCounts = previousScripts.map((previous) => {
+    const previousSurface = shotSurfaceText(previous);
+    if (language === "en") {
+      const words = currentSurface.toLowerCase().replace(/[^\w\s']/g, "").split(/\s+/).filter((w) => w.length > 2);
+      const phrases = new Set<string>();
+      for (let i = 0; i < words.length - 2; i += 1) {
+        phrases.add(`${words[i]} ${words[i + 1]} ${words[i + 2]}`);
+      }
+      const previousLower = previousSurface.toLowerCase();
+      let count = 0;
+      for (const phrase of phrases) {
+        if (previousLower.includes(phrase)) count += 1;
+      }
+      return count;
+    }
+    const chars = currentSurface.replace(/[\s\n\r]/g, "");
+    const ngrams = new Set<string>();
+    for (let i = 0; i < chars.length - 5; i += 1) {
+      const ngram = chars.slice(i, i + 6);
+      if (/^[\u4e00-\u9fff]{6}$/u.test(ngram)) ngrams.add(ngram);
+    }
+    const previousClean = previousSurface.replace(/[\s\n\r]/g, "");
+    let count = 0;
+    for (const ngram of ngrams) {
+      if (previousClean.includes(ngram)) count += 1;
+    }
+    return count;
+  });
+
+  const worstRepeat = Math.max(...repeatCounts);
+  if (worstRepeat >= 3) {
+    issues.push({
+      severity: "warning",
+      category: language === "en" ? "cross-episode-shot-repeat" : "跨集镜头重复",
+      repairScope: "structural",
+      ruleClass: "reviewed_invariant",
+      evidenceRefs: [
+        `episode:${current.episode}:scenes[].shots[]`,
+        `episode:${current.episode - 1}:scenes[].shots[]`,
+      ],
+      description: language === "en"
+        ? `${worstRepeat} shot-surface phrases in this episode also appear in a recent episode — beats are being padded with the previous episode's shots.`
+        : `本集有 ${worstRepeat} 个镜头表面短语与近期剧集重复——镜头正被上一集的旧镜头写法凑时长填充。`,
+      suggestion: language === "en"
+        ? "Rewrite the shots around new actions, props, or spatial positions; keep the episode's beats distinct from the previous one."
+        : "重写镜头：换新的动作、道具或空间关系，让本集节拍与上一集明显不同。",
+    });
+  }
+
+  const currentSignature = behaviorSignature(current, language);
+  const overlaps = previousScripts.map((previous) => jaccard(currentSignature, behaviorSignature(previous, language)));
+  const worstOverlap = Math.max(...overlaps);
+  if (currentSignature.size >= 3 && worstOverlap >= 0.6) {
+    issues.push({
+      severity: "warning",
+      category: language === "en" ? "episode-behavior-repeat" : "行为同构",
+      repairScope: "structural",
+      ruleClass: "reviewed_invariant",
+      evidenceRefs: [
+        `episode:${current.episode}:scenes[].shots[].action`,
+        `episode:${current.episode - 1}:scenes[].shots[].action`,
+      ],
+      description: language === "en"
+        ? `This episode's action beats share ${Math.round(worstOverlap * 100)}% of behavior tokens with a recent episode — the same stage business (${[...currentSignature].slice(0, 5).join(", ")}...) repeats.`
+        : `本集动作节拍与近期剧集有 ${Math.round(worstOverlap * 100)}% 的行为词重合（${[...currentSignature].slice(0, 5).join("、")}…）——同一套动作/场景在重复。`,
+      suggestion: language === "en"
+        ? "Vary the stage business: different locations, props, confrontation geometry, or a character whose behavior flips — not the same sequence re-shot."
+        : "换掉重复的舞台调度：换地点、换道具、换对峙几何，或让某个角色行为反转——不要用同一套动作换个镜头再拍一遍。",
+    });
+  }
+
+  return issues;
+}
+
 // Emotion labels cannot direct performance. A delivery that names only a mood
 // ("愤怒", "平静", "低声") gives the actor nothing to do; an executable
 // delivery names the strategy ("试探", "逼问", "划界", "把威胁说成提醒").
@@ -294,8 +437,18 @@ export function auditEpisodeScript(
   previousScript?: EpisodeScript,
   targetDurationSeconds = EPISODE_DURATION_TARGET_SECONDS,
   settingsIndex?: SettingsEntityIndex,
+  recentScripts?: ReadonlyArray<EpisodeScript>,
+  language: "zh" | "en" = "zh",
 ): AuditIssue[] {
   const issues: AuditIssue[] = [];
+
+  // Cross-episode shot-fill check (screenplay format): the legacy free-text
+  // repetition check is short-circuited for screenplay output, so the only
+  // deterministic guard against reusing the previous episode's stage business
+  // lives here.
+  if (recentScripts && recentScripts.length > 0) {
+    issues.push(...auditCrossEpisodeShotRepeat(script, recentScripts, language));
+  }
   const metrics = measureEpisodeScript(script, targetDurationSeconds);
   const { softMin, softMax } = episodeSoftDurationRange(targetDurationSeconds);
 

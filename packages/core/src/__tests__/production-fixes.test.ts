@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseEpisodeScriptOutput } from "../models/episode-script.js";
 import { parseCreativeOutput, isWriterOutputParseFailure } from "../agents/writer-parser.js";
-import { auditEarlyHookPayoff, auditEpisodeScript } from "../pipeline/episode-quality-gate.js";
+import { auditEarlyHookPayoff, auditCrossEpisodeShotRepeat, auditEpisodeScript } from "../pipeline/episode-quality-gate.js";
 import { detectDuplicateTitle } from "../agents/post-write-validator.js";
 import { evaluateSeriesCompletion } from "../pipeline/series-completion.js";
 import type { EpisodeScript } from "../models/episode-script.js";
@@ -278,5 +278,59 @@ describe("P1-4 series completion open-hook leniency", () => {
     const hookIssue = report.issues.find((issue) => issue.code === "open-core-hook");
     expect(hookIssue?.severity).toBe("critical");
     expect(report.completed).toBe(false);
+  });
+});
+
+// ============================================================
+// Cross-episode shot-repeat guard (screenplay fill detection)
+// ============================================================
+
+describe("auditCrossEpisodeShotRepeat", () => {
+  it("flags shot-surface phrases reused from a recent episode", () => {
+    const previous = scriptFor(1, [
+      "他站在月光下，握着一枚玉。他慢慢转身，看向远处的门。",
+      "她抬起头，看着月亮，久久没有开口。",
+      "门外传来脚步声，他停下动作。",
+    ]);
+    const current = scriptFor(2, [
+      "他站在月光下，握着一枚玉。他慢慢转身，看向远处的门。",
+      "她抬起头，看着月亮，久久没有开口。",
+      "门外传来脚步声，他停下动作。",
+    ]);
+    const issues = auditCrossEpisodeShotRepeat(current, [previous], "zh");
+    expect(issues.some((issue) => issue.category === "跨集镜头重复")).toBe(true);
+  });
+
+  it("flags behavior-signature overlap when stage business repeats", () => {
+    const previous = scriptFor(1, [
+      "他进入房间，打开抽屉，检查里面。",
+      "他转身，抬头看，然后低头。",
+      "他抓住门，后退一步。",
+    ]);
+    const current = scriptFor(2, [
+      "他进入房间，打开箱子，检查里面。",
+      "他转身，抬头看，然后低头。",
+      "他抓住把手，后退一步。",
+    ]);
+    const issues = auditCrossEpisodeShotRepeat(current, [previous], "zh");
+    expect(issues.some((issue) => issue.category === "行为同构")).toBe(true);
+  });
+
+  it("does not flag distinct episodes", () => {
+    const previous = scriptFor(1, [
+      "他进入房间，打开抽屉。", "他检查纸张。", "他转身离开。",
+    ]);
+    const current = scriptFor(2, [
+      "她冲向码头，跳进水里。", "她抓住绳索。", "她喊出名字。",
+    ]);
+    const issues = auditCrossEpisodeShotRepeat(current, [previous], "zh");
+    expect(issues).toEqual([]);
+  });
+
+  it("is reachable through auditEpisodeScript when recentScripts are supplied", () => {
+    const previous = scriptFor(1, ["他进入房间，打开抽屉。", "他检查纸张。", "他转身离开。"]);
+    const current = scriptFor(2, ["他进入房间，打开抽屉。", "他检查纸张。", "他转身离开。"]);
+    const issues = auditEpisodeScript(current, previous, 150, undefined, [previous], "zh");
+    expect(issues.some((issue) => issue.category === "跨集镜头重复" || issue.category === "行为同构")).toBe(true);
   });
 });

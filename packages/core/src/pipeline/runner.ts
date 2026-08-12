@@ -637,6 +637,20 @@ async function loadPersistedEpisodeScript(bookDir: string, episode: number): Pro
   }
 }
 
+/** Load the last `window` persisted episode scripts before `beforeEpisode` (newest first). */
+async function loadRecentEpisodeScripts(
+  bookDir: string,
+  beforeEpisode: number,
+  window = 3,
+): Promise<EpisodeScript[]> {
+  const scripts: EpisodeScript[] = [];
+  for (let episode = beforeEpisode - 1; episode >= Math.max(1, beforeEpisode - window); episode -= 1) {
+    const script = await loadPersistedEpisodeScript(bookDir, episode);
+    if (script) scripts.push(script);
+  }
+  return scripts;
+}
+
 export class PipelineRunner {
   private readonly state: StateManager;
   private readonly config: PipelineConfig;
@@ -1926,6 +1940,7 @@ export class PipelineRunner {
     const previousEpisodeScript = episodeScript
       ? await loadPersistedEpisodeScript(bookDir, targetEpisode - 1)
       : undefined;
+    const recentScripts = await loadRecentEpisodeScripts(bookDir, targetEpisode);
     const settingsIndex = await buildSettingsEntityIndex(bookDir, targetEpisode);
     const episodeIssues = episodeScript
       ? (await import("./episode-quality-gate.js")).auditEpisodeScript(
@@ -1933,6 +1948,8 @@ export class PipelineRunner {
           previousEpisodeScript,
           book.episodeDurationSeconds ?? EPISODE_DURATION_TARGET_SECONDS,
           settingsIndex,
+          recentScripts,
+          language,
         )
       : [];
     // Deterministic early-payoff guard on the standalone audit path (the write
@@ -2125,11 +2142,14 @@ export class PipelineRunner {
         try {
           const script = parseEpisodeScriptOutput(content, targetEpisode);
           const previousScript = await loadPersistedEpisodeScript(bookDir, targetEpisode - 1);
+          const recentScripts = await loadRecentEpisodeScripts(bookDir, targetEpisode);
           const deterministicIssues = auditEpisodeScript(
             script,
             previousScript,
             book.episodeDurationSeconds ?? EPISODE_DURATION_TARGET_SECONDS,
             await buildSettingsEntityIndex(bookDir, targetEpisode),
+            recentScripts,
+            language,
           );
           const mergedBlocking = deduplicateAuditIssues([
             ...preRevision.revisionBlockingIssues,
@@ -2882,7 +2902,8 @@ export class PipelineRunner {
           if (output.episodeScript) {
             try {
               const script = parseEpisodeScriptOutput(content, episodeNumber);
-              const deterministicIssues = auditEpisodeScript(script, previousEpisodeScript, book.episodeDurationSeconds ?? EPISODE_DURATION_TARGET_SECONDS, settingsIndex);
+              const recentScripts = await loadRecentEpisodeScripts(bookDir, episodeNumber);
+              const deterministicIssues = auditEpisodeScript(script, previousEpisodeScript, book.episodeDurationSeconds ?? EPISODE_DURATION_TARGET_SECONDS, settingsIndex, recentScripts, pipelineLang);
               // P0-4: a post-revision verification request (patch or rewrite)
               // must reach the LLM regression-checklist verifier even when the
               // deterministic gate is already clean — a clean gate cannot see
@@ -3163,26 +3184,33 @@ export class PipelineRunner {
         }],
       };
     }
-    const episodeScriptIssues = persistenceOutput.episodeScript
-      ? (await import("./episode-quality-gate.js")).auditEpisodeScript(
-          persistenceOutput.episodeScript,
-          previousEpisodeScript,
-          book.episodeDurationSeconds ?? EPISODE_DURATION_TARGET_SECONDS,
-          settingsIndex,
-        )
-      : [];
+    const persistedScriptForAudit = persistenceOutput.episodeScript;
+    const episodeScriptIssues = persistedScriptForAudit
+      ? (async () => {
+          const recentScripts = await loadRecentEpisodeScripts(bookDir, episodeNumber);
+          return (await import("./episode-quality-gate.js")).auditEpisodeScript(
+            persistedScriptForAudit,
+            previousEpisodeScript,
+            book.episodeDurationSeconds ?? EPISODE_DURATION_TARGET_SECONDS,
+            settingsIndex,
+            recentScripts,
+            pipelineLang,
+          );
+        })()
+      : Promise.resolve([] as AuditIssue[]);
+    const resolvedEpisodeScriptIssues = await episodeScriptIssues;
     // Deterministic early-payoff guard: a hook whose scheduled payoff episode
     // lies ahead must not have its key facts consumed on screen already.
-    if (persistenceOutput.episodeScript) {
+    if (persistedScriptForAudit) {
       const { auditEarlyHookPayoff } = await import("./episode-quality-gate.js");
       const { parsePendingHooksMarkdown } = await import("../utils/story-markdown.js");
       const hooksMarkdown = writeInput.episodeContextSnapshot
         ? getEpisodeContextContent(writeInput.episodeContextSnapshot, "story/pending_hooks.md")
         : "";
       if (hooksMarkdown) {
-        episodeScriptIssues.push(
+        resolvedEpisodeScriptIssues.push(
           ...auditEarlyHookPayoff(
-            persistenceOutput.episodeScript,
+            persistedScriptForAudit,
             parsePendingHooksMarkdown(hooksMarkdown),
           ),
         );
@@ -3196,7 +3224,7 @@ export class PipelineRunner {
         episodeReviewEvidence: buildEpisodeReviewEvidence({
           artifact: `episodes/${String(episodeNumber).padStart(4, "0")}.json`,
           content: episodeJson,
-          issues: episodeScriptIssues,
+          issues: resolvedEpisodeScriptIssues,
         }),
       };
     }
@@ -3213,7 +3241,7 @@ export class PipelineRunner {
       ...auditResult,
       issues: [
         ...auditResult.issues,
-        ...episodeScriptIssues,
+        ...resolvedEpisodeScriptIssues,
         ...longSpanFatigue.issues,
         ...(persistenceOutput.hookHealthIssues ?? []),
       ],
