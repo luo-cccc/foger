@@ -33,6 +33,7 @@
     "lint": "pnpm check:hygiene && pnpm -r lint",
     "typecheck": "pnpm -r typecheck",
     "audit:semantic-patterns": "node scripts/audit-semantic-patterns.mjs",
+    "audit:contamination": "node scripts/audit-contamination.mjs",
     "check:studio-bundle": "node scripts/verify-studio-bundle.mjs",
     "verify:publish-manifests": "node scripts/verify-no-workspace-protocol.mjs packages/core packages/cli packages/studio",
     "benchmark:studio-e2e": "node scripts/studio-e2e-benchmark.mjs",
@@ -40,7 +41,7 @@
     "stress:unattended": "pnpm --filter @actalk/inkos-core build && node scripts/unattended-soak.mjs",
     "test:linked": "pnpm --filter @actalk/inkos-studio test:linked",
     "test:linked:live": "pnpm --filter @actalk/inkos-studio test:linked:live",
-    "verify": "pnpm check:hygiene && pnpm typecheck && pnpm audit:semantic-patterns && pnpm build && pnpm check:studio-bundle && pnpm test && pnpm verify:publish-manifests",
+    "verify": "pnpm check:hygiene && pnpm typecheck && pnpm audit:semantic-patterns && pnpm audit:contamination && pnpm build && pnpm check:studio-bundle && pnpm test && pnpm verify:publish-manifests",
     "release": "pnpm verify && pnpm audit --prod --registry=https://registry.npmjs.org && pnpm --filter @actalk/inkos-studio test:e2e"
   },
   "engines": {
