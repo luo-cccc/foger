@@ -126,10 +126,12 @@ describe("CanonExtractor", () => {
       const result = await agent.extract(tmp, "zh");
       expect(result.usedFallback).toBe(false);
       expect(result.claims).toHaveLength(1);
+      // Per-call maxTokens follows the model card: the mock client's
+      // defaults.maxTokens is 4096, so the effective limit is min(32768, 4096).
       expect(optionsSeen[0]).toMatchObject({
         stream: false,
         callPhase: "extract",
-        maxTokens: 8192,
+        maxTokens: 4096,
       });
 
       const bundle: CanonBundle = {

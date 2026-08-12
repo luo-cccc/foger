@@ -34,6 +34,13 @@ export type ReviseMode = z.infer<typeof ReviseModeSchema>;
 
 export const DEFAULT_REVISE_MODE: ReviseMode = "auto";
 
+/**
+ * Safe ceiling for one revision-rewrite output call. Raised from 8192 (which
+ * truncated long rewrites on larger models); effective limit = min(ceiling,
+ * client.defaults.maxTokens) so small models fall back to their own maxOutput.
+ */
+const DEFAULT_REVISE_MAX_OUTPUT_TOKENS = 32768;
+
 export interface ReviseOutput {
   readonly revisedContent: string;
   readonly episodeDurationSeconds: number;
@@ -91,6 +98,18 @@ function buildTieredIssueList(
 export class ReviserAgent extends BaseAgent {
   get name(): string {
     return "reviser";
+  }
+
+  /**
+   * Effective output-token limit for a full rewrite: the safe ceiling clamped
+   * by the model card's maxOutput (same policy as the writer's screenplay
+   * call). Large models get the full budget; smaller models fall back to
+   * their own limit instead of hitting an API max_tokens error.
+   */
+  private reviseOutputTokens(): number {
+    const modelMax = this.ctx.client.defaults?.maxTokens;
+    if (!Number.isFinite(modelMax) || modelMax <= 0) return DEFAULT_REVISE_MAX_OUTPUT_TOKENS;
+    return Math.min(DEFAULT_REVISE_MAX_OUTPUT_TOKENS, modelMax);
   }
 
   async reviseEpisode(
@@ -314,7 +333,7 @@ ${episodeContent}`;
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
       ],
-      { temperature: 0.3, stream: false, callPhase: "revise", maxTokens: 8192 },
+      { temperature: 0.3, stream: false, callPhase: "revise", maxTokens: this.reviseOutputTokens() },
     );
 
     const output = this.parseOutput(

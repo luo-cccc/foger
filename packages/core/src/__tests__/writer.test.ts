@@ -747,4 +747,82 @@ describe("WriterAgent", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("caps screenplay output tokens at the model card limit (large model gets the ceiling, small model falls back)", async () => {
+    const runWith = async (clientMaxTokens: number): Promise<number | undefined> => {
+      const root = await mkdtemp(join(tmpdir(), "inkos-writer-max-tokens-test-"));
+      const bookDir = join(root, "book");
+      const storyDir = join(bookDir, "story");
+      await mkdir(storyDir, { recursive: true });
+      await Promise.all([
+        writeFile(join(storyDir, "story_bible.md"), "# Story Bible\n", "utf-8"),
+        writeFile(join(storyDir, "volume_outline.md"), "# Volume Outline\n\n## Episode 4\nPush forward.\n", "utf-8"),
+        writeFile(join(storyDir, "style_guide.md"), "# Style Guide\n", "utf-8"),
+        writeFile(join(storyDir, "current_state.md"), "# Current State\n", "utf-8"),
+        writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n", "utf-8"),
+        writeFile(join(storyDir, "episode_summaries.md"), "# Episode Summaries\n", "utf-8"),
+      ]);
+
+      const agent = new WriterAgent({
+        client: {
+          provider: "openai",
+          apiFormat: "chat",
+          stream: false,
+          defaults: { temperature: 0.7, maxTokens: clientMaxTokens, thinkingBudget: 0, extra: {} },
+        },
+        model: "test-model",
+        projectRoot: root,
+      });
+      const chatSpy = vi.spyOn(WriterAgent.prototype as never, "chat" as never)
+        .mockResolvedValue({ content: JSON.stringify(episodeScript(4)), usage: ZERO_USAGE });
+      try {
+        await agent.writeEpisode({
+          book: {
+            id: "writer-book",
+            title: "Writer Book",
+            platform: "other",
+            genre: "other",
+            status: "active",
+            schemaVersion: "inkos-episode-v2" as const,
+            format: "screenplay" as const,
+            targetEpisodes: 20,
+            episodeDurationSeconds: 90,
+            language: "en",
+            createdAt: "2026-03-26T00:00:00.000Z",
+            updatedAt: "2026-03-26T00:00:00.000Z",
+          },
+          bookDir,
+          episodeNumber: 4,
+          episodeContextSnapshot: operationSnapshot(4),
+          episodeMemo: {
+            episode: 4,
+            goal: "Push forward.",
+            isGoldenOpening: false,
+            body: "",
+            threadRefs: [],
+          },
+          contextPackage: {
+            episode: 4,
+            selectedContext: [],
+          },
+          ruleStack: {
+            layers: [],
+            sections: { hard: [], soft: [], diagnostic: [] },
+            overrideEdges: [],
+            activeOverrides: [],
+          },
+          lengthSpec: buildLengthSpec(2200, "en"),
+        });
+        const opts = chatSpy.mock.calls[0]?.[1] as { maxTokens?: number } | undefined;
+        return opts?.maxTokens;
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    };
+
+    // deepseek-v4-flash advertises maxOutput=393216 -> full 32768 ceiling.
+    expect(await runWith(393_216)).toBe(32768);
+    // A smaller model (maxOutput=8192) falls back instead of hitting an API error.
+    expect(await runWith(8192)).toBe(8192);
+  });
 });

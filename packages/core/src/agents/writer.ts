@@ -73,7 +73,15 @@ const LEGACY_WRITER_CONTEXT_BUDGET = {
   volumeOutline: 12_000,
 } as const;
 
-const SCREENPLAY_MAX_OUTPUT_TOKENS = 8192;
+/**
+ * Safe ceiling for one screenplay output call. The effective per-call limit is
+ * `min(SCREENPLAY_MAX_OUTPUT_TOKENS, client.defaults.maxTokens)` — the model
+ * card (deepseek-v4-flash: 393216) is derived into client.defaults.maxTokens,
+ * so large models get the full ceiling while small models fall back to their
+ * own maxOutput instead of hitting an API max_tokens error. Raised from 8192
+ * (which truncated longer production episodes) to 32768.
+ */
+const SCREENPLAY_MAX_OUTPUT_TOKENS = 32768;
 const SCREENPLAY_REPAIR_INPUT_TOKENS = 4096;
 import {
   getEpisodeContextContent,
@@ -154,6 +162,19 @@ export interface WriteEpisodeOutput {
 export class WriterAgent extends BaseAgent {
   get name(): string {
     return "writer";
+  }
+
+  /**
+   * Effective output-token limit for a screenplay call: the safe ceiling
+   * clamped by the model card's maxOutput (derived into client.defaults).
+   * Large models (deepseek-v4-flash, maxOutput 393216) get the full ceiling;
+   * smaller models fall back to their own limit so the API never rejects an
+   * oversized max_tokens.
+   */
+  private screenplayOutputTokens(): number {
+    const modelMax = this.ctx.client.defaults?.maxTokens;
+    if (!Number.isFinite(modelMax) || modelMax <= 0) return SCREENPLAY_MAX_OUTPUT_TOKENS;
+    return Math.min(SCREENPLAY_MAX_OUTPUT_TOKENS, modelMax);
   }
 
   private localize(language: "zh" | "en", messages: { zh: string; en: string }): string {
@@ -332,7 +353,7 @@ export class WriterAgent extends BaseAgent {
       ],
       {
         temperature: creativeTemperature,
-        maxTokens: book.format === "screenplay" ? SCREENPLAY_MAX_OUTPUT_TOKENS : undefined,
+        maxTokens: book.format === "screenplay" ? this.screenplayOutputTokens() : undefined,
         promptSources: creativePromptSources,
       },
     );
@@ -372,7 +393,7 @@ export class WriterAgent extends BaseAgent {
         ],
         {
           temperature: Math.min(creativeTemperature, 0.4),
-          maxTokens: SCREENPLAY_MAX_OUTPUT_TOKENS,
+          maxTokens: this.screenplayOutputTokens(),
           promptSources: creativePromptSources,
         },
       );

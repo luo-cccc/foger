@@ -42,6 +42,15 @@ import {
 import { loadClaimsFile, loadUnclaimedFacts, saveClaimsFile, saveUnclaimedFacts } from "../state/canon-store.js";
 import { claimTextMatches } from "../utils/claim-gate.js";
 
+/** Safe ceiling for a canon-extraction output call (min with model maxOutput). */
+const CANON_EXTRACT_MAX_OUTPUT_TOKENS = 32768;
+
+function extractOutputTokens(client: LLMClient): number {
+  const modelMax = client.defaults?.maxTokens;
+  if (!Number.isFinite(modelMax) || modelMax <= 0) return CANON_EXTRACT_MAX_OUTPUT_TOKENS;
+  return Math.min(CANON_EXTRACT_MAX_OUTPUT_TOKENS, modelMax);
+}
+
 export interface ExtractedCanon {
   readonly claims: ReadonlyArray<CanonClaim>;
   readonly worldSystem: WorldSystem;
@@ -300,7 +309,7 @@ export class CanonExtractor extends BaseAgent {
       ],
       {
         temperature: 0.2,
-        maxTokens: 8192,
+        maxTokens: extractOutputTokens(this.ctx.client),
         stream: false,
         callPhase: "extract",
         ...(extra ? { extra } : {}),
