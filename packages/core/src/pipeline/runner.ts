@@ -588,10 +588,21 @@ export interface InitBookOptions {
   readonly currentFocus?: string;
 }
 
+/**
+ * Normalize LLM-reported screenplay audit issues before they feed the
+ * revision gate. Only generic reviewer overreach is handled: an em-dash
+ * category whose evidence says the draft is already compliant is a review
+ * failure, not a script failure, and is demoted to a warning.
+ *
+ * Book-specific plot overrides that were previously encoded here (named
+ * characters, props, and locations lifted from a single paid production run)
+ * have been removed — a generic gate must never embed one series' plot
+ * details, which silently degraded audit severities for any book that
+ * happened to reuse the same names or props.
+ */
 function normalizeScreenplayReviewedIssue(
   issue: AuditIssue,
   screenplaySurface = "",
-  script?: EpisodeScript,
 ): AuditIssue {
   if (issue.severity !== "critical") return issue;
   const evidence = issue.description;
@@ -599,47 +610,7 @@ function normalizeScreenplayReviewedIssue(
     && /(?:全文未发现|全文合规|未发现.*(?:破折号|长横线)|no\s+(?:em|long)\s+dash)/iu.test(issue.description.slice(-180))) {
     return { ...issue, severity: "warning", ruleClass: issue.ruleClass ?? "reviewed_invariant" };
   }
-  if (script && /(?:爽点虚化|payoff)/iu.test(issue.category)
-    && /(?:守夜人|opponent|antagonist)/iu.test(evidence)
-    && /(?:摔倒|撞翻|扑空|被挡回|后退|失语|stumble|fall|knocked\s+back)/iu.test(screenplaySurface)
-    && /(?:发卡|调度表|证据|翻供|evidence|testimony)/iu.test(screenplaySurface)) {
-    return { ...issue, severity: "warning", ruleClass: issue.ruleClass ?? "reviewed_invariant" };
-  }
-  if (script && /(?:节奏检查|节奏单调|pacing|rhythm)/iu.test(issue.category)
-    && script.contract.causalEscalation.length >= 3) {
-    const causalSurface = script.contract.causalEscalation
-      .flatMap((step) => [step.becauseOf, step.choice, step.countermove, step.stateChange, step.nextPressure])
-      .join("\n");
-    const noteAt = causalSurface.indexOf("字条");
-    const evidenceAt = causalSurface.search(/(?:发卡|调度表|血迹)/u);
-    const reversalAt = causalSurface.indexOf("老周", evidenceAt + 1);
-    if (noteAt >= 0 && evidenceAt > noteAt && reversalAt > evidenceAt) {
-      return { ...issue, severity: "warning", ruleClass: issue.ruleClass ?? "reviewed_invariant" };
-    }
-  }
-  if (script && /(?:伏笔检查|hook)/iu.test(issue.category)
-    && /(?:信使|courier).{0,40}(?:并肩|同盟|alongside|alliance)/iu.test(evidence)
-    && /(?:走到林默身侧|站到林默身侧|并肩面对|挡在林默身前|共同挡回|stands? beside|blocks? for)/iu.test(screenplaySurface)) {
-    return { ...issue, severity: "warning", ruleClass: issue.ruleClass ?? "reviewed_invariant" };
-  }
-  if (!/(?:剧集备忘偏离|Episode Memo Drift)/iu.test(issue.category)) return issue;
-  const acceptedAt = screenplaySurface.indexOf("我接受");
-  const concreteLocationAt = screenplaySurface.search(/(?:B闸|第三排|铁窗|具体位置)/u);
-  if (acceptedAt >= 0 && concreteLocationAt > acceptedAt
-    && /(?:我接受|位置|交易|代价|I\s+accept|location|trade|cost)/iu.test(evidence)
-    && !/(?:完全没有|完全缺失|正文中完全没有|未出现|没有落地|核心动作.{0,8}未落地|entirely\s+missing|does\s+not\s+appear|required\s+event\s+is\s+missing)/iu.test(evidence)) {
-    // The deterministic screenplay surface proves the required order; any
-    // remaining concern is dialogue nuance, so it is reviewable guidance.
-    return { ...issue, severity: "warning", ruleClass: issue.ruleClass ?? "reviewed_invariant" };
-  }
-  const acknowledgesLiteralCompliance = /(?:表面顺序正确|符合.{0,16}(?:要求|禁令)|此条合规|当前成稿.*符合|literal(?:ly)?\s+compliance|sequence\s+is\s+correct)/iu.test(evidence);
-  const reportsMissingRequiredEvent = /(?:完全没有|完全缺失|正文中完全没有|未出现|没有落地|核心动作.{0,8}未落地|entirely\s+missing|does\s+not\s+appear|required\s+event\s+is\s+missing)/iu.test(evidence);
-  if (!acknowledgesLiteralCompliance || reportsMissingRequiredEvent) return issue;
-  return {
-    ...issue,
-    severity: "warning",
-    ruleClass: issue.ruleClass ?? "reviewed_invariant",
-  };
+  return issue;
 }
 
 async function loadPersistedEpisodeScript(bookDir: string, episode: number): Promise<EpisodeScript | undefined> {
@@ -5250,11 +5221,10 @@ ${matrix}`,
       .replace(/<!--\s*inkos-episode-script-json[\s\S]*?-->/giu, "")
       .trimEnd();
     const isScreenplayProjection = visibleContent !== params.episodeContent.trimEnd();
-    let screenplayScript: EpisodeScript | undefined;
     let screenplayShotSurface = visibleContent;
     if (isScreenplayProjection) {
       try {
-        screenplayScript = parseEpisodeScriptOutput(params.episodeContent, params.episodeNumber);
+        const screenplayScript = parseEpisodeScriptOutput(params.episodeContent, params.episodeNumber);
         screenplayShotSurface = screenplayScript.scenes.flatMap((scene) => scene.shots.flatMap((shot) => [
           shot.visual,
           shot.action,
@@ -5288,7 +5258,7 @@ ${matrix}`,
       ? llmAudit.issues
         .filter((issue) => !(/(?:破折号|em dash|long dash)/iu.test(issue.category)
           && !/[—–-]{2}/u.test(screenplayShotSurface)))
-        .map((issue) => normalizeScreenplayReviewedIssue(issue, screenplayShotSurface, screenplayScript))
+        .map((issue) => normalizeScreenplayReviewedIssue(issue, screenplayShotSurface))
       : llmAudit.issues;
     const issues: ReadonlyArray<AuditIssue> = deduplicateAuditIssues([
       ...normalizedLlmIssues,

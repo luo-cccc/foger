@@ -36,8 +36,7 @@ const FUNCTIONAL_ROLE_SPEAKERS = new Set([
   "暗哨", "暗哨队长", "暗哨领头", "被俘暗哨", "哨兵", "斥候", "斥候队长", "金军斥候队长",
   "巡逻兵", "运粮兵", "守船兵", "传令兵", "宋军什长", "金军什长", "金军副手", "元军副将",
   "元军将领", "监军", "小吏", "伙计", "掌柜", "老民夫", "民夫领头", "老军匠", "狱卒",
-  "内鬼", "上线", "主使", "主脑代理人", "外围势力头目", "火种营亲兵", "火种营前哨",
-  "火种营成员甲", "火种营成员", "火种营士兵甲", "火种营兵甲", "火种营兵乙", "虞允文亲兵",
+  "内鬼", "上线", "主使", "主脑代理人", "外围势力头目",
   "副将", "副手", "什长", "队长", "领头", "头目", "亲兵", "前哨", "士兵", "成员",
   "探子", "暗探", "细作", "黑影", "都统制", "都统", "统制", "校尉", "都尉", "尉",
   "stranger", "passerby", "customer", "crowd", "cop", "police", "nurse", "doctor",
@@ -51,12 +50,15 @@ const FUNCTIONAL_ROLE_SUFFIX = /(?:人|员|生|师|客|者|甲|乙|丙|母|先�
 
 /**
  * Role words that mark a speaker as a functional label regardless of length
- * ("宋军什长", "火种营亲兵", "暗哨队长"). Real character names do not carry
- * these tokens, so the invention guardrail still fires for named speakers.
+ * ("宋军什长", "暗哨队长"). Real character names do not carry these tokens,
+ * so the invention guardrail still fires for named speakers. Book-specific
+ * unit names from past production runs are deliberately NOT enumerated — the
+ * token stems below already cover their suffixes, and a generic table must
+ * not embed one book's factions.
  */
 const FUNCTIONAL_ROLE_TOKEN = /(?:哨|卒|兵|长|将|官|吏|匠|役|丁|头目|队长|领头|亲兵|前哨|什长|监军|掌柜|伙计|内鬼|上线|主使|代理人|势力|斥候|巡逻|运粮|守船|传令|民夫|军匠|成员|手下|部下|随从|侍卫|护卫|近侍|宫女|丫鬟|仆人|衙役|捕快|仵作|师爷|幕僚|谋士|军师|医官|工匠|船工|纤夫|马夫|厨子|更夫|门房|家丁|管家|使女|狱卒|探子|暗探|细作|黑影|都统|统制|校尉|都尉|尉)/u;
 
-/** Stage/source qualifiers writers attach to speakers ("顾维远（画外）"). */
+/** Stage/source qualifiers writers attach to speakers (e.g. "主角（画外）"). */
 const SPEAKER_QUALIFIER = /[（(][^）)]*[）)]/gu;
 const SPEAKER_LEADING_MODIFIER = /^(?:年轻的|年老的|中年的|此时的|画面中的|记忆中的|录音中的|电话中的|门口的|窗外的|远处的|身后的)/u;
 
@@ -158,9 +160,9 @@ function auditContractSurfaceEvidence(script: EpisodeScript): AuditIssue[] {
 
 /**
  * A handoff physical fact qualifies for the on-screen check only when it names
- * a concrete prop or location and is not a negative/abstract state. "玉上裂纹
- * 维持两线未新增" and "他在门外" are states, not promises; "他掌心多了一张
- * 实体彩卡" is a promise that must be shown.
+ * a concrete prop or location and is not a negative/abstract state. "裂纹未增"
+ * and "他在门外" are states, not promises; "他掌心多了一张实体卡片" is a
+ * promise that must be shown.
  */
 const HANDOFF_PROP_WORDS = /(?:玉|剑|卡|铃|信|遗书|丹|棺|灯|面具|符|镜|舟|印|珠|塔|门|渊|崖|冢|城|宫)/u;
 function isScreenableHandoffFact(fact: string): boolean {
@@ -237,7 +239,7 @@ function extractHookKeywords(notes: string, question: string): string[] {
   for (const match of source.matchAll(/[\u4e00-\u9fff]{2,6}(?:冢|玉|剑|诀|渊|灯|铃|丹|卡|书|信|棺|阵|痕|墓)/gu)) {
     keywords.add(match[0]!);
   }
-  const noise = new Set(["初始状态", "等待千年", "望归渊等待", "望归玉等待", "回收条件", "伏笔回收", "核心钩子", "情绪钩子", "剧情进度"]);
+  const noise = new Set(["初始状态", "回收条件", "伏笔回收", "核心钩子", "情绪钩子", "剧情进度"]);
   return [...keywords].filter((keyword) => keyword.length >= 2 && !noise.has(keyword));
 }
 

@@ -41,7 +41,7 @@ import { buildNarrativeDriveContract } from "./narrative-drive-contract.js";
 //   - 初始状态拆分：角色当前现状 → roles.当前现状；初始钩子 → pending_hooks (startEpisode=0)；
 //     环境/时代锚（仅历史/年代题材需要）→ 自然融入 story_frame.世界观底色
 //   - 独立的 current_state section 已删除。现状只在运行时写入 current_state.md
-//     （consolidator 每章追加），建书时架构师不产出结构化初始态。
+//     （consolidator 每集追加），建书时架构师不产出结构化初始态。
 //
 // Budget table (4 content items — LLM sections):
 //   story_frame ≤ 3000 chars / volume_map ≤ 5000 chars / roles 总 ≤ 8000 chars
@@ -55,7 +55,7 @@ import { buildNarrativeDriveContract } from "./narrative-drive-contract.js";
 //   story_bible.md              ← compat shim
 //   character_matrix.md         ← compat shim
 //   book_rules.md               ← authoritative Markdown rules card
-//   current_state.md            ← seed 占位文件（运行时 consolidator 每章追加）
+//   current_state.md            ← seed 占位文件（运行时 consolidator 每集追加）
 //   pending_hooks.md            ← 架构师初始伏笔池
 //   emotional_arcs.md           ← runtime state
 //
@@ -268,7 +268,7 @@ ${eraBlock}
 这是散文骨架。**4 段**，每段约 600-900 字，不要写表格，不要写 bullet list，写成能被人读下去的段落，保持足够的散文密度和具体细节。段落标题用 \`## \` 开头，段落内部是正经段落。**主角弧线不写在本 section；它的权威来源是 roles/主要角色/<主角>.md。** 本段只需一句指针："本书主角是 X，完整弧线详见 roles/主要角色/X.md"。
 
 ### 段 1：主题与基调
-写这本书到底讲的是什么——不是"讲主角如何从弱到强"这种空话，而是具体的命题（"一个被时代按在泥里的人，如何选择不被改写"、"当所有人都在撒谎时，坚持记录真相要付出什么代价"）。主题下面跟着基调——温情冷冽悲壮肃杀，哪一种？为什么是这种而不是另一种？结尾用一句话指向主角并引向 roles（例："本书主角是林辞，完整弧线详见 roles/主要角色/林辞.md"）。
+写这本书到底讲的是什么——不是"讲主角如何从弱到强"这种空话，而是具体的命题（"一个被时代按在泥里的人，如何选择不被改写"、"当所有人都在撒谎时，坚持记录真相要付出什么代价"）。主题下面跟着基调——温情冷冽悲壮肃杀，哪一种？为什么是这种而不是另一种？结尾用一句话指向主角并引向 roles（例："本书主角是 X，完整弧线详见 roles/主要角色/X.md"）。
 
 ### 段 2：核心冲突、对手定性、前台/后台双层故事
 这本书的主要矛盾是什么？不是"正邪对抗"，而是"因为 A 相信 X、B 相信 Y，所以他们一定会在某件事上对撞"。主要对手是谁（至少 2 个：一个显性对手 + 一个结构性对手/体制），他们的动机从哪里长出来。对手不是工具，对手有自己的逻辑。
@@ -280,13 +280,14 @@ ${eraBlock}
 两条线必须有因果关联，不能是平行宇宙——每一段前台冲突的背后都应该能追溯到后台故事的某个齿轮在转。**如果只有前台没有后台，故事会散成"独立事件集"，没有往前拉的引力；如果只有后台没有前台，故事会憋闷、看不到爽感**。本段用散文明确写出：本书前台是什么、后台是什么、两者怎么咬合。
 
 ### 段 3：世界观底色（铁律 + 质感 + 本书专属规则）
+**世界命名（硬性）**：必须给本书世界一个专名（大陆/位面/疆域/城池等，尺度按题材自定），专名必须从标题与核心设定中派生、与题材基调呼应，禁止"XX界""XX大陆""XX域"这类通用占位命名；brief 里已指定世界名时必须原样沿用，不得另起。世界名一旦确立，story_frame / volume_map / roles / 各集剧本全剧统一使用，不得中途改名。
 这个世界的运行规则是什么？3-5 条**不可违反的铁律**，以 prose 写出，不要 bullet。给 Writer 明确的视觉、声音和动作质感锚。**这一段同时承担 book_rules 中的叙事视角、本剧专属规则和核心冲突驱动**，只写一次，不要重复。
 如果本书 brief 含前提装置（重生/重来一次/预知/读心/系统/金手指等"主角比别人多拥有一样东西"的开局设定），本段必须显式记录装置契约：能力范围、失效条件、可见代价、规则可靠性。装置取消阻力，必须先给边界与代价；契约从一开始就完整，但不需要、也不应该在装置首次生效时全部披露给观众——披露节奏归各集信息权限。
 
 ### 段 4：终局方向 + 全书 Objective（OKR 大纲的根）
 第 ${targetEpisodes} 集的终局是什么，不要用"主角登顶"或"大结局"这类套话，必须明确**最后一个镜头**：主角在哪、做什么、身边有谁，以及核心关系、权力、信息或生存处境如何落定。
 
-**本段末尾必须明确写出全书 Objective 一句话**：这本书讲完时，主角必须达成一个**可验证的终局状态**（例："从一个杂役修士成为宗门长老并公开父辈冤案的真相"、"从黑户打工妹成为掌控三家皮草公司的老板娘并亲手送前夫进监狱"）。不要写"变强"、"复仇"这类抽象词，要写**一个能被外部观察者判定"达成 / 未达成"的具体状态**。这个 Objective 是全书递归大纲的根——下面 volume_map 的每一卷会分解出这个 O 对应的 Key Results。
+**本段末尾必须明确写出全书 Objective 一句话**：这本书讲完时，主角必须达成一个**可验证的终局状态**（例："从三等学徒晋升为掌事，并在公开场合洗清被诬陷的罪名"、"从破产打工者重新掌控自家门店，并让违约方当众赔偿"）。不要写"变强"、"复仇"这类抽象词，要写**一个能被外部观察者判定"达成 / 未达成"的具体状态**。这个 Objective 是全书递归大纲的根——下面 volume_map 的每一卷会分解出这个 O 对应的 Key Results。
 
 === SECTION: volume_map ===
 
@@ -306,8 +307,8 @@ ${eraBlock}
 
 ### 段 3：各卷 OKR（Objective + Key Results）
 用 OKR 递归大纲法分解全书 Objective（story_frame.段 4 末尾定的根 O）：每一卷都必须明确给出：
-- **Objective（卷级目标）**：本卷结束时主角必须达成的**可验证状态**，一句话，与全书 Objective 逻辑递进相连（例：全书 O = "成为宗门长老并公开冤案"；卷 1 O = "从杂役转入正式弟子籍并拿到第一份能指向真相的线索"）
-- **Key Results（3 条，可量化/可观察）**：支撑该 O 达成的三个关键子成果，每条必须是外部观察者能判定是否完成的状态变更（例 KR1 = "拿下药园执事位置"、KR2 = "与灵安峰结成稳定盟约"、KR3 = "发现父辈案卷的第一半页残片"）。不要写"变强"、"成长"这类模糊 KR
+- **Objective（卷级目标）**：本卷结束时主角必须达成的**可验证状态**，一句话，与全书 Objective 逻辑递进相连（例：全书 O = "从无名学徒晋升为掌事并洗清诬名"；卷 1 O = "通过试炼转入正式编制，并拿到指向真相的第一条线索"）
+- **Key Results（3 条，可量化/可观察）**：支撑该 O 达成的三个关键子成果，每条必须是外部观察者能判定是否完成的状态变更（例 KR1 = "在季度考核中排名前三"、KR2 = "与关键盟友签署书面协议"、KR3 = "找到被销毁档案的残页"）。不要写"变强"、"成长"这类模糊 KR
 
 次要角色的阶段性变化也要点到（例如某个盟友在中段牺牲、对手在终局前公开倒戈），写在 KR 条目下作为附注。写阶段性，不写完整弧线（完整弧线在 roles）。**每个篇章 3 个 KR 是下游 Planner 分解剧集任务的直接依据。KR 必须全部装进上方“全剧尺度合同”分配的剧集范围；交付间距按尺度合同计算，禁止再机械套用固定集数循环。**
 
@@ -497,13 +498,14 @@ The book's main tension — not "good vs evil" but "because A believes X and B b
 The two layers must be causally linked, not parallel universes — every foreground conflict should trace back to some gear of the background machine turning. **Foreground-only story collapses into a set of disconnected episodes with no forward pull; background-only story is suffocating and never delivers. Write both in prose here, and name how they interlock.**
 
 ## 03_World_Tonal_Ground (hard rules + sensory tone + book-specific rules)
+**World naming (hard rule)**: give this book's world a proper name (continent / realm / domain / region — scale per genre). The name must derive from the title and core premise and echo the genre's tone; generic placeholder naming ("XX-world", "XX continent", "XX realm") is forbidden. If the brief names the world, reuse it verbatim — do not rename it. Once set, the world name stays consistent across story_frame, volume_map, roles, and every episode script; never rename it mid-series.
 The world's operating rules. 3-5 unbreakable laws written as prose, not bullets. Sensory texture: wet or dry, fast or slow, noisy or quiet — give the writer an anchor. **This paragraph also absorbs the narrative prose that used to live in book_rules (narrative perspective, core conflict driver, book-specific rules).** Write them all here once. Do not repeat them in book_rules.
 If the brief contains a premise device (rebirth, a do-over, foresight, mind-reading, a system, a golden finger — any opening setup where the protagonist owns one thing nobody else has), this paragraph must explicitly record the device contract: capability range, failure conditions, visible cost, and rule reliability. A device cancels resistance, so it must be given boundaries and a cost first; the contract is complete from day one, but it need not — and should not — be fully disclosed to the audience on first use; disclosure pacing belongs to each episode's information permissions.
 
 ## 04_Endgame_Direction_and_Book_Objective
 What the last episode roughly feels like. The final shot: where, doing what, around whom, thinking what. A distant target for every planner call downstream.
 
-**End this paragraph with a one-sentence Book Objective** (the root of the recursive OKR outline): when this book is done, the protagonist must reach a **verifiable end-state** (e.g., "rise from errand disciple to sect elder and publicly vindicate the parental case", "go from undocumented migrant worker to running three fur-trade companies and personally putting the ex-husband in prison"). Do NOT use vague words like "grow stronger" or "take revenge" — write a concrete state an outside observer can check "achieved / not achieved". This Book Objective is the root of the full-book OKR outline; volume_map will decompose it per volume below.
+**End this paragraph with a one-sentence Book Objective** (the root of the recursive OKR outline): when this book is done, the protagonist must reach a **verifiable end-state** (e.g., "rise from third-class apprentice to steward and publicly clear a falsely imputed charge", "go from bankrupt wage-worker to owning the family shop again and forcing the breaching party to pay public restitution"). Do NOT use vague words like "grow stronger" or "take revenge" — write a concrete state an outside observer can check "achieved / not achieved". This Book Objective is the root of the full-book OKR outline; volume_map will decompose it per volume below.
 
 === SECTION: volume_map ===
 
@@ -523,8 +525,8 @@ Volume 1 plants hook A, paid off in volume N; volume 2 plants hook B, paid off i
 
 ## 03_Per_Volume_OKRs (Objective + 3 Key Results)
 Recursive OKR outline that decomposes the Book Objective (root O set at the end of story_frame.04): every volume must explicitly state:
-- **Objective (volume-level goal)**: a **verifiable state** the protagonist must reach by volume end, one sentence, logically chained to the Book Objective (e.g., if Book O = "become sect elder and vindicate the parental case", then Vol 1 O = "move from errand disciple into the registered disciple roster and recover the first lead pointing to the truth")
-- **Key Results (3 items, quantifiable / observable)**: three concrete sub-achievements whose completion can be checked by an outside observer (e.g., KR1 = "take over the pharmacy garden steward seat", KR2 = "lock in a stable alliance with Lingan Peak", KR3 = "uncover the first half-page fragment of the parental case file"). No vague KRs like "gets stronger" / "matures".
+- **Objective (volume-level goal)**: a **verifiable state** the protagonist must reach by volume end, one sentence, logically chained to the Book Objective (e.g., if Book O = "rise from unknown apprentice to steward and clear a false imputation", then Vol 1 O = "pass the trial and enter the regular roster, recovering the first lead that points to the truth")
+- **Key Results (3 items, quantifiable / observable)**: three concrete sub-achievements whose completion can be checked by an outside observer (e.g., KR1 = "rank in the top three of the quarterly review", KR2 = "sign a written agreement with a key ally", KR3 = "locate the surviving page of the destroyed archive"). No vague KRs like "gets stronger" / "matures".
 
 Supporting characters' stage changes (master dies end of vol 2, opponent breaks bad in vol 3) go as notes under the relevant KR. Stage only — full arc lives in roles. **The 3 KRs per volume are the direct input for the planner. All three must fit inside the episode range assigned by the whole-book scale contract; use that contract's delivery cadence instead of a fixed episode count per KR.**
 

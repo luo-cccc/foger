@@ -103,14 +103,14 @@ open:
 - [new] 新钩子描述（<=30字）|| 理由：为什么现在打开；没有独立新问题就写“无”
 
 advance:
-- H007 "胖虎借条" → 林秋第一次想撕，被阻止（planted → pressured）
-- H012 "雷架焦痕" → 师兄偷看留下印子（pressured → near_payoff）
+- H007 "第一封匿名信" → 主角第一次拆开（planted → pressured）
+- H012 "失踪名单" → 关键线索出现在主角视线内（pressured → near_payoff）
 
 resolve:
-- H003 "杂役腰牌" → 林秋主动摘下（clear）
+- H003 "假身份" → 主角当众自揭（clear）
 
 defer:
-- H009 "守拙诀来历" → 本集不动，理由：时机不到，等到第 N 集
+- H009 "神秘来电者" → 本集不动，理由：时机不到，等到第 N 集
 
 **硬规则**：
 - advance/resolve/defer 中的 hook_id 必须真实存在于输入的 pending_hooks。
@@ -232,14 +232,14 @@ open:
 - [new] new hook description (<=30 chars) || reason: why it opens now; write none when no independent new question exists
 
 advance:
-- H007 "Huzi's IOU" → Lin Qiu tries to tear it, gets stopped (planted → pressured)
-- H012 "thunder rack scar" → a senior brother sneaks a look, leaves a mark (pressured → near_payoff)
+- H007 "the anonymous letter" → the protagonist opens it for the first time (planted → pressured)
+- H012 "the missing list" → a key clue comes into view (pressured → near_payoff)
 
 resolve:
-- H003 "errand badge" → Lin Qiu unpins it himself (clear)
+- H003 "the fake identity" → the protagonist reveals it publicly (clear)
 
 defer:
-- H009 "origin of Shou-Zhuo Jue" → not touched this episode, reason: timing not right, save until episode N
+- H009 "the mysterious caller" → not touched this episode, reason: timing not right, save until episode N
 
 **Hard rules**:
 - hook_ids in advance/resolve/defer must exist in pending_hooks.

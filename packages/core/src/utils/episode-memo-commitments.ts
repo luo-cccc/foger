@@ -179,9 +179,16 @@ function findForbiddenActionEvidence(
     const acceptanceIndex = language === "zh"
       ? normalizedContent.indexOf(normalizeText("我接受"))
       : normalizedContent.search(/\bI\s+accept\b/i);
+    // A "accept before/after <location>" ordering directive needs a concrete
+    // spatial anchor in the content to prove the ordering actually landed.
+    // Only strong-semantics space anchors are accepted — generic suffixes
+    // ("门/台/口") match everyday prose and would let the ordering check
+    // short-circuit before the forbidden-action match below runs. Book-specific
+    // locations from past production runs were removed in favor of this
+    // general anchor list.
     const locationPattern = language === "zh"
-      ? /(?:B闸|第三排|铁窗|具体位置)/u
-      : /\b(?:location|gate|third row|iron window)\b/i;
+      ? /(?:具体位置|具体地点|指定位置|指定地点|门口|窗边|窗口|楼梯口|入口|出口|柜台|前台|走廊|尽头|墙角|拐角)/
+      : /\b(?:location|gate|entrance|exit|corner|doorway|staircase|corridor|platform|station|front desk|counter|street corner)\b/i;
     const locationMatch = normalizedContent.match(locationPattern);
     const locationIndex = locationMatch?.index ?? -1;
     const requiresAfterAcceptance = /(?:晚于|之后|(?:我接受|接受).{0,12}前|later than|after|before.{0,20}\b(?:i accept|accept)\b)/iu.test(core);

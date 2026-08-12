@@ -1156,7 +1156,7 @@ ${trimmed}
 
   /**
    * Soft-check that the LLM's PRE_WRITE_CHECK output references the three
-   * non-negotiable memo sections: 当前任务, 不要做, 章尾必须发生的改变.
+   * non-negotiable memo sections: 当前目标, 当集兑现, 不要做.
    *
    * This is NOT a hard gate — the memo was already parse-validated in the
    * planner, and the writer prompt already tells the LLM to align to memo.
@@ -1177,14 +1177,14 @@ ${trimmed}
 
     const required = language === "en"
       ? [
-          { needle: "Current task", label: "Current task" },
+          { needle: "Episode objective", label: "Episode objective" },
+          { needle: "Local result", label: "Local result and outgoing pressure" },
           { needle: "Do not", label: "Do not" },
-          { needle: "end-of-episode", label: "Required end-of-episode change" },
         ]
       : [
-          { needle: "当前任务", label: "当前任务" },
+          { needle: "当前目标", label: "当前目标" },
+          { needle: "当集兑现", label: "当集兑现" },
           { needle: "不要做", label: "不要做" },
-          { needle: "章尾", label: "章尾必须发生的改变" },
         ];
     const missing = required.filter((r) => !preWriteCheck.includes(r.needle)).map((r) => r.label);
 

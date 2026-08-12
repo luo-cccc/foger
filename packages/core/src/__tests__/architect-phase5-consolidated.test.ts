@@ -219,6 +219,24 @@ describe("Phase 5 consolidation — 7→5 sections, prompt contract", () => {
     expect(system).not.toContain("只写在 current_state");
   });
 
+  it("the prompt requires a derived world name and bans placeholder naming (zh + en)", async () => {
+    const agent = buildAgent();
+    const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValue({ content: CONSOLIDATED_RESPONSE, usage: ZERO_USAGE });
+
+    await agent.generateFoundation(baseBook());
+    const zhSystem = (chat.mock.calls[0]?.[0] as Array<{ content: string }>)[0]?.content ?? "";
+    expect(zhSystem).toContain("世界命名（硬性）");
+    expect(zhSystem).toContain("禁止\"XX界\"\"XX大陆\"\"XX域\"这类通用占位命名");
+    expect(zhSystem).toContain("不得中途改名");
+
+    await agent.generateFoundation({ ...baseBook(), language: "en" });
+    const enSystem = (chat.mock.calls[1]?.[0] as Array<{ content: string }>)[0]?.content ?? "";
+    expect(enSystem).toContain("World naming (hard rule)");
+    expect(enSystem).toContain("generic placeholder naming");
+    expect(enSystem).toContain("never rename it mid-series");
+  });
+
   it("the prompt carries explicit per-section char budget markers (NO current_state budget)", async () => {
     const agent = buildAgent();
     const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")

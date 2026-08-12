@@ -332,7 +332,7 @@ function extractLedgerEntry(line: string): HookLedgerEntry | undefined {
 /**
  * Extract content-matching tokens from a ledger line's descriptor.
  *
- * Priority 1: quoted hook name — `H007 "胖虎借条" → ...` — this is the most
+ * Priority 1: quoted hook name — `H007 "借条" → ...` — this is the most
  * informative token the planner attached, and it's what the writer should
  * echo. We split compound CJK names into leading/trailing 2-grams so
  * partial echoes still count.
