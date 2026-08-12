@@ -2,12 +2,12 @@
 name: 通用
 id: other
 episodeTypes: ["推进集", "布局集", "过渡集", "回收集"]
-fatigueWords: ["震惊", "不可思议", "难以置信", "深吸一口气", "仿佛", "不禁", "宛如", "竟然"]
+fatigueWords: ["震惊", "不可思议", "难以置信", "深吸一口气"]
 numericalSystem: false
 powerScaling: false
 eraResearch: false
 pacingRule: "每2-3章有一个明确的进展或反馈"
-satisfactionTypes: ["目标达成", "困难克服", "真相揭示", "关系转变"]
+satisfactionTypes: ["目标达成","困难克服","真相揭示","关系转变","资源到手","困境逆转","信任重铸","秘密浮出","对手低头"]
 auditDimensions: [1,2,3,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 ---
 

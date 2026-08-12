@@ -3,12 +3,12 @@ name: LitRPG
 id: litrpg
 language: en
 episodeTypes: ["Progression", "Setup", "Transition", "Payoff", "Combat"]
-fatigueWords: ["delve", "tapestry", "testament", "intricate", "pivotal", "vibrant", "comprehensive", "nuanced", "embark", "foster", "underscore", "bolstered", "crucial"]
+fatigueWords: ["level up","stat sheet","quest log","loot drop","party wipe"]
 numericalSystem: true
 powerScaling: true
 eraResearch: false
 pacingRule: "Every 1-3 chapters early: level-up or stat gain. Mid-story every 5-10 chapters. Late story: tier transitions spaced far apart."
-satisfactionTypes: ["Level Up", "Skill Unlock", "Loot Drop", "Boss Kill", "Tier Breakthrough", "System Secret Revealed"]
+satisfactionTypes: ["Level Up","Skill Unlock","Loot Drop","Boss Kill","Tier Breakthrough","System Secret Revealed","Stat Evolution","Build Made Unique","Party Member Saved","Hidden Quest Found"]
 auditDimensions: [1,2,3,4,5,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 ---
 

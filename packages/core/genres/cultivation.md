@@ -3,12 +3,12 @@ name: English Cultivation
 id: cultivation
 language: en
 episodeTypes: ["Training", "Breakthrough", "Combat", "Setup", "Transition", "Payoff"]
-fatigueWords: ["delve", "tapestry", "testament", "intricate", "pivotal", "vibrant", "comprehensive", "nuanced", "embark", "foster", "underscore", "bolstered", "crucial"]
+fatigueWords: ["condensing","sect elder","inner demon","meditation","breakthrough"]
 numericalSystem: false
 powerScaling: true
 eraResearch: false
 pacingRule: "Training/meditation alternates with application/combat. Breakthrough every 5-10 chapters early, every 15-25 late. Each stage must feel earned through discipline."
-satisfactionTypes: ["Stage Breakthrough", "Technique Mastery", "Tribulation Survived", "Martial Victory", "Philosophical Insight", "Core Formation"]
+satisfactionTypes: ["Stage Breakthrough","Technique Mastery","Tribulation Survived","Martial Victory","Philosophical Insight","Core Formation","Hidden Strength Revealed","Dao Insight","Rival Outgrown","Debt Repaid"]
 auditDimensions: [1,2,3,4,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 ---
 

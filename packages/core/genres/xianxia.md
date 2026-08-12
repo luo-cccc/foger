@@ -2,12 +2,12 @@
 name: 仙侠
 id: xianxia
 episodeTypes: ["战斗集", "悟道集", "布局集", "过渡集", "回收集"]
-fatigueWords: ["冷笑", "蝼蚁", "倒吸凉气", "瞳孔骤缩", "天道", "大道", "因果", "气运", "仿佛", "不禁", "宛如", "竟然"]
+fatigueWords: ["冷笑", "蝼蚁", "倒吸凉气", "瞳孔骤缩", "天道", "大道", "因果", "气运"]
 numericalSystem: true
 powerScaling: true
 eraResearch: false
 pacingRule: "修炼/悟道与战斗交替，每3-5章一次小突破或关键收获"
-satisfactionTypes: ["悟道突破", "斗法碾压", "法宝收获", "身份揭示", "天劫渡过", "因果了结"]
+satisfactionTypes: ["悟道突破","斗法碾压","法宝收获","身份揭示","天劫渡过","因果了结","机缘夺回","宗门上位","旧怨了结"]
 auditDimensions: [1,2,3,4,5,6,7,8,9,10,11,13,14,15,16,17,18,19,24,25,26]
 ---
 

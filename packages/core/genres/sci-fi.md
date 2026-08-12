@@ -3,12 +3,12 @@ name: Science Fiction
 id: sci-fi
 language: en
 episodeTypes: ["Exploration", "Combat", "Setup", "Transition", "Payoff"]
-fatigueWords: ["delve", "tapestry", "testament", "intricate", "pivotal", "vibrant", "comprehensive", "nuanced", "embark", "foster", "underscore", "bolstered", "crucial"]
+fatigueWords: ["quantum","terraforming","first contact","hull breach","orbital"]
 numericalSystem: false
 powerScaling: false
 eraResearch: true
 pacingRule: "Worldbuilding emerges through action, not exposition. Tech reveals tied to plot-critical moments. Political/exploration arcs alternate with action every 2-4 chapters."
-satisfactionTypes: ["Discovery", "Tech Breakthrough", "Political Victory", "First Contact", "Mystery Solved", "Survival Against Odds"]
+satisfactionTypes: ["Discovery","Tech Breakthrough","Political Victory","First Contact","Mystery Solved","Survival Against Odds","Alien Truth Revealed","Impossible Physics Proved","Homeworld Saved","Signal Decoded"]
 auditDimensions: [1,2,3,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 ---
 
