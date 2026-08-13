@@ -193,6 +193,7 @@ export interface EpisodeScriptValidationIssue {
     | "duration-hard-range"
     | "missing-reversal"
     | "missing-emotional-hook"
+    | "invalid-emotional-hook"
     | "missing-end-state"
     | "missing-local-payoff"
     | "missing-outgoing-pressure"
@@ -355,6 +356,12 @@ export function validateEpisodeScript(
   }
   if (!script.reversal.trim()) issues.push({ code: "missing-reversal", message: "episode reversal is required" });
   if (!script.emotionalHook.trim()) issues.push({ code: "missing-emotional-hook", message: "episode emotional hook is required" });
+  if (script.emotionalHook.trim() && !hasConcreteAudienceQuestion(script.emotionalHook)) {
+    issues.push({
+      code: "invalid-emotional-hook",
+      message: "episode emotional hook must be a concrete audience question about a relationship, danger, identity, sacrifice, or choice",
+    });
+  }
   if (!script.endState.trim()) issues.push({ code: "missing-end-state", message: "episode end state is required" });
   if (!script.contract.localDramaticResult.stateChange.trim()) {
     issues.push({ code: "missing-local-payoff", message: "episode local dramatic result must change state" });
@@ -369,6 +376,12 @@ export function validateEpisodeScript(
     issues.push({ code: "reversal-without-consequence", message: "episode result must state a paid cost" });
   }
   return issues;
+}
+
+/** A production ending hook must leave one specific unresolved audience question. */
+export function hasConcreteAudienceQuestion(value: string): boolean {
+  return /[?？]/u.test(value)
+    || /(?:观众(?:追问|想知道|会问)|到底.{2,}|能否.{2,}|是否.{2,}|会不会.{2,}|为什么.{2,}|为何.{2,}|谁.{2,}(?:会|能|要|还)|什么.{2,}(?:会|能|要|还)|多少.{2,})/u.test(value);
 }
 
 export function parseEpisodeScriptOutput(

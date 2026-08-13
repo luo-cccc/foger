@@ -46,6 +46,16 @@ const SYSTEM_RELATIONS_FILE = "system_relations.json";
 const ASSET_REGISTRY_FILE = "asset_registry.json";
 const UNCLAIMED_FACTS_FILE = "unclaimed_facts.json";
 
+/** A backlog beyond this point means Canon is no longer a trustworthy index. */
+export const DEFAULT_UNCLAIMED_FACTS_BACKLOG_THRESHOLD = 50;
+
+export function hasUnclaimedFactsBacklog(
+  facts: UnclaimedFactsFile,
+  threshold: number = DEFAULT_UNCLAIMED_FACTS_BACKLOG_THRESHOLD,
+): boolean {
+  return facts.facts.length >= Math.max(1, Math.trunc(threshold));
+}
+
 export function canonDir(bookDir: string): string {
   return join(bookDir, "story", "canon");
 }

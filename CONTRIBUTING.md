@@ -33,7 +33,7 @@ docs/                 # Current Episode architecture, operations, and release hi
 
 Monorepo managed with pnpm workspaces. CLI and Studio consume the shared core package; publishable manifests use registry-installable internal versions while pnpm links workspace packages during development.
 
-Read `docs/architecture.md` before changing pipeline, persistence, Studio mutation routes, or package boundaries. Keep domain rules in Core: CLI and Studio may adapt transport and presentation, but must not reimplement locking, rollback, validation, or state transitions. Operational guidance belongs in `docs/operations.md`; user-visible changes belong in `docs/releases/release-notes.md`.
+Read `docs/architecture.md` before changing pipeline, persistence, Studio mutation routes, or package boundaries. Keep domain rules in Core: CLI and Studio may adapt transport and presentation, but must not reimplement locking, rollback, validation, or state transitions. Changes to Planner/Hook/Canon or export-gate rules must keep the architecture and operations documents in sync. Operational guidance belongs in `docs/operations.md`; user-visible changes belong in `docs/releases/release-notes.md`.
 
 ## Development
 

@@ -4,8 +4,8 @@
 
 ## 文档入口
 
-- [架构说明](architecture.md)：EpisodeScript、单集合同、上下文快照、审计、状态结算和持久化。
-- [运行与维护](operations.md)：环境配置、验证命令、清理策略、密钥安全和发布检查。
+- [架构说明](architecture.md)：EpisodeScript、单集合同、Hook 生命周期、内容门禁、审计、状态结算和持久化。
+- [运行与维护](operations.md)：环境配置、Canon 积压刷新、验证命令、安全清理策略、密钥安全和发布检查。
 - [更新记录](releases/release-notes.md)：按日期维护的用户可见变化。
 
 ## 真实付费生产测试报告

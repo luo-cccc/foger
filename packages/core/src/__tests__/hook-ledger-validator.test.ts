@@ -316,6 +316,24 @@ defer:
     expect(validatePlannedHookLedger(memo, existingHooks)).toEqual([]);
   });
 
+  it("parses explicit visible evidence for a committed action", () => {
+    const memo = `## 本章 hook 账
+advance:
+- H008 "旧档案" → 本章出现新证据｜证据：烧焦的页角、档案编号
+`;
+    const ledger = parseHookLedger(memo);
+    expect(ledger.advance[0]?.evidence).toEqual(["烧焦的页角", "档案编号"]);
+  });
+
+  it("can enforce evidence for new planner memos without breaking legacy callers", () => {
+    const memo = `## 本章 hook 账
+advance:
+- H008 "旧档案" → 推进
+`;
+    expect(validatePlannedHookLedger(memo, [{ hookId: "H008" }], { requireEvidence: true })[0])
+      .toContain("must declare visible evidence");
+  });
+
   it("accepts exact long generated ids from the durable hook registry", () => {
     const mysteryId = "mystery-废弃十三号信-号塔为何在-不可修复";
     const relationshipId = "relationship-林澈发现三年-前未提交的加-密算法被升级";
@@ -364,6 +382,15 @@ describe("validateHookLedger", () => {
     expect(violations.every((v) => v.severity === "warning")).toBe(true);
     expect(violations.map((v) => v.description).join(" ")).toContain("H012");
     expect(violations.map((v) => v.description).join(" ")).toContain("H003");
+  });
+
+  it("blocks an explicit evidence commitment when the carrier is absent", () => {
+    const memo = `## 本章 hook 账
+advance:
+- H007 "胖虎借条" → 本章拿到原件｜证据：原始借条、胖虎签名
+`;
+    const violations = validateHookLedger(memo, "林秋只听说胖虎欠了钱。");
+    expect(violations[0]).toMatchObject({ severity: "critical", category: "hook-evidence-missing" });
   });
 
   it("does not turn semantic near-misses into critical failures", () => {

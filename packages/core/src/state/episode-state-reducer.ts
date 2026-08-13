@@ -28,6 +28,10 @@ export interface EpisodeHookRecord {
   readonly audienceQuestion?: string;
   readonly seedEpisode?: number;
   readonly targetPayoffEpisode?: number;
+  readonly seedEvidence?: string[];
+  readonly advanceEvidence?: string[];
+  readonly payoffEvidence?: string[];
+  readonly lastVerifiedEvidenceEpisode?: number;
   readonly pressureSource?: string;
   readonly dependsOn?: string[];
   readonly paysOffInArc?: string;
@@ -231,7 +235,25 @@ function mergeHookRecord(existing: EpisodeHookRecord, incoming: EpisodeHookRecor
       notes,
     }),
     notes,
+    targetPayoffEpisode: incoming.targetPayoffEpisode ?? existing.targetPayoffEpisode,
+    seedEvidence: preferEvidence(existing.seedEvidence, incoming.seedEvidence),
+    advanceEvidence: preferEvidence(existing.advanceEvidence, incoming.advanceEvidence),
+    payoffEvidence: preferEvidence(existing.payoffEvidence, incoming.payoffEvidence),
+    lastVerifiedEvidenceEpisode: Math.max(
+      existing.lastVerifiedEvidenceEpisode ?? 0,
+      incoming.lastVerifiedEvidenceEpisode ?? 0,
+    ) || undefined,
   };
+}
+
+function preferEvidence(
+  primary: ReadonlyArray<string> | undefined,
+  fallback: ReadonlyArray<string> | undefined,
+): string[] | undefined {
+  const values = [...(primary ?? []), ...(fallback ?? [])]
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return values.length > 0 ? [...new Set(values)] : undefined;
 }
 
 function mergeHookStatus(existing: HookStatus, incoming: HookStatus, progressed: boolean): HookStatus {

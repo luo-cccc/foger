@@ -29,6 +29,8 @@ export interface HookLedgerEntry {
   readonly descriptor: string;
   /** 2+ char CJK sequences and 3+ letter ASCII words extracted from descriptor. */
   readonly keywords: ReadonlyArray<string>;
+  /** Explicit screen-visible carrier anchors from `evidence:` / `证据：`. */
+  readonly evidence: ReadonlyArray<string>;
 }
 
 export interface HookLedger {
@@ -50,6 +52,10 @@ export interface ExistingHookIdentity {
   readonly hookId: string;
   readonly expectedPayoff?: string;
   readonly notes?: string;
+  readonly targetPayoffEpisode?: number;
+  readonly seedEvidence?: ReadonlyArray<string>;
+  readonly advanceEvidence?: ReadonlyArray<string>;
+  readonly payoffEvidence?: ReadonlyArray<string>;
 }
 
 const LEDGER_HEADING_PATTERNS = [
@@ -157,6 +163,7 @@ export function parseHookLedger(memoBody: string): HookLedger {
 export function validatePlannedHookLedger(
   memoBody: string,
   existingHooks: ReadonlyArray<ExistingHookIdentity>,
+  options?: { readonly requireEvidence?: boolean },
 ): ReadonlyArray<string> {
   const ledger = parseHookLedger(memoBody);
   const issues: string[] = [];
@@ -191,6 +198,14 @@ export function validatePlannedHookLedger(
   for (const [normalizedId, actions] of actionsById) {
     if (actions.size > 1) {
       issues.push(`existing hook ${knownIds.get(normalizedId)} appears under multiple actions: ${[...actions].join(", ")}`);
+    }
+  }
+
+  if (options?.requireEvidence) {
+    for (const { action, entry } of actionEntries) {
+      if ((action === "advance" || action === "resolve") && entry.evidence.length === 0) {
+        issues.push(`${action} for ${entry.id} must declare visible evidence using evidence: / 证据：`);
+      }
     }
   }
 
@@ -283,11 +298,16 @@ export function validateHookLedger(
   const committed = dedupeById([...ledger.advance, ...ledger.resolve]);
   for (const entry of committed) {
     if (!draftEchoesEntry(draftContent, entry)) {
+      const explicitEvidence = entry.evidence.length > 0;
       violations.push({
-        severity: "warning",
-        category: "hook 账需语义复核",
-        description: `memo 在 advance/resolve 里声明要处理 ${entry.id}，但确定性关键词检查没有找到对应落点`,
-        suggestion: `复核正文是否已经用动作、对话、物件或信息变化推进了 ${entry.id}；若没有，请补具体场景，若已推进，可忽略这条确定性提示`,
+        severity: explicitEvidence ? "critical" : "warning",
+        category: explicitEvidence ? "hook-evidence-missing" : "hook 账需语义复核",
+        description: explicitEvidence
+          ? `memo 在 advance/resolve 里承诺以 ${entry.evidence.join("、")} 处理 ${entry.id}，但正文没有这些可见证据`
+          : `memo 在 advance/resolve 里声明要处理 ${entry.id}，但确定性关键词检查没有找到对应落点`,
+        suggestion: explicitEvidence
+          ? `补上 ${entry.evidence.join("、")} 对应的动作、对白、物件或信息变化；若本集不再处理 ${entry.id}，在 planner memo 中改为 defer。`
+          : `复核正文是否已经用动作、对话、物件或信息变化推进了 ${entry.id}；若没有，请补具体场景，若已推进，可忽略这条确定性提示`,
       });
     }
   }
@@ -326,7 +346,21 @@ function extractLedgerEntry(line: string): HookLedgerEntry | undefined {
   if (PLACEHOLDER_TOKENS.test(candidate)) return undefined;
 
   const descriptor = cleaned.slice(candidate.length).trim();
-  return { id: candidate, descriptor, keywords: extractKeywords(descriptor) };
+  return {
+    id: candidate,
+    descriptor,
+    keywords: extractKeywords(descriptor),
+    evidence: extractExplicitEvidence(descriptor),
+  };
+}
+
+function extractExplicitEvidence(descriptor: string): ReadonlyArray<string> {
+  const marker = descriptor.match(/(?:\||；|;|\(|（)?\s*(?:evidence|visible evidence|证据|可见载体)\s*[:：]\s*([^|；;）)\n]+)/iu);
+  if (!marker?.[1]) return [];
+  return [...new Set(marker[1]
+    .split(/[、,/，]+/u)
+    .map((value) => value.trim().replace(/["“”'`]/g, ""))
+    .filter((value) => value.length >= 2))];
 }
 
 /**
@@ -378,6 +412,12 @@ const ASCII_STOPWORDS = new Set([
 ]);
 
 function draftEchoesEntry(draft: string, entry: HookLedgerEntry): boolean {
+  if (entry.evidence.length > 0) {
+    const draftLower = draft.toLowerCase();
+    return entry.evidence.every((evidence) => (
+      /^[a-z]/i.test(evidence) ? draftLower.includes(evidence.toLowerCase()) : draft.includes(evidence)
+    ));
+  }
   if (entry.keywords.length > 0) {
     const draftLower = draft.toLowerCase();
     return entry.keywords.some((kw) => {
@@ -428,4 +468,5 @@ export const INTERNAL = {
   extractLedgerSection,
   extractLedgerEntry,
   extractKeywords,
+  extractExplicitEvidence,
 };

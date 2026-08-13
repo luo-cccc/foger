@@ -147,6 +147,11 @@ export async function loadNarrativeMemorySeed(bookDir: string): Promise<Narrativ
         expectedPayoff: hook.expectedPayoff,
         payoffTiming: hook.payoffTiming,
         notes: hook.notes,
+        targetPayoffEpisode: hook.targetPayoffEpisode,
+        seedEvidence: hook.seedEvidence,
+        advanceEvidence: hook.advanceEvidence,
+        payoffEvidence: hook.payoffEvidence,
+        lastVerifiedEvidenceEpisode: hook.lastVerifiedEvidenceEpisode,
       })),
   };
 }

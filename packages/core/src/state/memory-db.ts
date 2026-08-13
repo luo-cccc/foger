@@ -54,6 +54,11 @@ export interface StoredHook {
   readonly expectedPayoff: string;
   readonly payoffTiming?: string;
   readonly notes: string;
+  readonly targetPayoffEpisode?: number;
+  readonly seedEvidence?: ReadonlyArray<string>;
+  readonly advanceEvidence?: ReadonlyArray<string>;
+  readonly payoffEvidence?: ReadonlyArray<string>;
+  readonly lastVerifiedEvidenceEpisode?: number;
   // Phase 7 — hook causality / promotion metadata.
   readonly dependsOn?: ReadonlyArray<string>;
   readonly paysOffInArc?: string;
@@ -111,7 +116,12 @@ export class MemoryDB {
         last_advanced_episode INTEGER NOT NULL DEFAULT 0,
         expected_payoff TEXT NOT NULL DEFAULT '',
         payoff_timing TEXT NOT NULL DEFAULT '',
-        notes TEXT NOT NULL DEFAULT ''
+        notes TEXT NOT NULL DEFAULT '',
+        target_payoff_episode INTEGER,
+        seed_evidence TEXT NOT NULL DEFAULT '',
+        advance_evidence TEXT NOT NULL DEFAULT '',
+        payoff_evidence TEXT NOT NULL DEFAULT '',
+        last_verified_evidence_episode INTEGER
       );
 
       CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts(subject);
@@ -122,6 +132,11 @@ export class MemoryDB {
     `);
 
     this.ensureColumn("hooks", "payoff_timing", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("hooks", "target_payoff_episode", "INTEGER");
+    this.ensureColumn("hooks", "seed_evidence", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("hooks", "advance_evidence", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("hooks", "payoff_evidence", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("hooks", "last_verified_evidence_episode", "INTEGER");
   }
 
   private ensureColumn(table: string, column: string, definition: string): void {
@@ -311,8 +326,8 @@ export class MemoryDB {
 
   upsertHook(hook: StoredHook): void {
     this.db.prepare(
-      `INSERT OR REPLACE INTO hooks (hook_id, start_episode, type, status, last_advanced_episode, expected_payoff, payoff_timing, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO hooks (hook_id, start_episode, type, status, last_advanced_episode, expected_payoff, payoff_timing, notes, target_payoff_episode, seed_evidence, advance_evidence, payoff_evidence, last_verified_evidence_episode)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       hook.hookId,
       hook.startEpisode,
@@ -322,6 +337,11 @@ export class MemoryDB {
       hook.expectedPayoff,
       hook.payoffTiming ?? "",
       hook.notes,
+      hook.targetPayoffEpisode ?? null,
+      JSON.stringify(hook.seedEvidence ?? []),
+      JSON.stringify(hook.advanceEvidence ?? []),
+      JSON.stringify(hook.payoffEvidence ?? []),
+      hook.lastVerifiedEvidenceEpisode ?? null,
     );
   }
 
@@ -342,11 +362,21 @@ export class MemoryDB {
          last_advanced_episode AS lastAdvancedEpisode,
          expected_payoff AS expectedPayoff,
          payoff_timing AS payoffTiming,
-         notes
+         notes,
+         target_payoff_episode AS targetPayoffEpisode,
+         seed_evidence AS seedEvidenceJson,
+         advance_evidence AS advanceEvidenceJson,
+         payoff_evidence AS payoffEvidenceJson,
+         last_verified_evidence_episode AS lastVerifiedEvidenceEpisode
        FROM hooks
        WHERE lower(status) NOT IN ('resolved', 'closed', '已回收', '已解决')
        ORDER BY last_advanced_episode DESC, start_episode DESC, hook_id ASC`,
-    ).all() as unknown as ReadonlyArray<StoredHook>;
+    ).all().map((row: Record<string, unknown>) => ({
+      ...row,
+      seedEvidence: parseEvidenceJson(row.seedEvidenceJson),
+      advanceEvidence: parseEvidenceJson(row.advanceEvidenceJson),
+      payoffEvidence: parseEvidenceJson(row.payoffEvidenceJson),
+    })) as unknown as ReadonlyArray<StoredHook>;
   }
 
   // ---------------------------------------------------------------------------
@@ -355,5 +385,17 @@ export class MemoryDB {
 
   close(): void {
     this.db.close();
+  }
+}
+
+function parseEvidenceJson(value: unknown): ReadonlyArray<string> | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) && parsed.every((item) => typeof item === "string")
+      ? parsed.filter(Boolean)
+      : undefined;
+  } catch {
+    return undefined;
   }
 }

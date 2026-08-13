@@ -56,6 +56,14 @@ export async function buildExportArtifact(
     state.loadEpisodeIndex(bookId),
     state.loadBookConfig(bookId),
   ]);
+  const blockedEpisodes = index.filter((episode) =>
+    episode.status === "audit-failed" || episode.status === "state-degraded",
+  );
+  if (blockedEpisodes.length > 0) {
+    throw new Error(
+      `EXPORT_BLOCKED_BY_QUALITY_GATE: resolve audit/state failures before export (episodes: ${blockedEpisodes.map((episode) => episode.episodeNumber).join(", ")}).`,
+    );
+  }
   const episodes = options.approvedOnly
     ? index.filter((episode) => episode.status === "approved")
     : index;

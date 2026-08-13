@@ -38,6 +38,13 @@ export const HookRecordSchema = z.object({
   audienceQuestion: z.string().optional(),
   seedEpisode: z.number().int().min(1).optional(),
   targetPayoffEpisode: z.number().int().min(1).optional(),
+  // Lifecycle evidence is intentionally independent from notes. Notes are
+  // narrative context; these anchors are the deterministic contract for what
+  // counts as a seed, movement, or terminal payoff on screen.
+  seedEvidence: z.array(z.string().min(1)).optional(),
+  advanceEvidence: z.array(z.string().min(1)).optional(),
+  payoffEvidence: z.array(z.string().min(1)).optional(),
+  lastVerifiedEvidenceEpisode: z.number().int().min(0).optional(),
   pressureSource: z.string().optional(),
   // Phase 7 — hook causality / promotion metadata.
   // All optional so hooks parsed from pre-Phase-7 markdown still validate

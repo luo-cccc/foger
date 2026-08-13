@@ -42,14 +42,30 @@ export function renderHookSnapshot(
 ): string {
   if (hooks.length === 0) return "- none";
 
+  const hasLifecycleEvidence = hooks.some((hook) => (
+    hook.targetPayoffEpisode !== undefined
+    || hook.seedEvidence?.length
+    || hook.advanceEvidence?.length
+    || hook.payoffEvidence?.length
+    || hook.lastVerifiedEvidenceEpisode !== undefined
+  ));
+
   const headers = language === "en"
     ? [
-      "| hook_id | start_episode | type | status | last_advanced | expected_payoff | payoff_timing | depends_on | pays_off_in_arc | core_hook | half_life | promoted | notes |",
-      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      hasLifecycleEvidence
+        ? "| hook_id | start_episode | type | status | last_advanced | expected_payoff | payoff_timing | depends_on | pays_off_in_arc | core_hook | half_life | promoted | target_payoff_episode | seed_evidence | advance_evidence | payoff_evidence | last_verified_evidence_episode | notes |"
+        : "| hook_id | start_episode | type | status | last_advanced | expected_payoff | payoff_timing | depends_on | pays_off_in_arc | core_hook | half_life | promoted | notes |",
+      hasLifecycleEvidence
+        ? "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+        : "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     : [
-      "| hook_id | 起始剧集 | 类型 | 状态 | 最近推进 | 预期回收 | 回收节奏 | 上游依赖 | 回收篇章 | 核心 | 半衰期 | 升级 | 备注 |",
-      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      hasLifecycleEvidence
+        ? "| hook_id | 起始剧集 | 类型 | 状态 | 最近推进 | 预期回收 | 回收节奏 | 上游依赖 | 回收篇章 | 核心 | 半衰期 | 升级 | 计划回收集 | 埋设证据 | 推进证据 | 回收证据 | 最近核验集 | 备注 |"
+        : "| hook_id | 起始剧集 | 类型 | 状态 | 最近推进 | 预期回收 | 回收节奏 | 上游依赖 | 回收篇章 | 核心 | 半衰期 | 升级 | 备注 |",
+      hasLifecycleEvidence
+        ? "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+        : "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ];
 
   return [
@@ -67,6 +83,13 @@ export function renderHookSnapshot(
       renderCoreHookCell(hook.coreHook === true, language),
       renderHalfLifeCell(hook.halfLifeEpisodes),
       renderPromotedCell(hook.promoted, language),
+      ...(hasLifecycleEvidence ? [
+        hook.targetPayoffEpisode ?? "",
+        renderEvidenceCell(hook.seedEvidence),
+        renderEvidenceCell(hook.advanceEvidence),
+        renderEvidenceCell(hook.payoffEvidence),
+        hook.lastVerifiedEvidenceEpisode ?? "",
+      ] : []),
       hook.notes,
     ].map((cell) => escapeTableCell(String(cell))).join(" | ")).map((row) => `| ${row} |`),
   ].join("\n");
@@ -81,6 +104,10 @@ function renderPromotedCell(value: boolean | undefined, language: "zh" | "en"): 
   if (value === undefined) return "";
   if (language === "en") return value ? "true" : "false";
   return value ? "是" : "否";
+}
+
+function renderEvidenceCell(values: ReadonlyArray<string> | undefined): string {
+  return values?.map((value) => value.trim()).filter(Boolean).join(" / ") ?? "";
 }
 
 function renderDependsOnCell(ids: ReadonlyArray<string>, language: "zh" | "en"): string {
@@ -277,15 +304,19 @@ function parsePendingHookRow(row: ReadonlyArray<string | undefined>): StoredHook
   //  11 (Phase 7 ledger):     ... + depends_on, pays_off_in_arc, core_hook, notes
   //  12 (Phase 7 hotfix 1):   ... + depends_on, pays_off_in_arc, core_hook, half_life, notes
   //  13 (Phase 7 hotfix 2):   ... + depends_on, pays_off_in_arc, core_hook, half_life, promoted, notes
+  //  18 (Phase 9-4):          ... + target episode and evidence columns, notes
   //  additional trailing columns (e.g. stale/blocked diagnostic columns) are
   //  allowed — the parser skips past them to the notes column.
+  const lifecycleShape = row.length >= 18;
   const phase7Promoted = row.length >= 13;
   const phase7HalfLife = row.length === 12;
   const phase7Compact = row.length === 11;
   const phase7 = phase7Promoted || phase7HalfLife || phase7Compact;
   const legacyShape = row.length < 8;
   const payoffTiming = legacyShape ? undefined : normalizeHookPayoffTiming(row[6]);
-  const notes = phase7Promoted
+  const notes = lifecycleShape
+    ? (row[17] ?? "")
+    : phase7Promoted
     ? (row[12] ?? "")
     : phase7HalfLife
       ? (row[11] ?? "")
@@ -315,7 +346,21 @@ function parsePendingHookRow(row: ReadonlyArray<string | undefined>): StoredHook
     coreHook: parseBooleanCell(row[9]),
     halfLifeEpisodes: (phase7HalfLife || phase7Promoted) ? parseOptionalInt(row[10]) : undefined,
     promoted: phase7Promoted ? parseOptionalBooleanCell(row[11]) : undefined,
+    ...(lifecycleShape ? {
+      targetPayoffEpisode: parseOptionalInt(row[12]),
+      seedEvidence: parseEvidenceCell(row[13]),
+      advanceEvidence: parseEvidenceCell(row[14]),
+      payoffEvidence: parseEvidenceCell(row[15]),
+      lastVerifiedEvidenceEpisode: parseOptionalInt(row[16]),
+    } : {}),
   };
+}
+
+function parseEvidenceCell(cell: string | undefined): ReadonlyArray<string> | undefined {
+  const values = (cell ?? "").split(/\s*\/(?!\/)|[；;]+\s*/u)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return values.length > 0 ? [...new Set(values)] : undefined;
 }
 
 function parseOptionalBooleanCell(cell: string | undefined): boolean | undefined {

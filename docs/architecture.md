@@ -65,18 +65,20 @@ Composer 将 `ContextPackage` 与 `RuleStack` 挂载到原 snapshot 并更新哈
 - **结算**：claim 关键词命中本集交接知识、当集兑现或结尾状态时，`status` 从 `active` 变为 `resolved` 并记录 `statusUpdatedAtEpisode`；秘密真相在读者揭示前不结算。演化零模型调用、幂等，旧 claims 文件零迁移。
 - **角色知晓**：`informationPermissions` 中知道或怀疑该事实的角色自动并入 `claim.visibility.characterKnownBy`。
 - **引用完整性**：确定性门禁检查剧本对白说话人与本集目标角色必须能回指 `roles/` 或 canon 角色类 claim；未知名单产生审计问题，防止剧本发明设定。
-- **两段式入库**：`inkos canon refresh` 先按剧本原始表述收集 occurrence（含混指代标 `unresolved`，不猜），再与既有 claims 比对给出 `reuse / new_variant / new_asset / unresolved` 四结论；服装、伤势、临时状态只能 `new_variant`，`unresolved` 留在未认领事实池待下集，不阻断。
+- **两段式入库**：`inkos canon refresh` 先按剧本原始表述收集 occurrence（含混指代标 `unresolved`，不猜），再与既有 claims 比对给出 `reuse / new_variant / new_asset / unresolved` 四结论；服装、伤势、临时状态只能 `new_variant`。`unresolved` 留在未认领事实池；积压达到 `PipelineConfig.unclaimedFactsBacklogThreshold`（默认 50）时，后续规划与写作以 `CANON_REFRESH_REQUIRED` 暂停，必须刷新并审阅 Canon 后继续。
 
 资产注册表（`story/canon/asset_registry.json`）为后续出图/出视频预留角色外观、服装、道具状态与场景视图结构；`CanonClaim.assetRefs` 让设定事实可指向资产实体。当前只建结构与存储，不接入任何图片/视频生成。
 
 ## 生产优化机制
 
-- **钩子账本确定性落账**：planner memo 的 `advance` / `resolve` / `defer` 注解在写作、修订与状态重放路径中统一消费（重放缺失 memo 时回退读取持久化 plan，兼容 `**advance:**` 加粗小节），`hooks.json` / `pending_hooks.md` 随集推进或回收；伏笔健康监控基于真实账本，核心钩子按卷计划回收。
+- **钩子账本确定性落账**：planner memo 的 `advance` / `resolve` / `defer` 注解在写作、修订与状态重放路径中统一消费（重放缺失 memo 时回退读取持久化 plan，兼容 `**advance:**` 加粗小节），`hooks.json` / `pending_hooks.md` 随集推进或回收；Hook 可记录 `targetPayoffEpisode`、铺设/推进/终局证据和最后验证集。新增或推进的 memo 必须用 `证据：` / `evidence:` 声明可见载体；旧 Markdown 账本仍可读，只有存在生命周期数据时才扩列投影。
+- **提前回收门禁**：只在当前集早于 `targetPayoffEpisode` 且声明的全部 `payoffEvidence` 同时出现在剧本时报告 critical。不再根据角色名、notes 或其他自由文本推测，避免账本与正文脱节后持续产生伪阳性。
+- **Writer 边界阻断**：结构化剧本在落盘前校验结尾情绪钩子必须是关于关系、危险、身份、牺牲或选择的具体观众疑问句；模糊承诺直接返回 `INVALID_EMOTIONAL_HOOK`。命中禁止发布的政治敏感词直接返回 `BLOCKED_SENSITIVE_CONTENT`，不进入审计或修订循环。
 - **时长归一化**：写后按比例缩放镜头秒数，把整集估算收敛到目标时长（±5 秒内不动，单镜头夹 2-45 秒，结果必须仍在 90-210 秒硬区间内才应用）；不改变镜头数量与内容，审计与持久化看到同一份权威时长。
 - **Writer 输出解析兜底**：解析前剥离 `=== ... ===` 前导区块再提取剧本 JSON；时长越界草稿先做确定性镜头时长归一化（含 90-210 秒硬区间校验）再判定，避免无效修复调用与批次中断。writer 内部修复一次仍失败时由 runner 重新生成一次，最终失败把原始输出留存到 `story/runtime/episode-XXXX-writer-raw-fail.txt` 并在错误信息中给出路径；失败 attempt 消耗的 token 并入该集用量。
 - **角色引用完整性**：确定性门禁把对白说话人剥离括号限定语（如"顾维远（画外）"）与常见修饰前缀后，回指 `roles/` 或 canon 角色类 claim；功能性角色标签（陌生女人/路人/哨兵/斥候队长/狱卒/校尉等，含任意长度角色词判定）与家庭角色、发声设备标签豁免；已出场说话人（更早持久化剧集引入）不再跨集重复告警，正式人名式新角色首次出现仍告警。
 - **卷合同覆盖**：待写集号超出当前卷合同 `episodeEnd` 时给出非阻断警告，提示 `inkos foundation extend`（只重写 volume_map，保留 story_frame/roles/book_rules/pending_hooks）。
-- **修订补丁模式**：reviser 在全部 finding 为局部时允许输出 `REVISED_PATCH`（replaceShots / updateContract / title / openingHook / reversal / emotionalHook / endState），确定性应用器校验失败自动回退完整改写；手动 `revise` 重审会合并确定性剧本门禁结果，结构性问题不再被误判为"无可执行阻断证据"。
+- **修订补丁模式**：reviser 在全部 finding 为局部时允许输出 `REVISED_PATCH`（replaceShots / updateContract / title / openingHook / reversal / emotionalHook / endState），确定性应用器校验失败自动回退完整改写；有 critical 时只向 Reviser 传递其有权处理的 critical，其他 finding 保留为审计证据，避免局部问题被无关 warning 扩大为整集重写。手动 `revise` 重审会合并确定性剧本门禁结果，结构性问题不再被误判为"无可执行阻断证据"。
 - **容量可行性提示（STY-16）**：`episode-capacity-estimate.ts` 从本书已接受集采样每镜头平均承载的字数与秒数，把单集 memo 体量换算成镜头数与时长；只在 ≥2 倍量级偏差时输出非阻断提示（已接受集不足 3 集时跳过），接入 `inkos plan episode` 输出，另附 memo 承诺节拍数（场景意图 + 因果升级链）辅助度量。纯提示，不是质量门槛。
 - **上游修订反馈回路**：审查循环因 planner/canon 类阻塞问题停在 `requires-upstream-revision` 时，这些 finding 持久化到 `story/runtime/upstream-revision-feedback.json`；下一次对同集规划时注入 memo 请求要求规划层自行修正（Hook 账、KR 绑定或决策本身），规划成功后清除。修稿环节始终无权触碰上游决策。
 - **修订回归复核**：局部补丁与完整改写两条修订路径都必须通过携带回归检查表的复核（原文覆盖、镜头目的与 Hook 落点、时长预算、资产连续性、对白逐字、memo 约束）；确定性门禁干净不再短路掉修订候选的复核调用。
@@ -97,6 +99,8 @@ Composer 将 `ContextPackage` 与 `RuleStack` 挂载到原 snapshot 并更新哈
 - `taste_option`：钩子类型、旁白、沉默、视角和节奏，不阻断。
 
 审计报告保存完整描述、建议、证据定位、责任方和源文件哈希。源文件变化后旧 finding 标记为 `stale`。
+
+审计失败或运行状态降级的剧集不能作为默认交付物导出，必须先完成修订和状态恢复。
 
 ## 恢复与持久化
 

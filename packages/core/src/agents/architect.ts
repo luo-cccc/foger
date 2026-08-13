@@ -1344,9 +1344,10 @@ ${trimmed}\n`;
         ? (language === "zh" ? `初始线索：${rawProgress}` : `initial signal: ${rawProgress}`)
         : "";
 
+      const lifecycleShape = row.length >= 18;
       const phase7 = row.length >= 12;
       const phase6 = row.length >= 8;
-      const noteCellIndex = phase7 ? 11 : phase6 ? 7 : 6;
+      const noteCellIndex = lifecycleShape ? 17 : phase7 ? 11 : phase6 ? 7 : 6;
       const notes = this.mergeHookNotes(row[noteCellIndex] ?? "", seedNote, language);
 
       const base: Record<string, unknown> = {
@@ -1366,6 +1367,18 @@ ${trimmed}\n`;
         base.coreHook = this.parseBooleanCell(row[9]);
         const halfLife = this.parseOptionalInt(row[10]);
         if (halfLife !== undefined) base.halfLifeEpisodes = halfLife;
+      }
+      if (lifecycleShape) {
+        const targetPayoffEpisode = this.parseOptionalInt(row[12]);
+        const seedEvidence = this.parseEvidenceCell(row[13]);
+        const advanceEvidence = this.parseEvidenceCell(row[14]);
+        const payoffEvidence = this.parseEvidenceCell(row[15]);
+        const lastVerifiedEvidenceEpisode = this.parseOptionalInt(row[16]);
+        if (targetPayoffEpisode !== undefined) base.targetPayoffEpisode = targetPayoffEpisode;
+        if (seedEvidence.length > 0) base.seedEvidence = seedEvidence;
+        if (advanceEvidence.length > 0) base.advanceEvidence = advanceEvidence;
+        if (payoffEvidence.length > 0) base.payoffEvidence = payoffEvidence;
+        if (lastVerifiedEvidenceEpisode !== undefined) base.lastVerifiedEvidenceEpisode = lastVerifiedEvidenceEpisode;
       }
 
       return base as unknown as StoredHook;
@@ -1467,6 +1480,12 @@ ${trimmed}\n`;
     if (!match) return undefined;
     const parsed = parseInt(match[0], 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+  }
+
+  private parseEvidenceCell(value: string | undefined): string[] {
+    return (value ?? "").split(/\s*\/(?!\/)|[；;]+\s*/u)
+      .map((item) => item.trim())
+      .filter(Boolean);
   }
 
   private hasNarrativeProgress(value: string | undefined): boolean {

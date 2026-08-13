@@ -221,6 +221,11 @@ describe("episode screenplay contract", () => {
     ]));
   });
 
+  it("rejects a vague emotional hook during structured output parsing", () => {
+    const script = { ...sampleScript(), emotionalHook: "观众继续等待" };
+    expect(() => parseEpisodeScriptOutput(JSON.stringify(script), 1)).toThrow(/concrete audience question/iu);
+  });
+
   it("rejects an episode number mismatch", () => {
     expect(() => parseEpisodeScriptOutput(JSON.stringify(sampleScript()), 2)).toThrow(/does not match/);
   });
@@ -306,6 +311,25 @@ describe("episode screenplay contract", () => {
     current.contract.incomingState.physical = ["店内"];
     const issues = auditEpisodeScript(current, previous);
     expect(issues.map((issue) => issue.category)).toContain("timeline-drift");
+  });
+
+  it("accepts a compound objective naming multiple known characters", () => {
+    const script = sampleScript();
+    script.contract.objective.character = "林夏 / 顾维远";
+    const issues = auditEpisodeScript(script, undefined, 90, {
+      characterNames: new Set(["林夏", "顾维远"]),
+    });
+    expect(issues.map((issue) => issue.category)).not.toContain("unknown-character-reference");
+  });
+
+  it("still flags a compound objective where no segment resolves", () => {
+    const script = sampleScript();
+    script.contract.objective.character = "李四 / 王五";
+    const issues = auditEpisodeScript(script, undefined, 90, {
+      characterNames: new Set(["林夏", "顾维远"]),
+    });
+    const reference = issues.filter((issue) => issue.category === "unknown-character-reference");
+    expect(reference.some((issue) => issue.severity === "critical")).toBe(true);
   });
 
   it("exempts functional role speakers from the character reference audit", () => {

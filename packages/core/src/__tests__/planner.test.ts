@@ -87,9 +87,9 @@ const VALID_BODY = `
 
 ## 本章 hook 账
 advance:
-- H03 "七号门异常" → 从 pressured → near_payoff（本章钉成实证）
+- H03 "七号门异常" → 从 pressured → near_payoff（本章钉成实证）｜证据：锁芯刮痕样本、记录仪时间戳
 resolve:
-- S004 "锁芯刮痕" → 核验完毕，本章结清
+- S004 "锁芯刮痕" → 核验完毕，本章结清｜证据：比对报告、管理员承认动过锁芯
 defer:
 - H07 "幕后主使" → 第 20 章再动
 
@@ -494,7 +494,7 @@ The evidence is secured and the relationship changes from cautious cooperation t
 
 ## Hook ledger for this episode
 advance:
-- H03 "Door 7 anomaly" → pressured → near_payoff (pinned as live evidence this episode)
+- H03 "Door 7 anomaly" → pressured → near_payoff (pinned as live evidence this episode) | evidence: lock-core scratch sample, recorder timestamp
 defer:
 - H07 "the mastermind" → hold until episode 20
 

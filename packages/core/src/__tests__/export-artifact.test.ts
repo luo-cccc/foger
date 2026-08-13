@@ -33,4 +33,14 @@ describe("screenplay export", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("refuses to export a book that still has an audit-failed episode", async () => {
+    const state: ExportStateLike = {
+      bookDir: () => "unused",
+      loadBookConfig: async () => ({ title: "Demo" }),
+      loadEpisodeIndex: async () => [{ episodeNumber: 7, status: "audit-failed", episodeDurationSeconds: 90 }],
+    };
+    await expect(buildExportArtifact(state, "demo", { format: "screenplay-md" }))
+      .rejects.toThrow(/EXPORT_BLOCKED_BY_QUALITY_GATE/);
+  });
 });

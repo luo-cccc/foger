@@ -39,7 +39,14 @@ inkos foundation extend <book-id> --episodes <n>
 inkos canon refresh <book-id>
 ```
 
-每集持久化时，未被既有 claim 覆盖的交接知识/状态变化会确定性收集到 `story/canon/unclaimed_facts.json`（幂等，供 `canon refresh` 消费）。卷合同超纲（待写集号超出大纲卷范围）会在写结果中给出非阻断警告，请先运行 `inkos foundation extend` 再继续写作。
+每集持久化时，未被既有 claim 覆盖的交接知识/状态变化会确定性收集到 `story/canon/unclaimed_facts.json`（幂等，供 `canon refresh` 消费）。当积压达到 `PipelineConfig.unclaimedFactsBacklogThreshold`（默认 50 条）时，`plan episode` 与 `write next` 会以 `CANON_REFRESH_REQUIRED` 暂停；执行 `inkos canon refresh <book-id>` 并审阅新 claims 后再继续。该闸门不自动把 Writer 临时发明的角色或设定写入 Canon。卷合同超纲（待写集号超出大纲卷范围）会在写结果中给出非阻断警告，请先运行 `inkos foundation extend` 再继续写作。
+
+## 内容与交付门禁
+
+- Writer 落盘前会拒绝不是具体观众疑问句的结尾情绪钩子（关系、危险、身份、牺牲或选择），错误码为 `INVALID_EMOTIONAL_HOOK`。
+- Writer 落盘前会拒绝命中的禁止发布政治敏感词，错误码为 `BLOCKED_SENSITIVE_CONTENT`；不要依赖审计报告作为内容红线的唯一拦截点。
+- Hook 的提前回收只依据 `targetPayoffEpisode` 与全部 `payoffEvidence` 判定。维护 Hook 时，在 Planner memo 的新增/推进项中写明 `证据：` 或 `evidence:` 的可见载体；不要以角色名或自由文本备注代替终局证据。
+- `audit-failed` 或 `state-degraded` 剧集不能默认导出。先完成修订、重审和状态恢复，再执行 `inkos export`。
 
 ## 污染守卫与题材配置
 
@@ -71,7 +78,7 @@ pnpm clean
 pnpm clean:build
 ```
 
-`clean:build` 会删除各包 `dist`、Vite 缓存、覆盖率、Playwright 报告和已知临时目录，不删除源码或 `node_modules`。
+`pnpm clean` 只删除已知缓存、覆盖率、报告、日志和临时目录；不会删除 `node_modules`、`dist`、`books/`、`.inkos/` 或生产数据。`clean:build` 才会额外删除各包 `dist`；两者都不删除源码或 `node_modules`。
 
 ## 项目数据
 

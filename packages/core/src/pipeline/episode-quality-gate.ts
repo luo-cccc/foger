@@ -6,6 +6,7 @@ import {
   EPISODE_DURATION_TARGET_SECONDS,
   episodeShotBudget,
   episodeSoftDurationRange,
+  hasConcreteAudienceQuestion,
   measureEpisodeScript,
   type EpisodeScript,
   type EpisodeStateBucket,
@@ -61,6 +62,13 @@ const FUNCTIONAL_ROLE_TOKEN = /(?:哨|卒|兵|长|将|官|吏|匠|役|丁|头目
 /** Stage/source qualifiers writers attach to speakers (e.g. "主角（画外）"). */
 const SPEAKER_QUALIFIER = /[（(][^）)]*[）)]/gu;
 const SPEAKER_LEADING_MODIFIER = /^(?:年轻的|年老的|中年的|此时的|画面中的|记忆中的|录音中的|电话中的|门口的|窗外的|远处的|身后的)/u;
+
+/**
+ * Separators that may join multiple actors in a shared objective, e.g.
+ * "苏挽 / 顾辞" or "主角与盟友". Each segment is resolved against the settings
+ * index independently.
+ */
+const OBJECTIVE_CHARACTER_SEPARATOR = /[\/\\、，,和与及\+]/u;
 
 /**
  * Behavior tokens extracted from shot action/visual text to form an
@@ -331,19 +339,29 @@ function isScreenableHandoffFact(fact: string): boolean {
  */
 export function auditEarlyHookPayoff(
   script: EpisodeScript,
-  hooks: ReadonlyArray<{ readonly hookId: string; readonly expectedPayoff?: string; readonly targetPayoffEpisode?: number; readonly notes?: string; readonly audienceQuestion?: string }>,
+  hooks: ReadonlyArray<{
+    readonly hookId: string;
+    readonly expectedPayoff?: string;
+    readonly targetPayoffEpisode?: number;
+    readonly notes?: string;
+    readonly audienceQuestion?: string;
+    readonly payoffEvidence?: ReadonlyArray<string>;
+  }>,
 ): AuditIssue[] {
   const issues: AuditIssue[] = [];
   const surface = episodeSurface(script);
   for (const hook of hooks) {
-    const payoffEpisode = hook.targetPayoffEpisode ?? parseEpisodeNumber(hook.expectedPayoff ?? "");
+    // Never infer a production blocker from free-form prose. Legacy hooks are
+    // still eligible for a soft diagnostic, but only an explicit lifecycle
+    // target plus terminal evidence represents a deterministic promise.
+    const payoffEpisode = hook.targetPayoffEpisode;
     if (!payoffEpisode || script.episode >= payoffEpisode) continue;
-    const keywords = extractHookKeywords(hook.notes ?? "", hook.audienceQuestion ?? "");
+    const keywords = hook.payoffEvidence?.map((value) => value.trim()).filter(Boolean) ?? [];
     if (keywords.length === 0) continue;
     const hits = keywords.filter((keyword) => surface.includes(keyword));
-    if (hits.length === 0) continue;
+    if (hits.length !== keywords.length) continue;
     issues.push({
-      severity: "warning",
+      severity: "critical",
       category: "early-hook-payoff",
       repairScope: "structural",
       ruleClass: "reviewed_invariant",
@@ -351,40 +369,11 @@ export function auditEarlyHookPayoff(
         `hooks:${hook.hookId}`,
         `episode:${script.episode}:scenes[].shots[]`,
       ],
-      description: `Hook ${hook.hookId} is scheduled to pay off at episode ${payoffEpisode}, but its key facts (${hits.join("、")}) already appear on screen in episode ${script.episode}. If this is the reveal, advance or resolve the hook ledger; if it is only a setup mention, keep it as a tease without showing the payoff.`,
-      suggestion: "Move the reveal to the scheduled episode, or record an advance in the planner memo so the ledger reflects this progress.",
+      description: `Hook ${hook.hookId} is scheduled to pay off at episode ${payoffEpisode}, but its terminal evidence (${hits.join("、")}) already appears on screen in episode ${script.episode}.`,
+      suggestion: "Move the terminal evidence to the scheduled episode, or formally revise the hook lifecycle before publishing this episode.",
     });
   }
   return issues;
-}
-
-/** Extract the first episode number from strings like "第29集", "29", "ep 3". */
-function parseEpisodeNumber(value: string): number | undefined {
-  const match = value.match(/(\d{1,3})/u);
-  if (!match) return undefined;
-  const parsed = Number(match[1]);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
-}
-
-/**
- * Pull explicit nouns from a hook's notes/question: 「」-quoted names, quoted
- * phrases, and short CJK words ending in a concrete-object suffix. These are
- * the facts whose premature appearance signals an early payoff.
- */
-function extractHookKeywords(notes: string, question: string): string[] {
-  const source = `${notes}\n${question}`;
-  const keywords = new Set<string>();
-  for (const quoted of source.matchAll(/「([^」]{1,12})」/gu)) {
-    keywords.add(quoted[1]!);
-  }
-  for (const quoted of source.matchAll(/"([^"]{2,12})"/gu)) {
-    keywords.add(quoted[1]!);
-  }
-  for (const match of source.matchAll(/[\u4e00-\u9fff]{2,6}(?:冢|玉|剑|诀|渊|灯|铃|丹|卡|书|信|棺|阵|痕|墓)/gu)) {
-    keywords.add(match[0]!);
-  }
-  const noise = new Set(["初始状态", "回收条件", "伏笔回收", "核心钩子", "情绪钩子", "剧情进度"]);
-  return [...keywords].filter((keyword) => keyword.length >= 2 && !noise.has(keyword));
 }
 
 function hasWithholdingOnlyResult(text: string): boolean {
@@ -491,9 +480,7 @@ export function auditEpisodeScript(
     });
   }
 
-  const hasConcreteAudienceQuestion = /[?？]/u.test(script.emotionalHook)
-    || /(?:观众(?:追问|想知道|会问)|到底.{2,}|能否.{2,}|是否.{2,}|会不会.{2,}|为什么.{2,}|为何.{2,}|谁.{2,}(?:会|能|要|还)|什么.{2,}(?:会|能|要|还)|多少.{2,})/u.test(script.emotionalHook);
-  if (!hasConcreteAudienceQuestion) {
+  if (!hasConcreteAudienceQuestion(script.emotionalHook)) {
     issues.push({
       severity: "critical",
       category: "emotional-hook",
@@ -714,17 +701,27 @@ export function auditEpisodeScript(
 
     const protagonist = script.contract.objective.character.trim();
     if (protagonist
-      && !NARRATION_SPEAKERS.has(protagonist.toLowerCase())
-      && !settingsIndex.characterNames.has(protagonist)) {
-      issues.push({
-        severity: "critical",
-        category: "unknown-character-reference",
-        repairScope: "structural",
-        ruleClass: "reviewed_invariant",
-        evidenceRefs: [`episode:${script.episode}:contract.objective.character`],
-        description: `Episode objective names "${protagonist}", which has no matching character in the settings index.`,
-        suggestion: "Bind the episode to an existing character in roles/ or canon claims.",
-      });
+      && !NARRATION_SPEAKERS.has(protagonist.toLowerCase())) {
+      // Multi-character objectives are legitimate: "苏挽 / 顾辞" or "主角与盟友"
+      // name more than one actor. Any single named segment that resolves to the
+      // settings index is enough — do not flag a shared goal as an invented
+      // character just because it was written as a compound.
+      const protagonistNames = protagonist
+        .split(OBJECTIVE_CHARACTER_SEPARATOR)
+        .map((part) => part.trim())
+        .filter((part) => part.length > 0);
+      const known = protagonistNames.some((part) => settingsIndex.characterNames.has(part));
+      if (!known) {
+        issues.push({
+          severity: "critical",
+          category: "unknown-character-reference",
+          repairScope: "structural",
+          ruleClass: "reviewed_invariant",
+          evidenceRefs: [`episode:${script.episode}:contract.objective.character`],
+          description: `Episode objective names "${protagonist}", which has no matching character in the settings index.`,
+          suggestion: "Bind the episode to an existing character in roles/ or canon claims.",
+        });
+      }
     }
   }
 

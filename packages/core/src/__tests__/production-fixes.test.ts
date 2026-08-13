@@ -140,6 +140,8 @@ function scriptFor(episode: number, visualTexts: ReadonlyArray<string>): Episode
 describe("P1-1 auditEarlyHookPayoff", () => {
   const tombHook = {
     hookId: "H005",
+    targetPayoffEpisode: 29,
+    payoffEvidence: ["衣冠冢", "空棺", "遗书"],
     expectedPayoff: "第29集",
     notes: "初始状态：衣冠冢空棺+遗书「若你读到——莫要再让她等」+雌玉「归」",
     audienceQuestion: "她到底在等谁？",
@@ -158,6 +160,16 @@ describe("P1-1 auditEarlyHookPayoff", () => {
   it("stays silent when no hook keywords appear on screen", () => {
     const issues = auditEarlyHookPayoff(scriptFor(6, ["顾辞在渊底行走，四周黑暗"]), [tombHook]);
     expect(issues.filter((issue) => issue.category === "early-hook-payoff")).toHaveLength(0);
+  });
+
+  it("does not mistake a quoted character name for a payoff fact", () => {
+    const issues = auditEarlyHookPayoff(scriptFor(1, ["顾辞站在渊底，抬头看向裂口"]), [{
+      hookId: "H009",
+      expectedPayoff: "第21集",
+      notes: "初始线索：闻烬叫出\"顾辞\"，但没有交代他的真实身份",
+      audienceQuestion: "顾辞究竟是谁？",
+    }]);
+    expect(issues).toHaveLength(0);
   });
 });
 

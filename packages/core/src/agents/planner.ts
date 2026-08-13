@@ -325,6 +325,7 @@ export class PlannerAgent extends BaseAgent {
         const hookLedgerIssues = validatePlannedHookLedger(
           memo.body,
           existingHooks,
+          { requireEvidence: true },
         );
         if (hookLedgerIssues.length > 0) {
           throw new PlannerParseError(`invalid hook ledger: ${hookLedgerIssues.join("; ")}`);

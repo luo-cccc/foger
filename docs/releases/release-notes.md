@@ -1,5 +1,13 @@
 # InkOS 更新记录
 
+### 2026-08-13（真实生产闭环：内容门禁、Hook 证据与 Canon 治理）
+
+- **结尾情绪钩子前置校验**：Writer 落盘前要求 `emotionalHook` 是关于关系、危险、身份、牺牲或选择的具体观众疑问句；模糊承诺直接以 `INVALID_EMOTIONAL_HOOK` 拒绝，不再等 Auditor 事后反复抓取和触发整集返修。
+- **内容红线前置阻断**：Writer 输出边界检测禁止发布的政治敏感词，命中即返回 `BLOCKED_SENSITIVE_CONTENT`，不进入审计/修订闭环，也不会作为默认交付物导出。
+- **Hook 生命周期结构化**：账本新增计划回收集、铺设/推进/终局证据与最后验证集；Planner memo 的新增和推进要求声明 `证据：` / `evidence:` 可见载体。提前回收门禁只在早于计划集且全部终局证据同时出现时给 critical，不再从角色名、notes 或自由文本猜测；旧 Markdown 账本保持兼容。
+- **Canon 积压闸门**：未认领事实达到默认 50 条时，规划与写作以 `CANON_REFRESH_REQUIRED` 暂停，要求执行 `inkos canon refresh <book-id>` 并审阅结果。系统不自动把 Writer 临时发明的角色或设定写进 Canon，保持 Canon 的权威性。
+- **返修与导出收口**：有 critical 时仅把 Reviser 有权处理的 critical 交给修订，其他 finding 留作审计证据，避免局部问题引发无关的整集重写；`audit-failed` 或 `state-degraded` 剧集不再默认导出。
+
 ### 2026-08-13（旧小说时代残留治理：短路与死代码清零）
 
 - **修复 screenplay 下 AI 味检测被短路**：`analyzeAITells`（套话密度/转折词重复/列表式）与英文 AI-tell 词密度检查此前只在自由文本分支运行（`creative.episodeScript ? [] : ...`），分镜格式下完全失效。现在 screenplay 路径对镜头表面（visual/action/narration/dialogue）跑 `analyzeAITells`，英文场景额外跑 `detectEnglishAITellWordDensity`。

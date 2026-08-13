@@ -12,13 +12,23 @@ type ExistingHook = {
   readonly expectedPayoff: string;
   readonly payoffTiming?: string;
   readonly notes: string;
+  readonly targetPayoffEpisode?: number;
+  readonly seedEvidence?: ReadonlyArray<string>;
+  readonly advanceEvidence?: ReadonlyArray<string>;
+  readonly payoffEvidence?: ReadonlyArray<string>;
+  readonly lastVerifiedEvidenceEpisode?: number;
 };
 
 function joinFacts(values: ReadonlyArray<string>): string {
   return values.filter(Boolean).join("；");
 }
 
-function updateHook(existing: ExistingHook, episode: number, descriptor: string): HookRecord {
+function updateHook(
+  existing: ExistingHook,
+  episode: number,
+  descriptor: string,
+  evidence: ReadonlyArray<string>,
+): HookRecord {
   return {
     hookId: existing.hookId,
     startEpisode: existing.startEpisode,
@@ -27,6 +37,15 @@ function updateHook(existing: ExistingHook, episode: number, descriptor: string)
     lastAdvancedEpisode: Math.max(existing.lastAdvancedEpisode, episode),
     expectedPayoff: existing.expectedPayoff,
     ...(existing.payoffTiming ? { payoffTiming: existing.payoffTiming as HookRecord["payoffTiming"] } : {}),
+    ...(existing.targetPayoffEpisode ? { targetPayoffEpisode: existing.targetPayoffEpisode } : {}),
+    ...(existing.seedEvidence?.length ? { seedEvidence: [...existing.seedEvidence] } : {}),
+    ...(existing.advanceEvidence?.length ? { advanceEvidence: [...existing.advanceEvidence] } : {}),
+    ...(existing.payoffEvidence?.length ? { payoffEvidence: [...existing.payoffEvidence] } : {}),
+    ...(existing.lastVerifiedEvidenceEpisode ? { lastVerifiedEvidenceEpisode: existing.lastVerifiedEvidenceEpisode } : {}),
+    ...(evidence.length > 0 ? {
+      advanceEvidence: [...new Set([...(existing.advanceEvidence ?? []), ...evidence])],
+      lastVerifiedEvidenceEpisode: episode,
+    } : {}),
     notes: descriptor.trim()
       ? [existing.notes, descriptor.trim()].filter(Boolean).join("；")
       : existing.notes,
@@ -47,13 +66,14 @@ export function deriveEpisodeRuntimeDelta(params: {
   const ledger = params.memo?.body ? parseHookLedger(params.memo.body) : undefined;
   const hooksById = new Map((params.existingHooks ?? []).map((hook) => [hook.hookId, hook]));
 
+  const actionEntries = [...(ledger?.advance ?? []), ...(ledger?.resolve ?? [])];
   const advancedIds = new Set((ledger?.advance ?? []).map((entry) => entry.id));
-  const upsert = (ledger?.advance ?? [])
+  const upsert = actionEntries
     .map((entry) => hooksById.get(entry.id))
     .filter((hook): hook is ExistingHook => Boolean(hook))
     .map((hook) => {
-      const entry = ledger!.advance.find((candidate) => candidate.id === hook.hookId)!;
-      return updateHook(hook, episode, entry.descriptor);
+      const entry = actionEntries.find((candidate) => candidate.id === hook.hookId)!;
+      return updateHook(hook, episode, entry.descriptor, entry.evidence);
     });
 
   const currentStatePatch = {

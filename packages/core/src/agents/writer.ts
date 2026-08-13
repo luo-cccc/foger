@@ -13,6 +13,7 @@ import {
   type PostWriteViolation,
 } from "./post-write-validator.js";
 import { analyzeAITells } from "./ai-tells.js";
+import { analyzeSensitiveWords } from "./sensitive-words.js";
 import type { EpisodeIntent, EpisodeMemo, ContextPackage, RuleStack } from "../models/input-governance.js";
 import type { LengthSpec } from "../models/length-governance.js";
 import type { EpisodeRuntimeStateDelta } from "../models/runtime-state.js";
@@ -55,6 +56,7 @@ import {
   EPISODE_DURATION_HARD_MIN_SECONDS,
   EPISODE_DURATION_TARGET_SECONDS,
   episodeSoftDurationRange,
+  hasConcreteAudienceQuestion,
 } from "../models/episode-script.js";
 import type { EpisodeHandoffCapsule } from "../pipeline/episode-handoff.js";
 import type { EpisodePerformanceReport } from "../pipeline/episode-performance.js";
@@ -427,6 +429,27 @@ export class WriterAgent extends BaseAgent {
       throw new Error(
         "Screenplay writer output did not contain a valid EpisodeScript JSON contract; legacy episode text was rejected.",
       );
+    }
+
+    if (creative.episodeScript) {
+      const screenplaySurface = shotSurfaceText(creative.episodeScript);
+      const blockedTerms = analyzeSensitiveWords(screenplaySurface, undefined, resolvedLanguage)
+        .found
+        .filter((match) => match.severity === "block");
+      if (blockedTerms.length > 0) {
+        const terms = blockedTerms.map((match) => `\"${match.word}\"×${match.count}`).join("、");
+        throw new Error(
+          resolvedLanguage === "en"
+            ? `BLOCKED_SENSITIVE_CONTENT: screenplay contains blocked political sensitive terms: ${terms}`
+            : `BLOCKED_SENSITIVE_CONTENT: 分镜包含禁止发布的政治敏感词：${terms}`,
+        );
+      }
+      // This should normally be rejected by parseEpisodeScriptOutput. Keep an
+      // explicit production boundary so a future parser relaxation cannot let
+      // a vague hook reach persistence.
+      if (!hasConcreteAudienceQuestion(creative.episodeScript.emotionalHook)) {
+        throw new Error("INVALID_EMOTIONAL_HOOK: ending hook must be a concrete audience question.");
+      }
     }
 
     // PRE_WRITE_CHECK is model-facing scaffolding, not a source of truth. The

@@ -49,7 +49,12 @@ import {
 import { loadNarrativeMemorySeed, loadSnapshotCurrentStateFacts } from "../state/runtime-state-store.js";
 import { renderEpisodeSummariesProjection } from "../state/state-projections.js";
 import { recordReaderClaimReveals } from "../state/claim-visibility.js";
-import { saveCanonBundle } from "../state/canon-store.js";
+import {
+  DEFAULT_UNCLAIMED_FACTS_BACKLOG_THRESHOLD,
+  hasUnclaimedFactsBacklog,
+  loadUnclaimedFacts,
+  saveCanonBundle,
+} from "../state/canon-store.js";
 import type { CompiledEpisodeClaims } from "../utils/episode-claim-compiler.js";
 import { detectVisibleRevealClaimIds } from "../utils/claim-gate.js";
 import { validateEpisodeMemoCommitments, validateMemoInternalConsistency } from "../utils/episode-memo-commitments.js";
@@ -392,6 +397,8 @@ export interface PipelineConfig {
     readonly maxRevisionCallsPerEpisode?: number;
     readonly maxSettlementCallsPerEpisode?: number;
   };
+  /** Block new planning when the explicit Canon-refresh queue becomes unsafe. */
+  readonly unclaimedFactsBacklogThreshold?: number;
   /**
    * "auto" (default): writeNextEpisode runs the audit→revise loop inline.
    * "manual": stop right after the draft (no auto audit/revise) so review/revise
@@ -1598,50 +1605,15 @@ export class PipelineRunner {
 
       const writer = new WriterAgent(this.agentCtxFor("writer", bookId));
       this.logStage(stageLanguage, { zh: "撰写剧集草稿", en: "writing episode draft" });
-      // Transient model jitter can make both the initial response and the
-      // writer's bounded repair unparseable (observed twice in a 20-episode
-      // paid run; a manual `write next` retry always succeeded). Regenerate
-      // once from scratch before failing the episode, keep the failed
-      // attempt's tokens in the accounting, and persist the raw output so the
-      // failure stays diagnosable.
-      let output: WriteEpisodeOutput | undefined;
-      let writerFailedUsage: TokenUsageSummary | undefined;
-      for (let attempt = 1; attempt <= 2; attempt += 1) {
-        try {
-          output = await writer.writeEpisode({
-            book,
-            bookDir,
-            episodeNumber,
-            ...writeInput,
-            lengthSpec,
-            ...(episodeDurationSeconds ? { durationSecondsOverride: episodeDurationSeconds } : {}),
-          });
-          break;
-        } catch (error) {
-          if (!isWriterOutputParseFailure(error)) throw error;
-          const failedUsage = (error as { tokenUsage?: TokenUsageSummary }).tokenUsage;
-          if (failedUsage) {
-            writerFailedUsage = {
-              promptTokens: (writerFailedUsage?.promptTokens ?? 0) + failedUsage.promptTokens,
-              completionTokens: (writerFailedUsage?.completionTokens ?? 0) + failedUsage.completionTokens,
-              totalTokens: (writerFailedUsage?.totalTokens ?? 0) + failedUsage.totalTokens,
-            };
-          }
-          if (attempt < 2) {
-            this.config.logger?.warn(
-              `[writer] 第${episodeNumber}集分镜稿解析失败（第${attempt}次），重新生成一次`,
-            );
-            continue;
-          }
-          const dumpPath = await this.dumpWriterRawOutput(bookDir, episodeNumber, error.rawOutput)
-            .catch(() => undefined);
-          if (dumpPath) {
-            error.message += `\n原始输出已留存：${dumpPath}`;
-          }
-          throw error;
-        }
-      }
-      if (!output) throw new Error(`writer produced no output for episode ${episodeNumber}`);
+      const { output, writerFailedUsage } = await this.writeEpisodeWithRetry({
+        writer,
+        book,
+        bookDir,
+        episodeNumber,
+        writeInput,
+        lengthSpec,
+        episodeDurationSeconds,
+      });
       const screenplayBook = book.format === "screenplay" || book.schemaVersion === "inkos-episode-v2";
       this.throwIfAborted();
       const writerCount = output.episodeScriptMetrics
@@ -1787,6 +1759,7 @@ export class PipelineRunner {
     await this.state.ensureControlDocuments(bookId);
     const book = await this.state.loadBookConfig(bookId);
     const bookDir = this.state.bookDir(bookId);
+    await this.assertCanonRefreshBacklog(bookId, bookDir);
     const episodeNumber = await this.state.getNextEpisodeNumber(bookId);
     const stageLanguage = await this.resolveBookLanguage(book);
     this.logStage(stageLanguage, { zh: "规划下一集意图", en: "planning next episode intent" });
@@ -2754,6 +2727,7 @@ export class PipelineRunner {
     const book = await this.state.loadBookConfig(bookId);
     const bookDir = this.state.bookDir(bookId);
     await this.assertNoPendingStateRepair(bookId);
+    await this.assertCanonRefreshBacklog(bookId, bookDir);
     const episodeNumber = await this.state.getNextEpisodeNumber(bookId);
     this.setOperationEpisode(bookId, episodeNumber);
     const stageLanguage = await this.resolveBookLanguage(book);
@@ -2801,15 +2775,17 @@ export class PipelineRunner {
     // 1. Write episode
     const writer = new WriterAgent(this.agentCtxFor("writer", bookId));
     this.logStage(stageLanguage, { zh: "撰写剧集草稿", en: "writing episode draft" });
-    let output = await writer.writeEpisode({
+    const { output: initialOutput, writerFailedUsage } = await this.writeEpisodeWithRetry({
+      writer,
       book,
       bookDir,
       episodeNumber,
-      ...writeInput,
+      writeInput,
       lengthSpec,
-      ...(episodeDurationSeconds ? { durationSecondsOverride: episodeDurationSeconds } : {}),
-      ...(temperatureOverride ? { temperatureOverride } : {}),
+      episodeDurationSeconds,
+      temperatureOverride,
     });
+    let output = initialOutput;
     this.throwIfAborted();
     // The previous handoff is authoritative for the next episode's incoming
     // contract. Models may omit a carried fact while still depicting it in
@@ -2844,6 +2820,13 @@ export class PipelineRunner {
 
     // Token usage accumulator
     let totalUsage: TokenUsageSummary = output.tokenUsage ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    if (writerFailedUsage) {
+      totalUsage = {
+        promptTokens: totalUsage.promptTokens + writerFailedUsage.promptTokens,
+        completionTokens: totalUsage.completionTokens + writerFailedUsage.completionTokens,
+        totalTokens: totalUsage.totalTokens + writerFailedUsage.totalTokens,
+      };
+    }
     let finalContent: string;
     let finalWordCount: number;
     let revised: boolean;
@@ -4341,6 +4324,16 @@ ${matrix}`,
     );
   }
 
+  private async assertCanonRefreshBacklog(bookId: string, bookDir: string): Promise<void> {
+    const unclaimed = await loadUnclaimedFacts(bookDir);
+    const threshold = this.config.unclaimedFactsBacklogThreshold
+      ?? DEFAULT_UNCLAIMED_FACTS_BACKLOG_THRESHOLD;
+    if (!hasUnclaimedFactsBacklog(unclaimed, threshold)) return;
+    throw new Error(
+      `CANON_REFRESH_REQUIRED: ${unclaimed.facts.length} unclaimed episode facts exceed the ${threshold}-fact backlog threshold for ${bookId}. Run \`inkos canon refresh ${bookId}\` and review the resulting claims before planning or writing another episode.`,
+    );
+  }
+
   private async loadWriterEpisodeContextSnapshot(
     bookId: string,
     bookDir: string,
@@ -4968,6 +4961,68 @@ ${matrix}`,
    * message points at it so a failed `write next` is debuggable instead of
    * evaporating with the process.
    */
+  /**
+   * Write an episode through the WriterAgent with one bounded retry on output
+   * parse failure. Transient model jitter can make both the initial response
+   * and the writer's internal repair unparseable (observed in paid production
+   * runs; a retry from scratch almost always succeeded). All write paths must
+   * share this retry so `write next` / `auto` batch production gets the same
+   * resilience as `write draft`; the failed attempts' tokens stay in the
+   * accounting and the final raw output is persisted for diagnosis.
+   */
+  private async writeEpisodeWithRetry(params: {
+    readonly writer: WriterAgent;
+    readonly book: BookConfig;
+    readonly bookDir: string;
+    readonly episodeNumber: number;
+    readonly writeInput: ReturnType<PipelineRunner["prepareWriteInput"]> extends Promise<infer T> ? T : never;
+    readonly lengthSpec: LengthSpec;
+    readonly episodeDurationSeconds?: number;
+    readonly temperatureOverride?: number;
+  }): Promise<{ readonly output: WriteEpisodeOutput; readonly writerFailedUsage: TokenUsageSummary | undefined }> {
+    const { writer, book, bookDir, episodeNumber, writeInput, lengthSpec, episodeDurationSeconds, temperatureOverride } = params;
+    let output: WriteEpisodeOutput | undefined;
+    let writerFailedUsage: TokenUsageSummary | undefined;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        output = await writer.writeEpisode({
+          book,
+          bookDir,
+          episodeNumber,
+          ...writeInput,
+          lengthSpec,
+          ...(episodeDurationSeconds ? { durationSecondsOverride: episodeDurationSeconds } : {}),
+          ...(temperatureOverride ? { temperatureOverride } : {}),
+        });
+        break;
+      } catch (error) {
+        if (!isWriterOutputParseFailure(error)) throw error;
+        const failedUsage = (error as { tokenUsage?: TokenUsageSummary }).tokenUsage;
+        if (failedUsage) {
+          writerFailedUsage = {
+            promptTokens: (writerFailedUsage?.promptTokens ?? 0) + failedUsage.promptTokens,
+            completionTokens: (writerFailedUsage?.completionTokens ?? 0) + failedUsage.completionTokens,
+            totalTokens: (writerFailedUsage?.totalTokens ?? 0) + failedUsage.totalTokens,
+          };
+        }
+        if (attempt < 2) {
+          this.config.logger?.warn(
+            `[writer] 第${episodeNumber}集分镜稿解析失败（第${attempt}次），重新生成一次`,
+          );
+          continue;
+        }
+        const dumpPath = await this.dumpWriterRawOutput(bookDir, episodeNumber, error.rawOutput)
+          .catch(() => undefined);
+        if (dumpPath) {
+          error.message += `\n原始输出已留存：${dumpPath}`;
+        }
+        throw error;
+      }
+    }
+    if (!output) throw new Error(`writer produced no output for episode ${episodeNumber}`);
+    return { output, writerFailedUsage };
+  }
+
   private async dumpWriterRawOutput(
     bookDir: string,
     episodeNumber: number,

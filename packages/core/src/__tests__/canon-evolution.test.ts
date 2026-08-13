@@ -5,7 +5,14 @@ import { join } from "node:path";
 import { AssetRegistrySchema, CanonClaimSchema, emptyAssetRegistry } from "../models/canon.js";
 import { createEpisodeScript } from "./episode-test-fixtures.js";
 import { applyEpisodeCanonUpdates, deriveEpisodeCanonUpdates } from "../state/canon-evolution.js";
-import { loadAssetRegistry, loadClaimsFile, loadUnclaimedFacts, saveAssetRegistry, saveClaimsFile } from "../state/canon-store.js";
+import {
+  hasUnclaimedFactsBacklog,
+  loadAssetRegistry,
+  loadClaimsFile,
+  loadUnclaimedFacts,
+  saveAssetRegistry,
+  saveClaimsFile,
+} from "../state/canon-store.js";
 import { collectUnclaimedEpisodeFacts } from "../state/canon-evolution.js";
 
 function claim(overrides: Partial<ReturnType<typeof CanonClaimSchema.parse>> = {}) {
@@ -180,6 +187,21 @@ describe("applyEpisodeCanonUpdates", () => {
     const covered = claim(); // content "Taryn controlled the archive seal."
     const facts = collectUnclaimedEpisodeFacts({ script, claims: [covered] });
     expect(facts).not.toContain("Taryn controlled the seal");
+  });
+});
+
+describe("unclaimed canon backlog", () => {
+  it("requires an explicit refresh only once the configured backlog threshold is reached", () => {
+    const facts = {
+      version: 1 as const,
+      updatedAt: "2026-08-13T00:00:00.000Z",
+      facts: Array.from({ length: 3 }, (_, index) => ({
+        fact: `fact-${index + 1}`,
+        sourceEpisode: index + 1,
+      })),
+    };
+    expect(hasUnclaimedFactsBacklog(facts, 3)).toBe(true);
+    expect(hasUnclaimedFactsBacklog(facts, 4)).toBe(false);
   });
 });
 

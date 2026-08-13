@@ -199,6 +199,47 @@ describe("runEpisodeReviewCycle v9", () => {
     });
   });
 
+  it("repairs critical blockers before non-blocking warnings to preserve local patch eligibility", async () => {
+    const critical: AuditIssue = {
+      severity: "critical",
+      category: "emotional-hook",
+      description: "Ending hook is not a concrete question.",
+      suggestion: "Write a concrete audience question.",
+      repairScope: "local",
+    };
+    const structuralWarning: AuditIssue = {
+      severity: "warning",
+      category: "cross-episode-shot-repeat",
+      description: "Several shots repeat a recent episode.",
+      suggestion: "Vary the stage business.",
+      repairScope: "structural",
+    };
+    const auditEpisode = vi.fn()
+      .mockResolvedValueOnce(createAuditResult({ passed: false, overallScore: 70, issues: [critical, structuralWarning] }))
+      .mockResolvedValueOnce(createAuditResult({ passed: true, overallScore: 90, issues: [structuralWarning] }));
+    const reviseEpisode = vi.fn().mockResolvedValue({
+      revisedContent: "r".repeat(200),
+      episodeDurationSeconds: 200,
+      fixedIssues: ["emotional hook"],
+      updatedState: "",
+      updatedLedger: "",
+      updatedHooks: "",
+      changeKind: "patch",
+      tokenUsage: ZERO_USAGE,
+    });
+
+    await runEpisodeReviewCycle({
+      ...baseParams,
+      initialOutput: { content: "i".repeat(200), episodeDurationSeconds: 200, postWriteErrors: [], postWriteWarnings: [] },
+      createReviser: () => ({ reviseEpisode }),
+      evaluateEpisode: createEvaluation(auditEpisode),
+      normalizeDraftLengthIfNeeded: async (content) => ({ content, episodeDurationSeconds: content.length, applied: false, tokenUsage: ZERO_USAGE }),
+      maxReviewIterations: 1,
+    });
+
+    expect(reviseEpisode.mock.calls[0]?.[3]).toEqual([critical]);
+  });
+
   it("does not auto-revise when audit output parsing failed", async () => {
     const originalContent = "b".repeat(200);
     const auditEpisode = vi.fn().mockResolvedValue(createAuditResult({

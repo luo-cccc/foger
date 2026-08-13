@@ -22,6 +22,7 @@ export interface EpisodeExecutionHookAction {
   readonly action: "advance" | "resolve";
   readonly description: string;
   readonly anchors: ReadonlyArray<string>;
+  readonly evidence: ReadonlyArray<string>;
 }
 
 export interface EpisodeDeferredHook {
@@ -279,6 +280,7 @@ function hookAction(
     action,
     description: truncate(entry.descriptor),
     anchors: extractDirectiveAnchors(entry.descriptor),
+    evidence: entry.evidence,
   };
 }
 

@@ -384,9 +384,17 @@ export async function runEpisodeReviewCycle(params: {
       const blockingIssues = currentAudit.revisionBlockingIssues.filter(
         (issue) => issue.severity !== "info",
       );
-      const actionableIssues = blockingIssues.filter(
+      const writerOwnedIssues = blockingIssues.filter(
         (issue) => resolveAuditIssueOwner(issue) === "writer",
       );
+      // A critical failure blocks the episode; warnings do not. Sending both
+      // together needlessly turns a field-level fix (for example an emotional
+      // hook) into a structural rewrite because the patch path requires every
+      // cited issue to be local. Repair blockers first, then leave warnings in
+      // the persisted review evidence for a deliberate follow-up pass.
+      const actionableIssues = currentAudit.criticalCount > 0
+        ? writerOwnedIssues.filter((issue) => issue.severity === "critical")
+        : writerOwnedIssues;
       const upstreamIssues = blockingIssues.filter(
         (issue) => resolveAuditIssueOwner(issue) !== "writer",
       );

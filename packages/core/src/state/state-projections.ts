@@ -18,18 +18,33 @@ export function renderHooksProjection(
   options?: { readonly currentEpisode?: number },
 ): string {
   const title = language === "en" ? "# Pending Hooks" : "# 伏笔池";
+  const hasLifecycleEvidence = state.hooks.some((hook) => (
+    hook.targetPayoffEpisode !== undefined
+    || hook.seedEvidence?.length
+    || hook.advanceEvidence?.length
+    || hook.payoffEvidence?.length
+    || hook.lastVerifiedEvidenceEpisode !== undefined
+  ));
   // Phase 7 + hotfixes 1 & 2: depends_on / pays_off_in_arc / core_hook / half_life / promoted
   // are visible columns, so writer and reviewer both see the causal chain, planned payoff arc,
   // stale threshold, and promotion flag. stale / blocked diagnostic flags are appended to the
   // status cell.
   const headers = language === "en"
     ? [
-      "| hook_id | start_episode | type | status | last_advanced_episode | expected_payoff | payoff_timing | depends_on | pays_off_in_arc | core_hook | half_life | promoted | notes |",
-      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      hasLifecycleEvidence
+        ? "| hook_id | start_episode | type | status | last_advanced_episode | expected_payoff | payoff_timing | depends_on | pays_off_in_arc | core_hook | half_life | promoted | target_payoff_episode | seed_evidence | advance_evidence | payoff_evidence | last_verified_evidence_episode | notes |"
+        : "| hook_id | start_episode | type | status | last_advanced_episode | expected_payoff | payoff_timing | depends_on | pays_off_in_arc | core_hook | half_life | promoted | notes |",
+      hasLifecycleEvidence
+        ? "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+        : "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     : [
-      "| hook_id | 起始剧集 | 类型 | 状态 | 最近推进 | 预期回收 | 回收节奏 | 上游依赖 | 回收篇章 | 核心 | 半衰期 | 升级 | 备注 |",
-      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      hasLifecycleEvidence
+        ? "| hook_id | 起始剧集 | 类型 | 状态 | 最近推进 | 预期回收 | 回收节奏 | 上游依赖 | 回收篇章 | 核心 | 半衰期 | 升级 | 计划回收集 | 埋设证据 | 推进证据 | 回收证据 | 最近核验集 | 备注 |"
+        : "| hook_id | 起始剧集 | 类型 | 状态 | 最近推进 | 预期回收 | 回收节奏 | 上游依赖 | 回收篇章 | 核心 | 半衰期 | 升级 | 备注 |",
+      hasLifecycleEvidence
+        ? "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+        : "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ];
 
   const currentEpisode = options?.currentEpisode;
@@ -63,6 +78,13 @@ export function renderHooksProjection(
           renderCoreHookCell(hook.coreHook === true, language),
           renderHalfLifeCell(hook.halfLifeEpisodes),
           renderPromotedCell(hook.promoted, language),
+          ...(hasLifecycleEvidence ? [
+            hook.targetPayoffEpisode ?? "",
+            renderEvidenceCell(hook.seedEvidence),
+            renderEvidenceCell(hook.advanceEvidence),
+            renderEvidenceCell(hook.payoffEvidence),
+            hook.lastVerifiedEvidenceEpisode ?? "",
+          ] : []),
           hook.notes,
         ].map(escapeTableCell).join(" | ")
       } |`;
@@ -90,6 +112,10 @@ function renderPromotedCell(value: boolean | undefined, language: "zh" | "en"): 
   if (value === undefined) return "";
   if (language === "en") return value ? "true" : "false";
   return value ? "是" : "否";
+}
+
+function renderEvidenceCell(values: ReadonlyArray<string> | undefined): string {
+  return values?.map((value) => value.trim()).filter(Boolean).join(" / ") ?? "";
 }
 
 export function renderEpisodeSummariesProjection(

@@ -165,7 +165,7 @@ function buildGovernedInputContract(language: "zh" | "en", governed: boolean): s
 - Canon, the previous handoff state, information permissions, and explicit prohibitions are authoritative.
 - Follow active rule-stack overrides only at the scope they name; do not use them to re-plan the episode.
 - Use only memo-approved open / advance / resolve / defer hook operations, each with a shot-level carrier.
-- Treat local result, outgoing pressure, emotional hook and end state as distinct deliverables.
+- Treat local result, outgoing pressure, emotional hook and end state as distinct deliverables. The emotional hook MUST be a concrete audience question about a relationship, danger, identity, sacrifice, or choice (for example: "Will she hand him to the police before dawn?"); a mood label or vague promise is invalid.
 - If an English Variance Brief is provided, obey its episode-level scene obligation and avoid its listed phrase, opening, and ending patterns.
 - In multi-character scenes, include at least one resistance-bearing exchange that changes leverage, knowledge, or relationship pressure.
 - When facts conflict, stop rather than inventing an explanation, off-screen event, new rule, or surprise character.`;
@@ -177,7 +177,7 @@ function buildGovernedInputContract(language: "zh" | "en", governed: boolean): s
 - 正典、上一集交接状态、信息权限和显式禁令属于权威事实。
 - 规则栈覆盖只在声明范围内生效，不得借此重新规划整集。
 - 只执行 memo 允许的 open / advance / resolve / defer Hook 操作，每项都要有镜头证据。
-- 当集兑现、出去压力、情绪钩子和结尾状态是四个不同交付项，不能互相冒充。
+- 当集兑现、出去压力、情绪钩子和结尾状态是四个不同交付项，不能互相冒充。情绪钩子必须写成具体的观众疑问，且指向关系、危险、身份、牺牲或选择（例如“她会在天亮前把他交给警察吗？”）；情绪标签或“下集揭晓”式空话无效。
 - 事实冲突时不得编造解释、画外事件、新规则或突然登场人物来补洞。`;
 }
 
