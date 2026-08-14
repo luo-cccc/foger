@@ -36,11 +36,11 @@ describe("claim gates", () => {
       id: "s-1",
       claimType: "secret_truth",
       content: "宗门高层早已知道真相。",
-      visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["林月"] },
+      visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["林己"] },
     });
 
     const issues = runPreWriteClaimGate({
-      text: "本章让林月知道 s-1，宗门高层早已知道真相。",
+      text: "本章让林己知道 s-1，宗门高层早已知道真相。",
       compiled: compiled({ mustHide: [secret] }),
       phase: "pre",
     });
@@ -55,7 +55,7 @@ describe("claim gates", () => {
       id: "s-1",
       claimType: "secret_truth",
       content: "宗门高层早已知道真相。",
-      visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["林月"] },
+      visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["林己"] },
     });
 
     const issues = runPreWriteClaimGate({
@@ -74,11 +74,11 @@ describe("claim gates", () => {
       id: "s-1",
       claimType: "secret_truth",
       content: "宗门高层早已知道真相。",
-      visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["林月"] },
+      visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["林己"] },
     });
 
     const issues = runPostWriteClaimGate({
-      text: "林月只是在门外听见风声，却没有真正触到核心秘密。",
+      text: "林己只是在门外听见风声，却没有真正触到核心秘密。",
       compiled: compiled({ usable: [secret], revealNow: [secret] }),
       phase: "post",
     });
@@ -95,7 +95,7 @@ describe("claim gates", () => {
         id: "s-1",
         claimType: "secret_truth",
         content: "宗门高层早已知道七号门真相。",
-        visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["林月"] },
+        visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["林己"] },
       });
       const compiledCase = compiled({
         usable: [secret],
@@ -105,7 +105,7 @@ describe("claim gates", () => {
         revealNow: [secret],
       });
       const issues = runPostWriteClaimGate({
-        text: "林月只是在门外听见风声，却没有真正触到核心秘密。",
+        text: "林己只是在门外听见风声，却没有真正触到核心秘密。",
         compiled: compiledCase,
         phase: "post",
       });
@@ -120,11 +120,11 @@ describe("claim gates", () => {
       id: "s-2",
       claimType: "secret_truth",
       content: "宗门高层早已知道七号门真相。",
-      visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["林月"] },
+      visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["林己"] },
     });
 
     const issues = runPostWriteClaimGate({
-      text: "林月终于看明白，宗门高层一直知情，七号门根本不是事故。",
+      text: "林己终于看明白，宗门高层一直知情，七号门根本不是事故。",
       compiled: compiled({ usable: [secret], revealNow: [secret] }),
       phase: "post",
     });
@@ -137,11 +137,11 @@ describe("claim gates", () => {
       id: "s-1",
       claimType: "secret_truth",
       content: "宗门高层早已知道真相。",
-      visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["林月"] },
+      visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["林己"] },
     });
 
     const issues = runPostWriteClaimGate({
-      text: "林月停在门外，忽然明白宗门高层早已知道真相。",
+      text: "林己停在门外，忽然明白宗门高层早已知道真相。",
       compiled: compiled({ mustHide: [secret] }),
       phase: "post",
     });
@@ -173,7 +173,7 @@ describe("claim gates", () => {
       id: "s-2",
       claimType: "secret_truth",
       content: "宗门高层早已知道七号门真相。",
-      visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["林月"] },
+      visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["林己"] },
     });
 
     const issues = runPostWriteClaimGate({
@@ -192,11 +192,11 @@ describe("claim gates", () => {
       id: "s-3",
       claimType: "secret_truth",
       content: "内城旧契藏在七号门账本里。",
-      visibility: { readerKnownFrom: 30, characterKnownBy: ["阿泽"], hiddenFrom: ["林月"] },
+      visibility: { readerKnownFrom: 30, characterKnownBy: ["阿川"], hiddenFrom: ["林己"] },
     });
 
     const issues = runPostWriteClaimGate({
-      text: "林月终于发现七号门账本，意识到内城旧契藏在那里。",
+      text: "林己终于发现七号门账本，意识到内城旧契藏在那里。",
       compiled: compiled({ mustHide: [secret] }),
       phase: "post",
     });
@@ -210,12 +210,12 @@ describe("claim gates", () => {
     const secret = claim({
       id: "mentor-secret",
       claimType: "secret_truth",
-      content: "沈牧之并非逃亡，而是故意制造失踪假象，让陆竟弛从外部追查；他是举报者。",
-      visibility: { readerKnownFrom: 20, characterKnownBy: [], hiddenFrom: ["陆竟弛"] },
+      content: "沈牧之并非逃亡，而是故意制造失踪假象，让陆远川从外部追查；他是举报者。",
+      visibility: { readerKnownFrom: 20, characterKnownBy: [], hiddenFrom: ["陆远川"] },
     });
 
     const issues = runPostWriteClaimGate({
-      text: "陆竟弛回到汇通银行，发现导师沈牧之失踪前留下了一把旧钥匙。",
+      text: "陆远川回到汇通银行，发现导师沈牧之失踪前留下了一把旧钥匙。",
       compiled: compiled({ mustHide: [secret] }),
       phase: "post",
     });
@@ -227,12 +227,12 @@ describe("claim gates", () => {
     const secret = claim({
       id: "mentor-secret",
       claimType: "secret_truth",
-      content: "沈牧之并非逃亡，而是故意制造失踪假象，让陆竟弛从外部追查；他是举报者。",
-      visibility: { readerKnownFrom: 20, characterKnownBy: [], hiddenFrom: ["陆竟弛"] },
+      content: "沈牧之并非逃亡，而是故意制造失踪假象，让陆远川从外部追查；他是举报者。",
+      visibility: { readerKnownFrom: 20, characterKnownBy: [], hiddenFrom: ["陆远川"] },
     });
 
     const issues = runPostWriteClaimGate({
-      text: "陆竟弛终于明白，沈牧之并非逃亡，而是故意制造失踪假象，以举报者身份引他从外部追查。",
+      text: "陆远川终于明白，沈牧之并非逃亡，而是故意制造失踪假象，以举报者身份引他从外部追查。",
       compiled: compiled({ mustHide: [secret] }),
       phase: "post",
     });
@@ -264,9 +264,9 @@ describe("claim gates", () => {
       id: "p-1",
       domain: "protagonist",
       claimType: "character_exception",
-      content: "林月能听见誓契铜片的回声。",
-      scope: { appliesTo: ["林月"], excludes: ["配角"] },
-      authority: { source: "roles/林月", priority: "strong" },
+      content: "林己能听见誓契铜片的回声。",
+      scope: { appliesTo: ["林己"], excludes: ["配角"] },
+      authority: { source: "roles/林己", priority: "strong" },
       constraints: {
         nonGeneralizable: true,
         requiresCost: [],
@@ -275,7 +275,7 @@ describe("claim gates", () => {
     });
 
     const issues = runPostWriteClaimGate({
-      text: "林月能听见誓契铜片的回声。此后配角获得同能力，人人都能听见铜片。",
+      text: "林己能听见誓契铜片的回声。此后配角获得同能力，人人都能听见铜片。",
       compiled: compiled({ usable: [exception], noGeneralize: [exception] }),
       phase: "post",
     });
@@ -289,12 +289,12 @@ describe("claim gates", () => {
     const power = claim({
       id: "pow-1",
       domain: "power",
-      content: "林月强行催动誓契铜片。",
+      content: "林己强行催动誓契铜片。",
       constraints: { requiresCost: ["头痛"], forbiddenUses: [] },
     });
 
     const issues = runPostWriteClaimGate({
-      text: "林月强行催动誓契铜片，门锁随即打开。",
+      text: "林己强行催动誓契铜片，门锁随即打开。",
       compiled: compiled({ usable: [power], costRequired: [power] }),
       phase: "post",
     });
@@ -327,13 +327,13 @@ describe("claim gates", () => {
       id: "claim-010",
       domain: "character",
       claimType: "character_exception",
-      content: "老周作为档案室技术员，认识沈鸢并答应过她不告诉林澈；他通过维修磁带机间接协助林澈。",
-      scope: { appliesTo: ["老周"] },
-      constraints: { requiresCost: ["老周被停职"], forbiddenUses: [] },
+      content: "周甲作为档案室技术员，认识沈乙并答应过她不告诉林丙；他通过维修磁带机间接协助林丙。",
+      scope: { appliesTo: ["周甲"] },
+      constraints: { requiresCost: ["周甲被停职"], forbiddenUses: [] },
     });
 
     const issues = runPostWriteClaimGate({
-      text: "台面另一头是同事老周的维修笔记。林澈没有翻动，只把视线收回到磁带上。",
+      text: "台面另一头是同事周甲的维修笔记。林丙没有翻动，只把视线收回到磁带上。",
       compiled: compiled({ usable: [relationship], costRequired: [relationship] }),
       phase: "post",
     });
@@ -346,13 +346,13 @@ describe("claim gates", () => {
       id: "claim-010-active",
       domain: "character",
       claimType: "character_exception",
-      content: "老周通过维修磁带机间接协助林澈。",
-      scope: { appliesTo: ["老周"] },
-      constraints: { requiresCost: ["老周被停职"], forbiddenUses: [] },
+      content: "周甲通过维修磁带机间接协助林丙。",
+      scope: { appliesTo: ["周甲"] },
+      constraints: { requiresCost: ["周甲被停职"], forbiddenUses: [] },
     });
 
     const issues = runPostWriteClaimGate({
-      text: "老周替林澈修好磁带机，又帮他把卡住的磁带取了出来。",
+      text: "周甲替林丙修好磁带机，又帮他把卡住的磁带取了出来。",
       compiled: compiled({ usable: [relationship], costRequired: [relationship] }),
       phase: "post",
     });
@@ -388,7 +388,7 @@ describe("claim gates", () => {
     });
 
     const issues = runPostWriteClaimGate({
-      text: "沈砚修复第一道星纹，失去童年记忆，也从回声里取得姐姐失踪前的线索。城防司随即锁定了他。",
+      text: "沈甲修复第一道星纹，失去童年记忆，也从回声里取得姐姐失踪前的线索。城防司随即锁定了他。",
       compiled: compiled({ usable: [prohibition] }),
       phase: "post",
     });
@@ -404,7 +404,7 @@ describe("claim gates", () => {
     });
 
     const issues = runPostWriteClaimGate({
-      text: "量子雾对记忆的干扰具有实时性。回溯仪验证了哈希签名、时间戳偏移和军用加密频段，林澈据此缩小了信号来源。",
+      text: "量子雾对记忆的干扰具有实时性。回溯仪验证了哈希签名、时间戳偏移和军用加密频段，林丙据此缩小了信号来源。",
       compiled: compiled({ usable: [prohibition] }),
       phase: "post",
     });
@@ -434,11 +434,11 @@ describe("claim gates", () => {
     const prohibition = claim({
       id: "ban-breakthrough",
       claimType: "prohibition",
-      content: "禁止沈砚通过“顿悟”或“爆种”解决核心冲突",
+      content: "禁止沈甲通过“顿悟”或“爆种”解决核心冲突",
     });
 
     const issues = runPreWriteClaimGate({
-      text: "本章禁止沈砚顿悟，也不能让他爆种；修复必须基于已有知识。",
+      text: "本章禁止沈甲顿悟，也不能让他爆种；修复必须基于已有知识。",
       compiled: compiled({ usable: [prohibition] }),
       phase: "pre",
     });
@@ -490,7 +490,7 @@ describe("claim gates", () => {
     });
 
     const issues = runPostWriteClaimGate({
-      text: "沈砚修复星纹后取得一段坐标线索，因此在追查姐姐时更有胜算，但能力没有自动提升。",
+      text: "沈甲修复星纹后取得一段坐标线索，因此在追查姐姐时更有胜算，但能力没有自动提升。",
       compiled: compiled({ usable: [prohibition] }),
       phase: "post",
     });
@@ -508,7 +508,7 @@ describe("claim gates", () => {
     });
 
     const issues = runPostWriteClaimGate({
-      text: "林月走进内城账房，无视商会令牌的规矩，直接调阅账本。",
+      text: "林己走进内城账房，无视商会令牌的规矩，直接调阅账本。",
       compiled: compiled({ usable: [rule] }),
       phase: "post",
     });
@@ -528,7 +528,7 @@ describe("claim gates", () => {
     });
 
     const issues = runPostWriteClaimGate({
-      text: "林月凭借执事特批的授权进入内城账房，调阅账本时交出商会令牌。",
+      text: "林己凭借执事特批的授权进入内城账房，调阅账本时交出商会令牌。",
       compiled: compiled({ usable: [rule] }),
       phase: "post",
     });
@@ -546,7 +546,7 @@ describe("claim gates", () => {
     });
 
     const issues = runPostWriteClaimGate({
-      text: "林月绕过誓契限制，直接替阿泽偿还欠债，没有任何代价。",
+      text: "林己绕过誓契限制，直接替阿川偿还欠债，没有任何代价。",
       compiled: compiled({ usable: [hardRule], costRequired: [hardRule] }),
       phase: "post",
     });
@@ -567,7 +567,7 @@ describe("claim gates", () => {
     });
 
     const issues = runPostWriteClaimGate({
-      text: "林月凭借旧契漏洞替阿泽偿还欠债，但誓契立刻折损寿数作为代价。",
+      text: "林己凭借旧契漏洞替阿川偿还欠债，但誓契立刻折损寿数作为代价。",
       compiled: compiled({ usable: [hardRule], costRequired: [hardRule] }),
       phase: "post",
     });
@@ -581,12 +581,12 @@ describe("claim gates", () => {
       id: "system-fact",
       domain: "organization",
       claimType: "institution_rule",
-      content: "汇通银行内部存在代号清道夫的坏账处理系统。",
+      content: "汇通银行内部存在代号清账人的坏账处理系统。",
       constraints: { requiresCost: ["遭到系统追杀"], forbiddenUses: [] },
     });
 
     const issues = runPostWriteClaimGate({
-      text: "旧终端的目录里出现了清道夫三个字，陆竟弛把它抄进笔记。",
+      text: "旧终端的目录里出现了清账人三个字，陆远川把它抄进笔记。",
       compiled: compiled({ usable: [systemFact], costRequired: [systemFact] }),
       phase: "post",
     });
@@ -607,8 +607,26 @@ describe("claim gates", () => {
     });
 
     const issues = runPostWriteClaimGate({
-      text: "林月想到誓契的旧事，直接推门走进丹房，仍然打算按规矩偿还自己的欠债。",
+      text: "林己想到誓契的旧事，直接推门走进丹房，仍然打算按规矩偿还自己的欠债。",
       compiled: compiled({ usable: [hardRule], costRequired: [hardRule] }),
+      phase: "post",
+    });
+
+    expect(issues.map((issue) => issue.category)).not.toContain("claim-hard-rule-bypass");
+  });
+
+  it("does not treat a spatial visual verb (目光越过人群) as a rule bypass signal", () => {
+    // Spatial use of 越过 must not be interpreted as circumventing a rule.
+    const hardRule = claim({
+      id: "world-iron-rule-4",
+      claimType: "objective_rule",
+      content: "谢策看破不说破。他逐渐发现谢安近似未卜先知，却永远不点破，只偶尔试探、吓唬或说'我什么都没教过你'。",
+      authority: { source: "story_frame", priority: "hard" },
+    });
+
+    const issues = runPostWriteClaimGate({
+      text: "谢策站在人群后方，双臂抱胸，目光越过人群落在谢安身上。",
+      compiled: compiled({ usable: [hardRule] }),
       phase: "post",
     });
 
@@ -620,7 +638,7 @@ describe("claim gates", () => {
       claim({
         id: "world-memory",
         claimType: "objective_rule",
-        content: "锚点集团通过维护系统执行排他性的记忆校准，回声体不能生成新记忆。",
+        content: "锚点集团通过维护系统执行排他性的记忆校准，镜像体不能生成新记忆。",
         authority: { source: "story_frame", priority: "hard" },
       }),
       claim({
@@ -632,7 +650,7 @@ describe("claim gates", () => {
       claim({
         id: "world-pov",
         claimType: "objective_rule",
-        content: "叙事严格限定在林澈的第三人称有限视角，推理必须有线索。",
+        content: "叙事严格限定在林丙的第三人称有限视角，推理必须有线索。",
         authority: { source: "story_frame", priority: "hard" },
       }),
     ];
@@ -640,7 +658,7 @@ describe("claim gates", () => {
     const issues = runPostWriteClaimGate({
       text: [
         "塔基铭牌刻着：S13-废弃-无需维护。",
-        "林澈沿着湿冷的雾港街道检查信号参数。",
+        "林丙沿着湿冷的雾港街道检查信号参数。",
         "系统把设备老化噪声归入低优先级，无需人工复核。",
         "他依据终端日志和螺栓痕迹继续推理。",
       ].join("\n"),

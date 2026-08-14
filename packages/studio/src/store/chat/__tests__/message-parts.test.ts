@@ -238,7 +238,7 @@ describe("buildPartsFromEvents", () => {
           "story/episode_summaries.md#recent_titles",
           "story/pending_hooks.md#active",
           "story/outline/volume_map.md#volume_2",
-          "story/roles/主要角色/林月.md",
+          "story/roles/主要角色/林己.md",
         ],
       },
     ]);

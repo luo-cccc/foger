@@ -138,7 +138,7 @@ describe("validateRuntimeState", () => {
         rows: [{
           episode: 1,
           title: "第一章",
-          characters: "林澈",
+          characters: "林丙",
           events: "发现广播",
           stateChanges: "开始调查",
           hookActivity: "H001 advanced",

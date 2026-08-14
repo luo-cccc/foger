@@ -52,7 +52,7 @@ describe("architect generateFoundation with reviseFrom option", () => {
           "=== SECTION: roles ===",
           "---ROLE---",
           "tier: major",
-          "name: 林辞",
+          "name: 林乙",
           "---CONTENT---",
           "主角",
           "",
@@ -69,10 +69,10 @@ describe("architect generateFoundation with reviseFrom option", () => {
 
     await agent.generateFoundation(testBook(), undefined, undefined, {
       reviseFrom: {
-        storyBible: "- 旧世界观：架空唐代\n- 旧主角：林辞",
+        storyBible: "- 旧世界观：架空唐代\n- 旧主角：林乙",
         volumeOutline: "## 第一卷\n- 1. 主角登场",
         bookRules: "## 规则\n- 禁现代词",
-        characterMatrix: "林辞 - 主角",
+        characterMatrix: "林乙 - 主角",
         userFeedback: "升级到段落式架构稿",
       },
     });
@@ -123,10 +123,10 @@ describe("pipeline.reviseFoundation", () => {
     try {
       // Construct a 旧书 on disk with 4 legacy files
       await mkdir(join(bookDir, "story"), { recursive: true });
-      await writeFile(join(bookDir, "story", "story_bible.md"), "# 旧书架构稿\n\n- 架空唐代\n- 主角林辞", "utf-8");
+      await writeFile(join(bookDir, "story", "story_bible.md"), "# 旧书架构稿\n\n- 架空唐代\n- 主角林乙", "utf-8");
       await writeFile(join(bookDir, "story", "volume_outline.md"), "## 第一卷\n- 主角登场", "utf-8");
       await writeFile(join(bookDir, "story", "book_rules.md"), "## 规则\n- 禁现代词", "utf-8");
-      await writeFile(join(bookDir, "story", "character_matrix.md"), "## 角色\n林辞 - 主角", "utf-8");
+      await writeFile(join(bookDir, "story", "character_matrix.md"), "## 角色\n林乙 - 主角", "utf-8");
       await writeFile(join(bookDir, "book.json"), JSON.stringify({
         id: "legacy-book", title: "旧书", platform: "qidian", genre: "xuanhuan",
         status: "active", schemaVersion: "inkos-episode-v2" as const, format: "screenplay" as const, targetEpisodes: 50, episodeDurationSeconds: 90, language: "zh",
@@ -142,7 +142,7 @@ describe("pipeline.reviseFoundation", () => {
         pendingHooks: "| hook_id |",
         storyFrame: "## 主题\n\n段落式主题",
         volumeMap: "## 段 1\n\n卷一段落",
-        roles: [{ tier: "major", name: "林辞", content: "主角段落描写" }],
+        roles: [{ tier: "major", name: "林乙", content: "主角段落描写" }],
       };
       vi.spyOn(ArchitectAgent.prototype, "generateFoundation").mockResolvedValue(mockFoundation);
       vi.spyOn(FoundationReviewerAgent.prototype, "review").mockResolvedValue({
@@ -163,7 +163,7 @@ describe("pipeline.reviseFoundation", () => {
       // New files created
       await expect(access(join(bookDir, "story", "outline", "story_frame.md"))).resolves.not.toThrow();
       await expect(access(join(bookDir, "story", "outline", "volume_map.md"))).resolves.not.toThrow();
-      await expect(access(join(bookDir, "story", "roles", "主要角色", "林辞.md"))).resolves.not.toThrow();
+      await expect(access(join(bookDir, "story", "roles", "主要角色", "林乙.md"))).resolves.not.toThrow();
       // Backup exists
       const storyEntries = await readdir(join(bookDir, "story"));
       const backupDir = storyEntries.find((e) => e.startsWith(".backup-phase4-"));
@@ -199,7 +199,7 @@ describe("pipeline.reviseFoundation", () => {
       await writeFile(join(bookDir, "story", "pending_hooks.md"), "| H001 | 1 | 主线 | open | 15 | ... 推进到 15 章 ... |", "utf-8");
       await writeFile(join(bookDir, "story", "particle_ledger.md"), "# 资源账本\n\n| 20 | 500 | 积累 | - | 10 | 510 | 第 20 章 |", "utf-8");
       await writeFile(join(bookDir, "story", "subplot_board.md"), "# 支线\n\n| S1 | 宫廷阴谋 | ... | 5 | 18 | 13 | active | 已推到 18 章 |", "utf-8");
-      await writeFile(join(bookDir, "story", "emotional_arcs.md"), "# 情感弧线\n\n| 林辞 | 15 | 愤怒 | 发现背叛 | 8 | 上升 |", "utf-8");
+      await writeFile(join(bookDir, "story", "emotional_arcs.md"), "# 情感弧线\n\n| 林乙 | 15 | 愤怒 | 发现背叛 | 8 | 上升 |", "utf-8");
       await writeFile(join(bookDir, "book.json"), JSON.stringify({
         id: "live-book", title: "写了 20 章的书", platform: "qidian", genre: "xuanhuan",
         status: "active", schemaVersion: "inkos-episode-v2" as const, format: "screenplay" as const, targetEpisodes: 50, episodeDurationSeconds: 90, language: "zh",
@@ -212,7 +212,7 @@ describe("pipeline.reviseFoundation", () => {
         currentState: "", pendingHooks: "| hook_id | ...（新生成，不该被写）|",
         storyFrame: "## 主题\n段落式",
         volumeMap: "## 段 1\n卷一",
-        roles: [{ tier: "major", name: "林辞", content: "新卡" }],
+        roles: [{ tier: "major", name: "林乙", content: "新卡" }],
       };
       vi.spyOn(ArchitectAgent.prototype, "generateFoundation").mockResolvedValue(mockFoundation);
       vi.spyOn(FoundationReviewerAgent.prototype, "review").mockResolvedValue({
@@ -273,7 +273,7 @@ describe("pipeline.reviseFoundation", () => {
         "## 段 1\n完整卷大纲描写。" + "b".repeat(5000),
         "utf-8");
       // roles/ 是权威，内容完整
-      await writeFile(join(bookDir, "story", "roles", "主要角色", "林辞.md"),
+      await writeFile(join(bookDir, "story", "roles", "主要角色", "林乙.md"),
         "## 核心标签\n冷静、执着\n\n## 主角线\n完整角色线，3000 字描写，反映复杂内在位移" + "c".repeat(3000),
         "utf-8");
       // story_bible.md / character_matrix.md 是 shim（只有指针和摘录）
@@ -281,7 +281,7 @@ describe("pipeline.reviseFoundation", () => {
         "# 故事圣经（已废弃）\n\n> 权威来源是 outline/story_frame.md\n\n## story_frame 摘录\n\n只有前 2000 字...",
         "utf-8");
       await writeFile(join(bookDir, "story", "character_matrix.md"),
-        "# 角色矩阵（已废弃）\n\n> 权威来源是 roles/ 目录\n\n## 主要角色\n\n- roles/主要角色/林辞.md",
+        "# 角色矩阵（已废弃）\n\n> 权威来源是 roles/ 目录\n\n## 主要角色\n\n- roles/主要角色/林乙.md",
         "utf-8");
       await writeFile(join(bookDir, "story", "book_rules.md"), "# 规则 shim", "utf-8");
       await writeFile(join(bookDir, "story", "volume_outline.md"), "## 卷一 shim", "utf-8");
@@ -298,7 +298,7 @@ describe("pipeline.reviseFoundation", () => {
           currentState: "", pendingHooks: "| hook_id |",
           storyFrame: "## 主题\n段落式 v2",
           volumeMap: "## 段 1\n卷一 v2",
-          roles: [{ tier: "major", name: "林辞", content: "新卡 v2" }],
+          roles: [{ tier: "major", name: "林乙", content: "新卡 v2" }],
         });
       vi.spyOn(FoundationReviewerAgent.prototype, "review").mockResolvedValue({
         passed: true, totalScore: 90, dimensions: [], overallFeedback: "ok",
@@ -318,7 +318,7 @@ describe("pipeline.reviseFoundation", () => {
       expect(options?.reviseFrom?.storyBible).toContain("完整的段落式世界观描写");
       expect(options?.reviseFrom?.storyBible).not.toContain("已废弃");
       expect(options?.reviseFrom?.characterMatrix).toContain("完整角色线，3000 字描写");
-      expect(options?.reviseFrom?.characterMatrix).not.toContain("roles/主要角色/林辞.md");  // shim 里才有文件路径列表
+      expect(options?.reviseFrom?.characterMatrix).not.toContain("roles/主要角色/林乙.md");  // shim 里才有文件路径列表
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -341,7 +341,7 @@ describe("pipeline.reviseFoundation", () => {
       await mkdir(join(bookDir, "story", "roles", "次要角色"), { recursive: true });
       await writeFile(join(bookDir, "story", "outline", "story_frame.md"), "## 主题", "utf-8");
       await writeFile(join(bookDir, "story", "outline", "volume_map.md"), "## 段 1", "utf-8");
-      await writeFile(join(bookDir, "story", "roles", "主要角色", "林辞.md"), "老卡", "utf-8");
+      await writeFile(join(bookDir, "story", "roles", "主要角色", "林乙.md"), "老卡", "utf-8");
       await writeFile(join(bookDir, "story", "roles", "主要角色", "要删掉的人.md"), "应该消失", "utf-8");
       await writeFile(join(bookDir, "story", "roles", "主要角色", "要改名的A.md"), "改名前", "utf-8");
       await writeFile(join(bookDir, "story", "roles", "次要角色", "老配角.md"), "老次要", "utf-8");
@@ -363,7 +363,7 @@ describe("pipeline.reviseFoundation", () => {
         currentState: "", pendingHooks: "| hook_id |",
         storyFrame: "## 主题\n新", volumeMap: "## 段 1\n新",
         roles: [
-          { tier: "major", name: "林辞", content: "新卡" },
+          { tier: "major", name: "林乙", content: "新卡" },
           { tier: "major", name: "改名后的B", content: "改名后" },
         ],
       });
@@ -379,7 +379,7 @@ describe("pipeline.reviseFoundation", () => {
       await runner.reviseFoundation("ghost-book", "精简角色");
 
       // 新输出的 2 个 role 应该存在
-      await expect(access(join(bookDir, "story", "roles", "主要角色", "林辞.md"))).resolves.not.toThrow();
+      await expect(access(join(bookDir, "story", "roles", "主要角色", "林乙.md"))).resolves.not.toThrow();
       await expect(access(join(bookDir, "story", "roles", "主要角色", "改名后的B.md"))).resolves.not.toThrow();
       // 旧的 5 个 role 文件里没出现在新输出的，**必须被清空**
       await expect(access(join(bookDir, "story", "roles", "主要角色", "要删掉的人.md"))).rejects.toThrow();
@@ -560,7 +560,7 @@ describe("reviseFoundation re-extracts structured canon", () => {
         bookRules: "---\nversion: \"1.0\"\n---\n",
         currentState: "", pendingHooks: "| hook_id |",
         storyFrame: "## 主题\n新世界观", volumeMap: "## 段 1\n卷一",
-        roles: [{ tier: "major", name: "林辞", content: "主角" }],
+        roles: [{ tier: "major", name: "林乙", content: "主角" }],
       } as ArchitectOutput);
       vi.spyOn(FoundationReviewerAgent.prototype, "review").mockResolvedValue({
         passed: true, totalScore: 90, dimensions: [], overallFeedback: "ok",
@@ -632,7 +632,7 @@ describe("reviseFoundation re-extracts structured canon", () => {
         bookRules: "---\nversion: \"1.0\"\n---\n",
         currentState: "", pendingHooks: "| hook_id |",
         storyFrame: "## 主题\n新", volumeMap: "## 段 1\n卷一",
-        roles: [{ tier: "major", name: "林辞", content: "主角" }],
+        roles: [{ tier: "major", name: "林乙", content: "主角" }],
       } as ArchitectOutput);
       vi.spyOn(FoundationReviewerAgent.prototype, "review").mockResolvedValue({
         passed: true, totalScore: 90, dimensions: [], overallFeedback: "ok",

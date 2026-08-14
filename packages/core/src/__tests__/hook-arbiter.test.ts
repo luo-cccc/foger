@@ -97,7 +97,7 @@ describe("arbitrateEpisodeRuntimeStateDeltaHooks", () => {
         createHook({
           hookId: "H004",
           type: "信息",
-          expectedPayoff: "解密完整的零号协议内容和回声体替代名单",
+          expectedPayoff: "解密完整的零号协议内容和镜像体替代名单",
           notes: "已获得12个加密身份标识，仍需解密具体身份和替代时间。",
         }),
       ],
@@ -106,7 +106,7 @@ describe("arbitrateEpisodeRuntimeStateDeltaHooks", () => {
         newHookCandidates: [
           {
             type: "information",
-            expectedPayoff: "解密完整的零号协议内容和回声体替代名单",
+            expectedPayoff: "解密完整的零号协议内容和镜像体替代名单",
             notes: "名单已解开部分身份字段和替代时间，剩余编号仍需解密。",
           },
         ],

@@ -47,7 +47,7 @@ const FUNCTIONAL_ROLE_SPEAKERS = new Set([
 ]);
 
 /** Role-like CJK suffixes that identify descriptive labels rather than names. */
-const FUNCTIONAL_ROLE_SUFFIX = /(?:人|员|生|师|客|者|甲|乙|丙|母|先生|女士|小姐|阿姨|大叔|大爷|大妈|警官|医生|护士|老板|经理|店员|司机|路人|顾客|乘客|记者|尉)$/u;
+const FUNCTIONAL_ROLE_SUFFIX = /(?:人|员|生|师|客|者|甲|乙|丙|母|汉子|婆子|老汉|壮汉|大汉|老妇|村妇|小童|童子|老翁|老妪|后生|先生|女士|小姐|阿姨|大叔|大爷|大妈|警官|医生|护士|老板|经理|店员|司机|路人|顾客|乘客|记者|尉)$/u;
 
 /**
  * Role words that mark a speaker as a functional label regardless of length
@@ -65,7 +65,7 @@ const SPEAKER_LEADING_MODIFIER = /^(?:年轻的|年老的|中年的|此时的|�
 
 /**
  * Separators that may join multiple actors in a shared objective, e.g.
- * "苏挽 / 顾辞" or "主角与盟友". Each segment is resolved against the settings
+ * "主角与盟友" or "主角 / 盟友". Each segment is resolved against the settings
  * index independently.
  */
 const OBJECTIVE_CHARACTER_SEPARATOR = /[\/\\、，,和与及\+]/u;
@@ -702,7 +702,7 @@ export function auditEpisodeScript(
     const protagonist = script.contract.objective.character.trim();
     if (protagonist
       && !NARRATION_SPEAKERS.has(protagonist.toLowerCase())) {
-      // Multi-character objectives are legitimate: "苏挽 / 顾辞" or "主角与盟友"
+      // Multi-character objectives are legitimate: "主角与盟友" or "主角 / 盟友"
       // name more than one actor. Any single named segment that resolves to the
       // settings index is enough — do not flag a shared goal as an invented
       // character just because it was written as a compound.

@@ -242,7 +242,7 @@ describe("StateManager", () => {
       expect(next).toBe(2);
     });
 
-    it("returns 2 when only episode 1 exists", async () => {
+    it("does not advance durable progress for an unaudited drafted episode", async () => {
       const episodes: ReadonlyArray<EpisodeMeta> = [
         {
           episodeNumber: 1,
@@ -257,7 +257,7 @@ describe("StateManager", () => {
       ];
       await manager.saveEpisodeIndex("book-y", episodes);
       const next = await manager.getNextEpisodeNumber("book-y");
-      expect(next).toBe(2);
+      expect(next).toBe(1);
     });
 
     it("does not advance durable progress past an audit-failed episode", async () => {
@@ -568,6 +568,19 @@ describe("StateManager", () => {
         "utf-8",
       );
       expect(snapshotManifest).toContain("\"schemaVersion\": 2");
+    });
+
+    it("snapshots and restores Canon with episode truth", async () => {
+      const storyDir = join(manager.bookDir(bookId), "story");
+      const canonDir = join(storyDir, "canon");
+      await mkdir(canonDir, { recursive: true });
+      await writeFile(join(canonDir, "claims.json"), JSON.stringify({ claims: [{ id: "C1", status: "active" }] }), "utf-8");
+      await manager.snapshotState(bookId, 1);
+
+      await writeFile(join(canonDir, "claims.json"), JSON.stringify({ claims: [{ id: "C1", status: "resolved" }] }), "utf-8");
+      await manager.restoreState(bookId, 1);
+
+      await expect(readFile(join(canonDir, "claims.json"), "utf-8")).resolves.toContain('"status":"active"');
     });
 
     it("restores state from a previous snapshot", async () => {

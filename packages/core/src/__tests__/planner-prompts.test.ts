@@ -84,7 +84,7 @@ describe("buildPlannerUserMessage", () => {
       previousEpisodeEndingExcerpt: "上一屏结尾原文",
       recentSummaries: "| ch9 | ... |",
       currentArcProse: "主线推进七号门",
-      protagonistMatrixRow: "| 阿泽 | 主角 | ... |",
+      protagonistMatrixRow: "| 阿川 | 主角 | ... |",
       opponentRows: "| 老李 | 对手 | ... |",
       collaboratorRows: "| 小白 | 盟友 | ... |",
       relevantThreads: "- H03: 未解码信\n- S004: 七号门异常",
@@ -98,7 +98,7 @@ describe("buildPlannerUserMessage", () => {
     expect(out).toContain("上一屏结尾原文");
     expect(out).toContain("| ch9 | ... |");
     expect(out).toContain("主线推进七号门");
-    expect(out).toContain("| 阿泽 | 主角 | ... |");
+    expect(out).toContain("| 阿川 | 主角 | ... |");
     expect(out).toContain("| 老李 | 对手 | ... |");
     expect(out).toContain("| 小白 | 盟友 | ... |");
     expect(out).toContain("- H03: 未解码信");

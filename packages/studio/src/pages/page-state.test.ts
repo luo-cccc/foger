@@ -57,7 +57,7 @@ describe("book create form", () => {
   it("requires title, genre, brief, and positive numeric targets before creating", () => {
     const ready = {
       ...defaultBookCreateForm("zh"),
-      title: "夜港账本",
+      title: "雾港账本",
       genre: "都市悬疑",
       brief: "近未来港口城，主角查账洗白。",
     };
@@ -70,14 +70,14 @@ describe("book create form", () => {
 
   it("builds a direct create payload without dropping the story brief", () => {
     expect(buildBookCreatePayload({
-      title: " 夜港账本 ",
+      title: " 雾港账本 ",
       genre: " 都市悬疑 ",
       platform: "qidian",
       targetEpisodes: "80",
       episodeDurationSeconds: "95",
       brief: " 主角查账洗白，旧案回潮。 ",
     }, "zh")).toEqual({
-      title: "夜港账本",
+      title: "雾港账本",
       genre: "都市悬疑",
       platform: "qidian",
       language: "zh",
@@ -217,13 +217,13 @@ describe("canCreateFromDraft", () => {
   it("accepts drafts that already have the staged creation minimum", () => {
     expect(canCreateFromDraft({
       concept: "港风商战悬疑",
-      title: "夜港账本",
+      title: "雾港账本",
       genre: "urban",
       platform: "tomato",
       targetEpisodes: 100,
       episodeDurationSeconds: 90,
       worldPremise: "近未来港口城，账本牵出多方势力。",
-      protagonist: "林砚，水货账房出身，擅长记账和看人。",
+      protagonist: "林戊，水货账房出身，擅长记账和看人。",
       conflictCore: "洗白与旧债回潮的对撞。",
       readyToCreate: false,
       missingFields: [],
@@ -234,11 +234,11 @@ describe("canCreateFromDraft", () => {
     // Length is a run parameter with editable defaults — its absence must not block.
     expect(canCreateFromDraft({
       concept: "港风商战悬疑",
-      title: "夜港账本",
+      title: "雾港账本",
       genre: "urban",
       platform: "tomato",
       worldPremise: "近未来港口城，账本牵出多方势力。",
-      protagonist: "林砚，水货账房出身，擅长记账和看人。",
+      protagonist: "林戊，水货账房出身，擅长记账和看人。",
       conflictCore: "洗白与旧债回潮的对撞。",
       readyToCreate: false,
       missingFields: [],
@@ -248,7 +248,7 @@ describe("canCreateFromDraft", () => {
   it("rejects incomplete drafts", () => {
     expect(canCreateFromDraft({
       concept: "港风商战悬疑",
-      title: "夜港账本",
+      title: "雾港账本",
       readyToCreate: false,
       missingFields: ["genre", "targetEpisodes"],
     })).toBe(false);
@@ -259,14 +259,14 @@ describe("buildCreationDraftSummary", () => {
   it("groups the draft by creation stages so users do not create from a mixed blob", () => {
     const stages = buildCreationDraftStages({
       concept: "港风商战悬疑，主角从灰产洗白。",
-      title: "夜港账本",
+      title: "雾港账本",
       genre: "urban",
       platform: "tomato",
       targetEpisodes: 100,
       episodeDurationSeconds: 90,
       worldPremise: "近未来港口城，账本牵出多方势力。",
       settingNotes: "账本、港口、灰产规则都要服务洗白压力。",
-      protagonist: "林砚，水货账房出身，擅长记账和看人。",
+      protagonist: "林戊，水货账房出身，擅长记账和看人。",
       conflictCore: "洗白与旧债回潮的对撞。",
       volumeOutline: "卷一先查账，再暴露港口旧案。",
       missingFields: ["supportingCast"],
@@ -321,22 +321,22 @@ describe("buildCreationDraftSummary", () => {
   it("surfaces the shared foundation draft in a user-facing order", () => {
     expect(buildCreationDraftSummary({
       concept: "港风商战悬疑，主角从灰产洗白。",
-      title: "夜港账本",
+      title: "雾港账本",
       worldPremise: "近未来港口城，账本牵出多方势力。",
-      protagonist: "林砚，水货账房出身，擅长记账和看人。",
+      protagonist: "林戊，水货账房出身，擅长记账和看人。",
       conflictCore: "洗白与旧债回潮的对撞。",
       volumeOutline: "卷一先查账，再暴露港口旧案。",
-      blurb: "一个做灰产生意的人，准备在夜港洗白，却先被旧账拖回去。",
+      blurb: "一个做灰产生意的人，准备在雾港洗白，却先被旧账拖回去。",
       nextQuestion: "卷一先查账还是先砸场？",
       missingFields: ["targetEpisodes"],
       readyToCreate: false,
     }, "zh")).toEqual([
-      { key: "title", label: "书名", value: "夜港账本" },
+      { key: "title", label: "书名", value: "雾港账本" },
       { key: "worldPremise", label: "世界观", value: "近未来港口城，账本牵出多方势力。" },
-      { key: "protagonist", label: "主角", value: "林砚，水货账房出身，擅长记账和看人。" },
+      { key: "protagonist", label: "主角", value: "林戊，水货账房出身，擅长记账和看人。" },
       { key: "conflictCore", label: "核心冲突", value: "洗白与旧债回潮的对撞。" },
       { key: "volumeOutline", label: "卷纲方向", value: "卷一先查账，再暴露港口旧案。" },
-      { key: "blurb", label: "简介", value: "一个做灰产生意的人，准备在夜港洗白，却先被旧账拖回去。" },
+      { key: "blurb", label: "简介", value: "一个做灰产生意的人，准备在雾港洗白，却先被旧账拖回去。" },
       { key: "nextQuestion", label: "下一步", value: "卷一先查账还是先砸场？" },
     ]);
   });

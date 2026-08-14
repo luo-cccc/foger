@@ -104,7 +104,7 @@ function parseBookAndEpisode(
 
 reviewCommand
   .command("approve")
-  .description("Approve a episode and commit its state: approve [book-id] <episode>")
+  .description("Approve an audited episode: approve [book-id] <episode>")
   .argument("<args...>", "Book ID (optional) and episode number")
   .option("--json", "Output JSON")
   .action(async (args: ReadonlyArray<string>, opts) => {
@@ -123,7 +123,7 @@ reviewCommand
       if (opts.json) {
         log(JSON.stringify({ bookId, episode: episodeNum, status: "approved" }));
       } else {
-        log(`Episode ${episodeNum} approved (state committed).`);
+        log(`Episode ${episodeNum} approved.`);
       }
     } catch (e) {
       if (opts.json) {
@@ -168,7 +168,7 @@ reviewCommand
   .description("Reject a episode and roll back state: reject [book-id] <episode>")
   .argument("<args...>", "Book ID (optional) and episode number")
   .option("--reason <reason>", "Rejection reason")
-  .option("--keep-subsequent", "Only reject this episode, do not discard subsequent episodes")
+  .option("--keep-subsequent", "Keep the rejected episode artifact only when no later episode depends on it")
   .option("--json", "Output JSON")
   .action(async (args: ReadonlyArray<string>, opts) => {
     try {

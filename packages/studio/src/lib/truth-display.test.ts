@@ -36,7 +36,7 @@ describe("truthFileDisplayLabel", () => {
     setAppLanguage("zh");
 
     expect(truthFileDisplayLabel("outline/story_frame.md")).toBe("故事基石");
-    expect(truthFileDisplayLabel("roles/主要角色/林澈.md")).toBe("林澈");
+    expect(truthFileDisplayLabel("roles/主要角色/林丙.md")).toBe("林丙");
     expect(truthFileDisplayLabel("runtime/volume-contracts.json")).toBe("卷级合同汇总");
     expect(truthFileDisplayLabel("notes/unknown.md")).toBe("notes/unknown.md");
   });
@@ -51,7 +51,7 @@ describe("sortTruthFiles", () => {
       { name: "outline/volume_map.md" },
       { name: "runtime/volume-dashboard.md" },
       { name: "runtime/tier2_current_arc.md" },
-      { name: "roles/主要角色/林澈.md" },
+      { name: "roles/主要角色/林丙.md" },
       { name: "outline/story_frame.md" },
       { name: "runtime/episode-0002.context.json" },
       { name: "runtime/volume-contracts.json" },
@@ -60,7 +60,7 @@ describe("sortTruthFiles", () => {
     expect(sorted).toEqual([
       "outline/story_frame.md",
       "outline/volume_map.md",
-      "roles/主要角色/林澈.md",
+      "roles/主要角色/林丙.md",
       "roles/次要角色/周岚.md",
       "runtime/tier2_current_arc.md",
       "runtime/volume-contracts.json",

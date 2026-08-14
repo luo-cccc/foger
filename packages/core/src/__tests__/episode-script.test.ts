@@ -315,9 +315,9 @@ describe("episode screenplay contract", () => {
 
   it("accepts a compound objective naming multiple known characters", () => {
     const script = sampleScript();
-    script.contract.objective.character = "林夏 / 顾维远";
+    script.contract.objective.character = "林夏 / 顾远山";
     const issues = auditEpisodeScript(script, undefined, 90, {
-      characterNames: new Set(["林夏", "顾维远"]),
+      characterNames: new Set(["林夏", "顾远山"]),
     });
     expect(issues.map((issue) => issue.category)).not.toContain("unknown-character-reference");
   });
@@ -326,7 +326,7 @@ describe("episode screenplay contract", () => {
     const script = sampleScript();
     script.contract.objective.character = "李四 / 王五";
     const issues = auditEpisodeScript(script, undefined, 90, {
-      characterNames: new Set(["林夏", "顾维远"]),
+      characterNames: new Set(["林夏", "顾远山"]),
     });
     const reference = issues.filter((issue) => issue.category === "unknown-character-reference");
     expect(reference.some((issue) => issue.severity === "critical")).toBe(true);
@@ -344,15 +344,15 @@ describe("episode screenplay contract", () => {
 
   it("exempts military/role-token speakers of any length", () => {
     const script = sampleScript();
-    script.contract.objective.character = "沈砚";
+    script.contract.objective.character = "沈甲";
     script.scenes[0]!.shots[0]!.dialogue.push(
       { speaker: "暗哨队长", text: "跟上。" },
-      { speaker: "火种营亲兵", text: "是。" },
+      { speaker: "赤旗营亲兵", text: "是。" },
       { speaker: "元军什长", text: "搜。" },
       { speaker: "老民夫", text: "往这边。" },
     );
     const issues = auditEpisodeScript(script, undefined, 90, {
-      characterNames: new Set(["沈砚", "林夏", "主角"]),
+      characterNames: new Set(["沈甲", "林夏", "主角"]),
     });
     expect(issues.map((issue) => issue.category)).not.toContain("unknown-character-reference");
   });
@@ -385,7 +385,7 @@ describe("episode screenplay contract", () => {
   it("still flags name-like unknown speakers", () => {
     const script = sampleScript();
     script.contract.objective.character = "林夏";
-    script.scenes[0]!.shots[0]!.dialogue.push({ speaker: "顾维远", text: "你终于想起来了。" });
+    script.scenes[0]!.shots[0]!.dialogue.push({ speaker: "顾远山", text: "你终于想起来了。" });
     const issues = auditEpisodeScript(script, undefined, 90, {
       characterNames: new Set(["林夏"]),
     });
@@ -395,10 +395,10 @@ describe("episode screenplay contract", () => {
   it("matches speakers with parenthetical stage qualifiers against the settings index", () => {
     const script = sampleScript();
     script.contract.objective.character = "林夏";
-    script.scenes[0]!.shots[0]!.dialogue.push({ speaker: "顾维远（画外）", text: "你终于想起来了。" });
+    script.scenes[0]!.shots[0]!.dialogue.push({ speaker: "顾远山（画外）", text: "你终于想起来了。" });
     script.scenes[0]!.shots[0]!.dialogue.push({ speaker: "旁白（母亲的信）", text: "雨在落下。" });
     const issues = auditEpisodeScript(script, undefined, 90, {
-      characterNames: new Set(["林夏", "顾维远"]),
+      characterNames: new Set(["林夏", "顾远山"]),
     });
     expect(issues.map((issue) => issue.category)).not.toContain("unknown-character-reference");
   });
@@ -486,5 +486,24 @@ describe("episode screenplay contract", () => {
       },
     });
     expect(issues.filter((issue) => issue.category === "contract-without-screen-evidence").length).toBeGreaterThan(0);
+  });
+});
+
+describe("unexplained-character-entry setup handling", () => {
+  function withAction(action: string) {
+    const script = sampleScript();
+    script.scenes[0]!.shots[0]!.action = action;
+    return script;
+  }
+
+  it("does not flag ordinary action adverbs (忽然抬头) as a character entry", () => {
+    // An established character's action adverb is not an unexplained arrival.
+    const issues = auditEpisodeScript(withAction("谢安攥紧拳头，忽然抬头，像下了某种决心"));
+    expect(issues.map((issue) => issue.category)).not.toContain("unexplained-character-entry");
+  });
+
+  it("still flags a sudden arrival without setup", () => {
+    const issues = auditEpisodeScript(withAction("一个黑衣人突然出现在门口，众人一惊"));
+    expect(issues.map((issue) => issue.category)).toContain("unexplained-character-entry");
   });
 });

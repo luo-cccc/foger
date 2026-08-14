@@ -3080,6 +3080,7 @@ describe("createStudioServer daemon lifecycle", () => {
     await writeFile(staleTracePath, "{}", "utf-8");
     await writeFile(otherTracePath, "{}", "utf-8");
     await writeFile(join(root, "books", "demo-book", "episodes", "0003_Demo.md"), episodeScriptJson(), "utf-8");
+    await writeFile(join(root, "books", "demo-book", "episodes", "0003_Demo.json"), episodeScriptJson(), "utf-8");
 
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
@@ -3095,7 +3096,7 @@ describe("createStudioServer daemon lifecycle", () => {
       ok: true,
       episodeNumber: 3,
       status: "audit-failed",
-      warning: "[warning] Manual episode edit requires review before continuation.",
+      warning: "[critical] Manual episode edit requires review before continuation.",
     });
     await expect(readFile(join(root, "books", "demo-book", "episodes", "0003_Demo.md"), "utf-8"))
       .resolves.toContain("Changed body");
@@ -3104,7 +3105,7 @@ describe("createStudioServer daemon lifecycle", () => {
         episodeNumber: 3,
         status: "audit-failed",
         episodeDurationSeconds: expect.any(Number),
-        auditIssues: ["[warning] Manual episode edit requires review before continuation."],
+        auditIssues: ["[critical] Manual episode edit requires review before continuation."],
       }),
     ]);
     await expect(access(staleTracePath)).rejects.toThrow();
@@ -3581,7 +3582,7 @@ describe("createStudioServer daemon lifecycle", () => {
         activeBookId: "demo-book",
       },
     });
-    expect(writeNextEpisodeMock).toHaveBeenCalledWith("demo-book");
+    expect(writeNextEpisodeMock).toHaveBeenCalledWith("demo-book", undefined);
     expect(runAgentSessionMock).not.toHaveBeenCalled();
     expect(appendManualSessionMessagesMock).toHaveBeenCalledWith(
       root,
@@ -3629,13 +3630,11 @@ describe("createStudioServer daemon lifecycle", () => {
       }),
     });
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({
+      error: { code: "WRITE_NEXT_NOT_READY" },
       response: expect.stringContaining("审稿未通过"),
-      session: {
-        sessionId: "agent-session-1",
-        activeBookId: "demo-book",
-      },
+      details: { toolExecutions: [expect.objectContaining({ status: "error" })] },
     });
     expect(appendManualSessionMessagesMock).toHaveBeenCalledWith(
       root,
@@ -3708,7 +3707,7 @@ describe("createStudioServer daemon lifecycle", () => {
         activeBookId: "demo-book",
       },
     });
-    expect(writeNextEpisodeMock).toHaveBeenCalledWith("demo-book");
+    expect(writeNextEpisodeMock).toHaveBeenCalledWith("demo-book", undefined);
     expect(runAgentSessionMock).not.toHaveBeenCalled();
   }, 60_000);
 
@@ -3739,7 +3738,7 @@ describe("createStudioServer daemon lifecycle", () => {
     });
   });
 
-  it("handles explicit chat episode edits outside the InkOS writing agent", async () => {
+  it("routes explicit episode edits through the InkOS agent without direct writes", async () => {
     loadEpisodeIndexMock.mockResolvedValueOnce([{
       episodeNumber: 3,
       title: "Demo",
@@ -3769,27 +3768,20 @@ describe("createStudioServer daemon lifecycle", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      response: expect.stringContaining("已直接编辑 demo-book 第 3 集"),
+      response: "Agent response.",
       session: {
         sessionId: "agent-session-1",
         activeBookId: "demo-book",
       },
     });
     await expect(readFile(join(root, "books", "demo-book", "episodes", "0003_Demo.md"), "utf-8"))
-      .resolves.toContain("Body updated");
-    expect(saveEpisodeIndexMock).toHaveBeenCalledWith("demo-book", [
-      expect.objectContaining({
-        episodeNumber: 3,
-        status: "audit-failed",
-        episodeDurationSeconds: expect.any(Number),
-        auditIssues: expect.arrayContaining(["[warning] Manual episode edit requires review before continuation."]),
-      }),
-    ]);
-    expect(runAgentSessionMock).not.toHaveBeenCalled();
+      .resolves.not.toContain("Body updated");
+    expect(saveEpisodeIndexMock).not.toHaveBeenCalled();
+    expect(runAgentSessionMock).toHaveBeenCalledOnce();
     expect(writeNextEpisodeMock).not.toHaveBeenCalled();
   });
 
-  it("handles explicit chat artifact edits only for content roots", async () => {
+  it("routes explicit artifact edits through the InkOS agent", async () => {
     await mkdir(join(root, "books", "demo-book", "story"), { recursive: true });
     await writeFile(join(root, "books", "demo-book", "story", "notes.md"), "目标太模糊。\n", "utf-8");
 
@@ -3808,19 +3800,17 @@ describe("createStudioServer daemon lifecycle", () => {
     });
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      response: expect.stringContaining("已直接编辑 books/demo-book/story/notes.md"),
-    });
+    await expect(response.json()).resolves.toMatchObject({ response: "Agent response." });
     await expect(readFile(join(root, "books", "demo-book", "story", "notes.md"), "utf-8"))
-      .resolves.toContain("目标改为追查失踪账册");
+      .resolves.toBe("目标太模糊。\n");
     expect(saveEpisodeIndexMock).not.toHaveBeenCalled();
-    expect(runAgentSessionMock).not.toHaveBeenCalled();
+    expect(runAgentSessionMock).toHaveBeenCalledOnce();
   });
 
-  it("handles explicit chat edits against role-card truth files", async () => {
-    const rolePath = join(root, "books", "demo-book", "story", "roles", "主要角色", "林月.md");
+  it("does not mutate role-card truth files before the agent chooses a typed tool", async () => {
+    const rolePath = join(root, "books", "demo-book", "story", "roles", "主要角色", "林己.md");
     await mkdir(join(root, "books", "demo-book", "story", "roles", "主要角色"), { recursive: true });
-    await writeFile(rolePath, "# 林月\n\n- 动机：守住旧账册。\n", "utf-8");
+    await writeFile(rolePath, "# 林己\n\n- 动机：守住旧账册。\n", "utf-8");
 
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
@@ -3829,7 +3819,7 @@ describe("createStudioServer daemon lifecycle", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        instruction: "把 books/demo-book/story/roles/主要角色/林月.md 里的「守住旧账册」改成「查清账册里的失踪名单」",
+        instruction: "把 books/demo-book/story/roles/主要角色/林己.md 里的「守住旧账册」改成「查清账册里的失踪名单」",
         activeBookId: "demo-book",
         sessionId: "agent-session-1",
         sessionKind: "edit",
@@ -3838,11 +3828,9 @@ describe("createStudioServer daemon lifecycle", () => {
     });
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      response: expect.stringContaining("已直接编辑 books/demo-book/story/roles/主要角色/林月.md"),
-    });
-    await expect(readFile(rolePath, "utf-8")).resolves.toContain("查清账册里的失踪名单");
-    expect(runAgentSessionMock).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toMatchObject({ response: "Agent response." });
+    await expect(readFile(rolePath, "utf-8")).resolves.toContain("守住旧账册");
+    expect(runAgentSessionMock).toHaveBeenCalledOnce();
   });
 
   it("does not bypass the agent for edit-shaped questions", async () => {
@@ -3871,7 +3859,7 @@ describe("createStudioServer daemon lifecycle", () => {
     expect(appendManualSessionMessagesMock).not.toHaveBeenCalled();
   });
 
-  it("rejects chat artifact edits against source files instead of routing to the agent", async () => {
+  it("routes source-file edit requests to the constrained agent without direct writes", async () => {
     await mkdir(join(root, "packages", "core", "src"), { recursive: true });
     await writeFile(join(root, "packages", "core", "src", "index.ts"), "export const value = 1;\n", "utf-8");
 
@@ -3889,15 +3877,14 @@ describe("createStudioServer daemon lifecycle", () => {
       }),
     });
 
-    expect(response.status).toBe(400);
-    const body = await response.json() as { error: { code: string } };
-    expect(body.error.code).toBe("UNSUPPORTED_CHAT_EDIT_TARGET");
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ response: "Agent response." });
     await expect(readFile(join(root, "packages", "core", "src", "index.ts"), "utf-8"))
       .resolves.toContain("value");
-    expect(runAgentSessionMock).not.toHaveBeenCalled();
+    expect(runAgentSessionMock).toHaveBeenCalledOnce();
   });
 
-  it("rejects chat edits against controlled book state files", async () => {
+  it("routes controlled-state edit requests to the constrained agent without direct writes", async () => {
     const bookConfigPath = join(root, "books", "demo-book", "book.json");
     await writeFile(bookConfigPath, JSON.stringify({ id: "demo-book", title: "Demo Book" }), "utf-8");
     const original = await readFile(bookConfigPath, "utf-8");
@@ -3915,12 +3902,10 @@ describe("createStudioServer daemon lifecycle", () => {
       }),
     });
 
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toMatchObject({
-      error: { code: "UNSUPPORTED_CHAT_EDIT_TARGET" },
-    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ response: "Agent response." });
     await expect(readFile(bookConfigPath, "utf-8")).resolves.toBe(original);
-    expect(runAgentSessionMock).not.toHaveBeenCalled();
+    expect(runAgentSessionMock).toHaveBeenCalledOnce();
   });
 
   it("rejects unsafe activeBookId in the Studio agent API", async () => {
@@ -4628,7 +4613,7 @@ describe("createStudioServer daemon lifecycle", () => {
       automationMode: "semi",
       creationDraft: {
         concept: "港风商战悬疑，主角从灰产洗白。",
-        title: "夜港账本",
+        title: "雾港账本",
         nextQuestion: "你更想写长篇连载，还是十来章能收住？",
         missingFields: ["targetEpisodes"],
         readyToCreate: false,
@@ -4646,7 +4631,7 @@ describe("createStudioServer daemon lifecycle", () => {
     await expect(response.json()).resolves.toMatchObject({
       session: expect.objectContaining({
         creationDraft: expect.objectContaining({
-          title: "夜港账本",
+          title: "雾港账本",
           nextQuestion: "你更想写长篇连载，还是十来章能收住？",
         }),
       }),

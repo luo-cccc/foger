@@ -50,7 +50,7 @@ describe("SubAgentParams schema", () => {
     const prepared = tool.prepareArguments?.({
       agent: "architect",
       instruction: "创建一本番茄都市文",
-      title: "夜港账本",
+      title: "雾港账本",
       genre: "urban",
       platform: "番茄小说",
       language: "zh",
@@ -224,6 +224,23 @@ describe("writer agent — episodeDurationSeconds passthrough", () => {
     await tool.execute("tc2", { agent: "writer", instruction: "Write", bookId: "my-book" });
     expect(writeNextEpisodeMock).toHaveBeenCalledWith("my-book", undefined);
   });
+
+  it("marks audit-failed output as a tool error", async () => {
+    writeNextEpisodeMock.mockResolvedValueOnce({
+      episodeNumber: 4,
+      episodeDurationSeconds: 90,
+      status: "audit-failed",
+    });
+
+    const result = await tool.execute("tc3", {
+      agent: "writer",
+      instruction: "Write",
+      bookId: "my-book",
+    });
+
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(result.details).toMatchObject({ status: "audit-failed", episodeNumber: 4 });
+  });
 });
 
 describe("auditor agent — rich return value", () => {
@@ -269,5 +286,36 @@ describe("reviser agent — mode field", () => {
   it("defaults to spot-fix", async () => {
     await tool.execute("tc2", { agent: "reviser", instruction: "Fix", bookId: "my-book" });
     expect(reviseDraftMock).toHaveBeenCalledWith("my-book", undefined, "spot-fix", "Fix");
+  });
+
+  it("marks a non-applied revision as a tool error", async () => {
+    reviseDraftMock.mockResolvedValueOnce({
+      episodeNumber: 5,
+      applied: false,
+      status: "unchanged",
+      skippedReason: "candidate did not improve",
+    });
+
+    const result = await tool.execute("tc3", {
+      agent: "reviser",
+      instruction: "Fix",
+      bookId: "my-book",
+      episodeNumber: 5,
+    });
+
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(result.details).toMatchObject({ applied: false, status: "unchanged" });
+  });
+});
+
+describe("sub-agent failure results", () => {
+  it("marks missing active-book usage as a tool error", async () => {
+    const tool = createSubAgentTool({} as any, null);
+    const result = await tool.execute("tc-missing-book", {
+      agent: "writer",
+      instruction: "Write",
+    });
+
+    expect((result as { isError?: boolean }).isError).toBe(true);
   });
 });

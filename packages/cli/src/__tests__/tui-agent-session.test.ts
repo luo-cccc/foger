@@ -132,13 +132,13 @@ describe("tui agent session bridge", () => {
 
   it("stores the created book from architect tool results as the active TUI book", async () => {
     runAgentSessionMock.mockResolvedValue({
-      responseText: "《夜港》已创建成功。",
+      responseText: "《雾港》已创建成功。",
       messages: [
         {
           role: "toolResult",
-          details: { kind: "book_created", bookId: "night-harbor", title: "夜港" },
+          details: { kind: "book_created", bookId: "night-harbor", title: "雾港" },
         },
-        { role: "assistant", content: "《夜港》已创建成功。" },
+        { role: "assistant", content: "《雾港》已创建成功。" },
       ],
     });
 
@@ -147,7 +147,7 @@ describe("tui agent session bridge", () => {
 
     const result = await processTuiAgentInput({
       projectRoot,
-      input: "创建《夜港》",
+      input: "创建《雾港》",
       session,
     });
 

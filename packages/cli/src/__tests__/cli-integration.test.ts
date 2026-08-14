@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { StateManager } from "@actalk/inkos-core";
 
@@ -13,6 +14,66 @@ const CLI_PROCESS_TIMEOUT_MS = 10_000;
 const DOUBLE_CLI_INVOCATION_TEST_TIMEOUT_MS = CLI_PROCESS_TIMEOUT_MS * 2;
 
 let projectDir: string;
+
+function createApprovableEpisodeJson(episode: number, title: string): string {
+  return `${JSON.stringify({
+    episode,
+    title,
+    estimatedDurationSeconds: 90,
+    openingHook: "The exit locks.",
+    reversal: "The witness holds the missing ledger.",
+    emotionalHook: "Will the partners trust each other with the evidence?",
+    endState: "The partners hold different halves of the evidence.",
+    contract: {
+      incomingState: { knowledge: [], power: [], relationship: [], physical: [], activeAction: [] },
+      objective: { character: "Lead", desiredChange: "Secure the ledger", whyNow: "The archive is closing" },
+      opposition: { actorOrConstraint: "Witness", goal: "Keep the ledger", leverage: "Controls the exit" },
+      causalEscalation: [{
+        becauseOf: "The ledger appears",
+        choice: "The lead confronts the witness",
+        countermove: "The witness locks the exit",
+        stateChange: "Control splits",
+        nextPressure: "They must choose whether to cooperate",
+      }],
+      localDramaticResult: { goalOutcome: "The ledger is secured", stateChange: "Control splits", costPaid: "The exit is sealed" },
+      outgoingPressure: { startedDecisionDangerOrQuestion: "The alarm starts", whyItFollows: "The exit was locked" },
+      handoffState: { knowledge: ["The witness has evidence"], power: ["Control is split"], relationship: ["Trust is uncertain"], physical: [], activeAction: ["The alarm runs"] },
+      informationPermissions: [],
+    },
+    scenes: [{
+      id: "S1",
+      location: "Archive",
+      time: "Night",
+      purpose: "Split control of the evidence",
+      shots: [1, 2].map((shot) => ({
+        id: `S1-${shot}`,
+        shotSize: "wide",
+        camera: "locked",
+        durationSeconds: 45,
+        visual: `The partners face each other across the ledger, beat ${shot}.`,
+        action: "The witness locks the exit as the lead takes the ledger.",
+        dialogue: [],
+      })),
+    }],
+  }, null, 2)}\n`;
+}
+
+async function seedApprovableReview(episodesDir: string, episode: number, title: string): Promise<void> {
+  const padded = String(episode).padStart(4, "0");
+  const jsonFile = `${padded}_${title}.json`;
+  const content = createApprovableEpisodeJson(episode, title);
+  await writeFile(join(episodesDir, jsonFile), content, "utf-8");
+  await writeFile(join(episodesDir, `${padded}_review.json`), JSON.stringify({
+    mode: "evidence",
+    independent: false,
+    status: "PROVISIONAL",
+    requestedReviewMode: "self_check",
+    effectiveReviewMode: "self_check",
+    reviewer: { owner: "pipeline", kind: "self_check", independence: false, excludedSourceOwner: "writer" },
+    reviewedArtifacts: [{ artifact: `episodes/${jsonFile}`, sha256: createHash("sha256").update(content, "utf8").digest("hex") }],
+    findings: [],
+  }), "utf-8");
+}
 
 function buildTestEnv(overrides?: Record<string, string>) {
   const baseEnv = Object.fromEntries(
@@ -26,8 +87,11 @@ function buildTestEnv(overrides?: Record<string, string>) {
 
   return {
     ...baseEnv,
-    // Prevent global config from leaking into tests
+    // Prevent global config from leaking into tests. Node's os.homedir()
+    // follows USERPROFILE on Windows (not HOME), so both must be isolated
+    // or a developer machine's real ~/.inkos/.env leaks into subprocesses.
     HOME: projectDir,
+    ...(process.platform === "win32" ? { USERPROFILE: projectDir } : {}),
     ...overrides,
   };
 }
@@ -1018,6 +1082,7 @@ describe("CLI integration", () => {
       await writeFile(join(storyDir, "current_state.md"), "State at ch1", "utf-8");
       await writeFile(join(storyDir, "pending_hooks.md"), "Hooks at ch1", "utf-8");
       await writeFile(join(episodesDir, "0001_ch1.md"), "# Episode 1\n\nContent 1", "utf-8");
+      await seedApprovableReview(episodesDir, 1, "ch1");
       await writeFile(join(episodesDir, "0002_ch2.md"), "# Episode 2\n\nContent 2", "utf-8");
       await writeFile(join(episodesDir, "index.json"), JSON.stringify([
         { episodeNumber: 1, title: "Ch1", status: "approved", episodeDurationSeconds: 100, createdAt: "", updatedAt: "", auditIssues: [], lengthWarnings: [] },
@@ -1145,6 +1210,7 @@ describe("CLI integration", () => {
       await writeFile(join(storyDir, "current_state.md"), "State at ch1", "utf-8");
       await writeFile(join(storyDir, "pending_hooks.md"), "Hooks at ch1", "utf-8");
       await writeFile(join(episodesDir, "0001_ch1.md"), "# Episode 1\n\nContent 1", "utf-8");
+      await seedApprovableReview(episodesDir, 1, "ch1");
       await writeFile(
         join(episodesDir, "index.json"),
         JSON.stringify([
@@ -1232,11 +1298,12 @@ describe("CLI integration", () => {
           lengthWarnings: [],
         },
         ]);
+        await seedApprovableReview(join(state.bookDir(bookId), "episodes"), 1, "One");
 
         const output = JSON.parse(run(["review", "approve-all", bookId, "--json"]));
-        expect(output).toEqual({ bookId, approvedCount: 2 });
+        expect(output).toEqual({ bookId, approvedCount: 1 });
         const index = await state.loadEpisodeIndex(bookId);
-        expect(index.map((entry) => entry.status)).toEqual(["approved", "approved", "rejected"]);
+        expect(index.map((entry) => entry.status)).toEqual(["approved", "audit-failed", "rejected"]);
         await expect(stat(join(state.bookDir(bookId), ".write.lock"))).rejects.toThrow();
       } finally {
         await rm(state.bookDir(bookId), { recursive: true, force: true });
@@ -1393,7 +1460,7 @@ describe("CLI integration", () => {
           {
             episodeNumber: 1,
             title: "Dawn Ledger",
-            status: "ready-for-review",
+            status: "approved",
             episodeDurationSeconds: 90,
             createdAt: "2026-03-23T00:00:00.000Z",
             updatedAt: "2026-03-23T00:00:00.000Z",
@@ -1405,6 +1472,11 @@ describe("CLI integration", () => {
       await writeFile(
         join(bookDir, "episodes", "0001_Dawn_Ledger.md"),
         "# 第1集 Dawn Ledger\n\n正文。\n",
+        "utf-8",
+      );
+      await writeFile(
+        join(bookDir, "episodes", "0001_Dawn_Ledger.json"),
+        createApprovableEpisodeJson(1, "Dawn Ledger"),
         "utf-8",
       );
     });

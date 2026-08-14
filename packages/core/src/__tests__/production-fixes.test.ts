@@ -28,7 +28,7 @@ function validEpisodeScriptJson(overrides: Record<string, unknown> = {}): string
         knowledge: ["他知道一件事"], power: ["他有玉"], relationship: ["他们是青梅竹马"],
         physical: ["他在博物馆"], activeAction: ["他要离开"], emotional: [],
       },
-      objective: { character: "顾辞", desiredChange: "找到真相", whyNow: "必须现在行动" },
+      objective: { character: "顾甲", desiredChange: "找到真相", whyNow: "必须现在行动" },
       opposition: { actorOrConstraint: "阻力", goal: "阻止他", leverage: "筹码" },
       causalEscalation: [
         { becauseOf: "起因", choice: "他选择行动", countermove: "阻力反击", stateChange: "状态改变", nextPressure: "下一压力" },
@@ -39,7 +39,7 @@ function validEpisodeScriptJson(overrides: Record<string, unknown> = {}): string
         knowledge: ["他带走了玉"], power: ["他更强了"], relationship: ["他们分开了"],
         physical: ["他在门外"], activeAction: ["他要继续走"], emotional: [],
       },
-      informationPermissions: [{ subject: "顾辞", audience: "观众", known: [], suspected: [], mistaken: [], unknown: [] }],
+      informationPermissions: [{ subject: "顾甲", audience: "观众", known: [], suspected: [], mistaken: [], unknown: [] }],
     },
     scenes: [{
       id: "S1",
@@ -54,7 +54,7 @@ function validEpisodeScriptJson(overrides: Record<string, unknown> = {}): string
         camera: "固定",
         durationSeconds: 15,
         visual: index === 0 ? "他站在月光下，握着一枚玉。" : "她抬起头，看着月亮。",
-        dialogue: index === 0 ? [{ speaker: "顾辞", text: "我一定要回去。" }] : [],
+        dialogue: index === 0 ? [{ speaker: "顾甲", text: "我一定要回去。" }] : [],
         narration: index === 1 ? "旁白。" : "",
         sound: "",
         transition: "",
@@ -114,8 +114,8 @@ function scriptFor(episode: number, visualTexts: ReadonlyArray<string>): Episode
     seriesResolution: {
       mainConflict: "主线冲突已解决。",
       protagonistDesire: "主角达成终局。",
-      characterArcs: [{ character: "顾辞", outcome: "他选择留下。" }],
-      relationships: [{ parties: "顾辞与苏晚", outcome: "重新认识。" }],
+      characterArcs: [{ character: "顾甲", outcome: "他选择留下。" }],
+      relationships: [{ parties: "顾甲与苏晚", outcome: "重新认识。" }],
     },
     scenes: [{
       id: "S1",
@@ -148,26 +148,26 @@ describe("P1-1 auditEarlyHookPayoff", () => {
   };
 
   it("flags a hook whose payoff facts appear before the scheduled episode", () => {
-    const issues = auditEarlyHookPayoff(scriptFor(6, ["顾辞在渊底发现衣冠冢，打开空棺，取出遗书「若你读到——莫要再让她等」"]), [tombHook]);
+    const issues = auditEarlyHookPayoff(scriptFor(6, ["顾甲在渊底发现衣冠冢，打开空棺，取出遗书「若你读到——莫要再让她等」"]), [tombHook]);
     expect(issues.some((issue) => issue.category === "early-hook-payoff")).toBe(true);
   });
 
   it("stays silent when the current episode is at or after the payoff episode", () => {
-    const issues = auditEarlyHookPayoff(scriptFor(29, ["顾辞在渊底发现衣冠冢，打开空棺"]), [tombHook]);
+    const issues = auditEarlyHookPayoff(scriptFor(29, ["顾甲在渊底发现衣冠冢，打开空棺"]), [tombHook]);
     expect(issues.filter((issue) => issue.category === "early-hook-payoff")).toHaveLength(0);
   });
 
   it("stays silent when no hook keywords appear on screen", () => {
-    const issues = auditEarlyHookPayoff(scriptFor(6, ["顾辞在渊底行走，四周黑暗"]), [tombHook]);
+    const issues = auditEarlyHookPayoff(scriptFor(6, ["顾甲在渊底行走，四周黑暗"]), [tombHook]);
     expect(issues.filter((issue) => issue.category === "early-hook-payoff")).toHaveLength(0);
   });
 
   it("does not mistake a quoted character name for a payoff fact", () => {
-    const issues = auditEarlyHookPayoff(scriptFor(1, ["顾辞站在渊底，抬头看向裂口"]), [{
+    const issues = auditEarlyHookPayoff(scriptFor(1, ["顾甲站在渊底，抬头看向裂口"]), [{
       hookId: "H009",
       expectedPayoff: "第21集",
-      notes: "初始线索：闻烬叫出\"顾辞\"，但没有交代他的真实身份",
-      audienceQuestion: "顾辞究竟是谁？",
+      notes: "初始线索：闻烬叫出\"顾甲\"，但没有交代他的真实身份",
+      audienceQuestion: "顾甲究竟是谁？",
     }]);
     expect(issues).toHaveLength(0);
   });
@@ -180,7 +180,7 @@ describe("P1-1 auditEarlyHookPayoff", () => {
 describe("P1-2 handoff surface evidence", () => {
   it("warns when a handoff fact has no on-screen carrier", () => {
     const script = JSON.parse(validEpisodeScriptJson()) as EpisodeScript;
-    script.contract.handoffState.knowledge.push("苏挽在千年长明灯前等了他一千年");
+    script.contract.handoffState.knowledge.push("苏甲在千年长明灯前等了他一千年");
     const issues = auditEpisodeScript(script);
     expect(issues.some((issue) => issue.category === "contract-without-screen-evidence"
       && issue.description.includes("Handoff"))).toBe(true);
@@ -224,7 +224,7 @@ function meta(episodeNumber: number): EpisodeMeta {
   return {
     episodeNumber,
     title: `Episode ${episodeNumber}`,
-    status: "ready-for-review",
+    status: "approved",
     episodeDurationSeconds: 100,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
@@ -243,7 +243,7 @@ describe("P1-4 series completion open-hook leniency", () => {
         rows: [{
           episodeNumber: 2,
           title: "终局",
-          characters: "顾辞、苏挽",
+          characters: "顾甲、苏甲",
           events: "他走进光门又回来，两人并肩离开。",
           stateChanges: "归途完成，抹除落定。",
           payoff: "那句问话有了落点。",
@@ -266,7 +266,7 @@ describe("P1-4 series completion open-hook leniency", () => {
   };
 
   it("downgrades a core hook that is visibly paid off in the final episode", () => {
-    const finalScript = scriptFor(2, ["顾辞在渊底打开空棺，取出遗书「若你读到——莫要再让她等」"]);
+    const finalScript = scriptFor(2, ["顾甲在渊底打开空棺，取出遗书「若你读到——莫要再让她等」"]);
     const report = evaluateSeriesCompletion({
       book,
       episodes: [meta(1), meta(2)],

@@ -77,7 +77,7 @@ export function evaluateSeriesCompletion(params: {
   }
 
   const finalEpisode = episodes.find((episode) => episode.episodeNumber === targetEpisodes);
-  if (!finalEpisode || !["approved", "published", "ready-for-review"].includes(finalEpisode.status)) {
+  if (!finalEpisode || !["approved", "published"].includes(finalEpisode.status)) {
     issues.push({
       severity: "critical",
       code: "episode-status",
@@ -106,7 +106,7 @@ export function evaluateSeriesCompletion(params: {
   }
 
   for (const episode of episodes) {
-    if (episode.status === "audit-failed" || episode.status === "state-degraded"
+    if (!["approved", "published"].includes(episode.status)
       || episode.auditIssues.some((issue) => /^\[critical\]/iu.test(issue))) {
       issues.push({
         severity: "critical",

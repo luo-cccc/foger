@@ -787,6 +787,9 @@ export class Scheduler {
           (rewritten.lengthWarnings?.length ?? 0) === 0,
         );
       }
+      if (rewritten.status === "drafted") {
+        throw new Error("Unattended scheduler received a manual-mode drafted episode.");
+      }
       await this.captureBookMetrics(bookId, (rewritten.lengthWarnings?.length ?? 0) === 0);
       const refreshed = await this.loadEpisodeForRecovery(bookId, current.episodeNumber);
       const rewrittenIssues = rewritten.status === "audit-failed"

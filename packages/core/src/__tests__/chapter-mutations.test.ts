@@ -10,7 +10,8 @@ import {
   executeEpisodeMutation,
 } from "../pipeline/episode-mutations.js";
 import { StateManager } from "../state/manager.js";
-import { createEpisodeScriptMarkdown } from "./episode-test-fixtures.js";
+import { createEpisodeScriptJson, createEpisodeScriptMarkdown } from "./episode-test-fixtures.js";
+import { buildEpisodeReviewEvidence } from "../pipeline/episode-review-evidence.js";
 
 describe("executeEpisodeMutation", () => {
   let root: string;
@@ -46,9 +47,27 @@ describe("executeEpisodeMutation", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  async function seedApprovableEpisode(bookId: string, episodeNumber: number): Promise<void> {
+    const episodesDir = join(state.bookDir(bookId), "episodes");
+    await mkdir(episodesDir, { recursive: true });
+    const jsonFile = `${String(episodeNumber).padStart(4, "0")}_Episode.json`;
+    const json = createEpisodeScriptJson(episodeNumber, `Episode ${episodeNumber}`);
+    await writeFile(join(episodesDir, jsonFile), json, "utf-8");
+    await writeFile(
+      join(episodesDir, `${String(episodeNumber).padStart(4, "0")}_review.json`),
+      JSON.stringify(buildEpisodeReviewEvidence({
+        artifact: `episodes/${jsonFile}`,
+        content: json,
+        issues: [],
+      })),
+      "utf-8",
+    );
+  }
+
   it("approves under the shared book lock and updates the episode timestamp", async () => {
     const originalUpdatedAt = "2026-01-01T00:00:00.000Z";
     await state.saveEpisodeIndex("approve-book", [episode(1, "ready-for-review", originalUpdatedAt)]);
+    await seedApprovableEpisode("approve-book", 1);
     const acquireLock = vi.spyOn(state, "acquireBookLock");
 
     await expect(executeEpisodeMutation({ state }, {
@@ -75,6 +94,7 @@ describe("executeEpisodeMutation", () => {
       episode(2, "audit-failed"),
       episode(3, "approved"),
     ]);
+    await seedApprovableEpisode(bookId, 1);
     const acquireLock = vi.spyOn(state, "acquireBookLock");
 
     await expect(executeCoreMutation({ state }, {
@@ -82,13 +102,13 @@ describe("executeEpisodeMutation", () => {
       bookId,
     })).resolves.toEqual({
       bookId,
-      approvedCount: 2,
-      episodeNumbers: [1, 2],
+      approvedCount: 1,
+      episodeNumbers: [1],
     });
 
     expect(acquireLock).toHaveBeenCalledWith(bookId);
     const updated = await state.loadEpisodeIndex(bookId);
-    expect(updated.map((entry) => entry.status)).toEqual(["approved", "approved", "approved"]);
+    expect(updated.map((entry) => entry.status)).toEqual(["approved", "audit-failed", "approved"]);
     await expect(stat(join(state.bookDir(bookId), ".write.lock"))).rejects.toThrow();
   });
 
@@ -97,6 +117,7 @@ describe("executeEpisodeMutation", () => {
     await state.saveEpisodeIndex(bookId, [episode(1, "ready-for-review")]);
     const episodesDir = join(state.bookDir(bookId), "episodes");
     await mkdir(episodesDir, { recursive: true });
+    await writeFile(join(episodesDir, "0001_archive.json"), createEpisodeScriptJson(1), "utf-8");
     await writeFile(
       join(episodesDir, "0001_review.json"),
       JSON.stringify({
@@ -136,6 +157,22 @@ describe("executeEpisodeMutation", () => {
     })).rejects.toMatchObject({ code: "EPISODE_HAS_BLOCKING_REVIEW_FINDINGS" });
   });
 
+  it("blocks approval when review evidence is missing or the episode failed audit", async () => {
+    await state.saveEpisodeIndex("missing-evidence-book", [episode(1, "ready-for-review")]);
+    await expect(executeEpisodeMutation({ state }, {
+      kind: "approve",
+      bookId: "missing-evidence-book",
+      episodeNumber: 1,
+    })).rejects.toMatchObject({ code: "EPISODE_HAS_BLOCKING_REVIEW_FINDINGS" });
+
+    await state.saveEpisodeIndex("failed-approval-book", [episode(1, "audit-failed")]);
+    await expect(executeEpisodeMutation({ state }, {
+      kind: "approve",
+      bookId: "failed-approval-book",
+      episodeNumber: 1,
+    })).rejects.toMatchObject({ code: "EPISODE_NOT_READY_FOR_APPROVAL" });
+  });
+
   it("throws a typed error for a missing episode and releases the lock", async () => {
     await state.saveEpisodeIndex("missing-book", [episode(1)]);
 
@@ -149,26 +186,33 @@ describe("executeEpisodeMutation", () => {
     await release();
   });
 
-  it("preserves subsequent episodes when legacy reject behavior is requested", async () => {
+  it("rejects keep-subsequent when later episodes depend on the rejected episode", async () => {
     await state.saveEpisodeIndex("keep-book", [episode(1), episode(2)]);
 
-    const result = await executeEpisodeMutation({ state }, {
+    await expect(executeEpisodeMutation({ state }, {
       kind: "reject",
       bookId: "keep-book",
       episodeNumber: 1,
       keepSubsequent: true,
       reason: "Continuity issue",
-    });
-
-    expect(result).toEqual({
-      bookId: "keep-book",
-      episodeNumber: 1,
-      status: "rejected",
-      discarded: [],
-      keepSubsequent: true,
-    });
+    })).rejects.toMatchObject({ code: "UNSAFE_REJECT_WITH_DEPENDENTS" });
     const index = await state.loadEpisodeIndex("keep-book");
     expect(index).toHaveLength(2);
+    expect(index[0]).not.toMatchObject({ status: "rejected" });
+  });
+
+  it("allows keeping only the latest rejected artifact", async () => {
+    await state.saveEpisodeIndex("keep-latest-book", [episode(1)]);
+
+    await expect(executeEpisodeMutation({ state }, {
+      kind: "reject",
+      bookId: "keep-latest-book",
+      episodeNumber: 1,
+      keepSubsequent: true,
+      reason: "Continuity issue",
+    })).resolves.toMatchObject({ status: "rejected", keepSubsequent: true });
+
+    const index = await state.loadEpisodeIndex("keep-latest-book");
     expect(index[0]).toMatchObject({ status: "rejected", reviewNote: "Continuity issue" });
   });
 
@@ -248,6 +292,7 @@ describe("executeEpisodeMutation", () => {
     await mkdir(episodesDir, { recursive: true });
     await mkdir(runtimeDir, { recursive: true });
     await writeFile(join(episodesDir, "0001_Original.md"), createEpisodeScriptMarkdown(1, "Original"), "utf-8");
+    await writeFile(join(episodesDir, "0001_Original.json"), createEpisodeScriptJson(1, "Original"), "utf-8");
     await writeFile(join(runtimeDir, "episode-0001.trace.json"), "{}", "utf-8");
     await state.saveEpisodeIndex(bookId, [episode(1)]);
 
@@ -262,15 +307,17 @@ describe("executeEpisodeMutation", () => {
       bookId,
       episodeNumber: 1,
       status: "audit-failed",
-      warning: "[warning] Manual episode edit requires review before continuation.",
+      warning: "[critical] Manual episode edit requires review before continuation.",
     });
     await expect(readFile(join(episodesDir, "0001_Original.md"), "utf-8"))
       .resolves.toContain("Updated");
+    await expect(readFile(join(episodesDir, "0001_Original.json"), "utf-8"))
+      .resolves.toContain('"title": "Updated"');
     await expect(stat(join(runtimeDir, "episode-0001.trace.json"))).rejects.toThrow();
     const [updated] = await state.loadEpisodeIndex(bookId);
     expect(updated).toMatchObject({
       status: "audit-failed",
-      auditIssues: ["[warning] Manual episode edit requires review before continuation."],
+      auditIssues: ["[critical] Manual episode edit requires review before continuation."],
     });
   });
 

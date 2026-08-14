@@ -62,18 +62,18 @@ describe("ClaimValidatorAgent", () => {
         id: "s-1",
         claimType: "secret_truth",
         content: "宗门高层早已知道真相。",
-        visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["林月"] },
+        visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["林己"] },
       }),
     ];
     const compiled = compileEpisodeClaims(claims, {
       episodeNumber: 4,
-      pov: "林月",
-      memo: "本章让林月直接确认 s-1，宗门高层早已知道真相。",
+      pov: "林己",
+      memo: "本章让林己直接确认 s-1，宗门高层早已知道真相。",
       activeHookIds: [],
     });
 
     const issues = agent.runPreWriteClaimGate({
-      text: "本章让林月直接确认 s-1，宗门高层早已知道真相。",
+      text: "本章让林己直接确认 s-1，宗门高层早已知道真相。",
       compiled,
       phase: "pre",
     });
@@ -92,14 +92,14 @@ describe("ClaimValidatorAgent", () => {
       id: "s-2",
       claimType: "secret_truth",
       content: "宗门高层早已知道七号门真相。",
-      visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["林月"] },
+      visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["林己"] },
     });
 
     const issues = agent.runPostWriteClaimGate({
-      text: "林月只觉得有人在隐瞒，却没有真正触到核心秘密。",
+      text: "林己只觉得有人在隐瞒，却没有真正触到核心秘密。",
       compiled: compileEpisodeClaims([reveal], {
         episodeNumber: 4,
-        pov: "林月",
+        pov: "林己",
         memo: "本章揭示 s-2，宗门高层早已知道七号门真相。",
         activeHookIds: ["s-2"],
       }),

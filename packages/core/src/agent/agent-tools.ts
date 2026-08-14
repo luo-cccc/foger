@@ -29,6 +29,16 @@ function textResult<T = undefined>(text: string, details?: T): AgentToolResult<T
   return { content: [{ type: "text", text }], details: details as T };
 }
 
+function errorResult(text: string): AgentToolResult<undefined>;
+function errorResult<T>(text: string, details: T): AgentToolResult<T>;
+function errorResult<T = undefined>(text: string, details?: T): AgentToolResult<T> {
+  return {
+    content: [{ type: "text", text }],
+    details: details as T,
+    isError: true,
+  } as AgentToolResult<T> & { readonly isError: true };
+}
+
 /**
  * Resolve a user-supplied relative path against the books root and guard
  * against path-traversal (../ etc.).
@@ -383,10 +393,10 @@ export function createSubAgentTool(
           throw new Error("This confirmed book-creation turn can only run the architect. Open the created book or use the book session to write episodes.");
         }
         if (!activeBookId && agent !== "architect") {
-          return textResult("No active book. Only the architect agent can create a book from this session.");
+          return errorResult("No active book. Only the architect agent can create a book from this session.");
         }
         if (activeBookId && agent === "architect" && !revise) {
-          return textResult(
+          return errorResult(
             sessionIsZh
               ? "当前已有书籍，不需要建书。如果你想创建新书，请先回到首页。"
               : "This session already has a book, so no new book is needed. To create a new book, go back to the home page first.",
@@ -398,7 +408,7 @@ export function createSubAgentTool(
             const createBookPayload = options.actionPayload?.createBook;
             if (revise) {
               if (!activeBookId) {
-                return textResult("Open the book first before revising its foundation.");
+                return errorResult("Open the book first before revising its foundation.");
               }
               const targetBookId = resolveToolBookId("architect", bookId, activeBookId);
               if (!projectRoot) {
@@ -420,7 +430,7 @@ export function createSubAgentTool(
             const confirmedTitle = createBookPayload?.title?.trim();
             const resolvedTitle = confirmedTitle || title?.trim();
             if (!resolvedTitle) {
-              return textResult('Error: title is required for the architect agent.');
+              return errorResult('Error: title is required for the architect agent.');
             }
             const id = confirmedTitle
               ? deriveBookIdFromTitle(confirmedTitle) || `book-${Date.now().toString(36)}`
@@ -463,20 +473,25 @@ export function createSubAgentTool(
             const resultDurationSeconds = (result as any).episodeDurationSeconds ?? "unknown";
             const episodeNumberResult = (result as any).episodeNumber ?? (result as any).episodeNumber;
             const titleResult = (result as any).title;
-            const message = resultStatus && resultStatus !== "ready-for-review" && resultStatus !== "active"
-              ? `Episode output for "${targetBookId}" ended with status "${resultStatus}" and needs review before it is treated as complete. Duration: ${resultDurationSeconds}s.`
-              : `Episode written for "${targetBookId}". Duration: ${resultDurationSeconds}s.`;
-            return textResult(
-              message,
-              {
-                kind: "episode_written",
-                bookId: targetBookId,
-                episodeNumber: episodeNumberResult,
-                title: titleResult,
-                episodeDurationSeconds: resultDurationSeconds,
-                status: resultStatus,
-              },
-            );
+            const episodeLabel = episodeNumberResult ?? "latest";
+            const message = resultStatus !== "ready-for-review"
+              ? (sessionIsZh
+                  ? `已为 ${targetBookId} 写出第 ${episodeLabel} 集，时长 ${resultDurationSeconds} 秒，但审稿未通过，状态 ${resultStatus}，需要复核后再继续。`
+                  : `Episode output for "${targetBookId}" ended with status "${resultStatus}" and needs review before it is treated as complete. Duration: ${resultDurationSeconds}s.`)
+              : (sessionIsZh
+                  ? `已为 ${targetBookId} 完成第 ${episodeLabel} 集，时长 ${resultDurationSeconds} 秒。`
+                  : `Episode written for "${targetBookId}". Duration: ${resultDurationSeconds}s.`);
+            const details = {
+              kind: "episode_written",
+              bookId: targetBookId,
+              episodeNumber: episodeNumberResult,
+              title: titleResult,
+              episodeDurationSeconds: resultDurationSeconds,
+              status: resultStatus,
+            };
+            return resultStatus === "ready-for-review"
+              ? textResult(message, details)
+              : errorResult(message, details);
           }
 
           case "auditor": {
@@ -537,7 +552,7 @@ export function createSubAgentTool(
                       : []),
                   ].join("\n")
                 : "";
-              return textResult(
+              return errorResult(
                 `Revision not applied for "${targetBookId}" episode ${resultEpisode ?? "latest"}: ${result.skippedReason ?? result.status ?? "pipeline kept the original episode"}.${diagnosticText}`,
                 details,
               );
@@ -551,9 +566,9 @@ export function createSubAgentTool(
 
           case "exporter": {
             const targetBookId = resolveToolBookId("exporter", bookId, activeBookId);
-            if (!projectRoot) return textResult("Error: exporter requires projectRoot.");
+            if (!projectRoot) return errorResult("Error: exporter requires projectRoot.");
             const inferredFormat = format ?? "screenplay-md";
-            const exportApprovedOnly = approvedOnly ?? /approved|已通过|通过剧集/.test(instruction ?? "");
+            const exportApprovedOnly = approvedOnly ?? false;
             const state = new StateManager(projectRoot);
             const result = await writeExportArtifact(state, targetBookId, {
               format: inferredFormat,
@@ -565,12 +580,12 @@ export function createSubAgentTool(
           }
 
           default:
-            return textResult(`Unknown agent: ${agent}`);
+            return errorResult(`Unknown agent: ${agent}`);
         }
       } catch (err: any) {
         if (agent === "architect" && err instanceof ArchitectIncompleteFoundationError) {
           const missing = err.missing.join(", ");
-          return textResult(
+          return errorResult(
             [
               err.message,
               "",
@@ -586,7 +601,7 @@ export function createSubAgentTool(
           );
         }
         console.error(`[sub_agent] "${agent}" failed:`, err);
-        throw err;
+        return errorResult(`[sub_agent] "${agent}" failed: ${err?.message ?? String(err)}`);
       }
     },
   };
@@ -706,7 +721,7 @@ export function createWriteTruthFileTool(
         await tools.writeTruthFile(bookId, fileName, params.content);
         return textResult(`Updated "${fileName}" for "${bookId}".`);
       } catch (err: any) {
-        return textResult(`write_truth_file failed: ${err?.message ?? String(err)}`);
+        return errorResult(`write_truth_file failed: ${err?.message ?? String(err)}`);
       }
     },
   };
@@ -850,99 +865,14 @@ export function createReadTool(
         const content = await readFile(filePath, "utf-8");
         return textResult(content);
       } catch (err: any) {
-        return textResult(`Failed to read "${params.path}": ${err?.message ?? String(err)}`);
+        return errorResult(`Failed to read "${params.path}": ${err?.message ?? String(err)}`);
       }
     },
   };
 }
 
 // ---------------------------------------------------------------------------
-// 3. Edit Tool
-// ---------------------------------------------------------------------------
-
-const EditParams = Type.Object({
-  path: Type.String({ description: "File path relative to books/" }),
-  old_string: Type.String({ description: "Exact string to find in the file" }),
-  new_string: Type.String({ description: "Replacement string" }),
-});
-
-export function createEditTool(projectRoot: string): AgentTool<typeof EditParams> {
-  const booksRoot = join(projectRoot, "books");
-
-  return {
-    name: "edit",
-    description:
-      "Edit a file under books/ via exact string replacement. " +
-      "old_string must appear exactly once in the file. " +
-      "For episode text use patch_episode_text; for canonical truth files (outline/story_frame.md, outline/volume_map.md, roles/**/*.md, current_focus.md, author_intent.md) prefer write_truth_file; " +
-      "to rewrite or polish a whole episode call sub_agent with agent=\"reviser\".",
-    label: "Edit File",
-    parameters: EditParams,
-    async execute(
-      _toolCallId: string,
-      params: Static<typeof EditParams>,
-    ): Promise<AgentToolResult<undefined>> {
-      try {
-        const filePath = safeBooksPath(booksRoot, params.path);
-        const content = await readFile(filePath, "utf-8");
-        const idx = content.indexOf(params.old_string);
-        if (idx === -1) {
-          return textResult(`old_string not found in "${params.path}".`);
-        }
-        if (content.indexOf(params.old_string, idx + 1) !== -1) {
-          return textResult(`old_string appears more than once in "${params.path}". Provide a more specific match.`);
-        }
-        const updated = content.slice(0, idx) + params.new_string + content.slice(idx + params.old_string.length);
-        await writeFile(filePath, updated, "utf-8");
-        return textResult(`File "${params.path}" updated successfully.`);
-      } catch (err: any) {
-        return textResult(`Failed to edit "${params.path}": ${err?.message ?? String(err)}`);
-      }
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// 4. Write Tool
-// ---------------------------------------------------------------------------
-
-const WriteFileParams = Type.Object({
-  path: Type.String({ description: "File path relative to books/" }),
-  content: Type.String({ description: "Full file content to write" }),
-});
-
-export function createWriteFileTool(projectRoot: string): AgentTool<typeof WriteFileParams> {
-  const booksRoot = join(projectRoot, "books");
-
-  return {
-    name: "write",
-    description:
-      "Create a new file, or fully replace an existing file's content under books/. " +
-      "Parent directories are created automatically. Existing content is overwritten silently — " +
-      "for canonical truth files prefer write_truth_file; " +
-      "for whole-episode rewrites/polishing call sub_agent with agent=\"reviser\".",
-    label: "Write File",
-    parameters: WriteFileParams,
-    async execute(
-      _toolCallId: string,
-      params: Static<typeof WriteFileParams>,
-    ): Promise<AgentToolResult<undefined>> {
-      try {
-        const filePath = safeBooksPath(booksRoot, params.path);
-        const parentDir = resolve(filePath, "..");
-        const { mkdir } = await import("node:fs/promises");
-        await mkdir(parentDir, { recursive: true });
-        await writeFile(filePath, params.content, "utf-8");
-        return textResult(`File "${params.path}" written successfully.`);
-      } catch (err: any) {
-        return textResult(`Failed to write "${params.path}": ${err?.message ?? String(err)}`);
-      }
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// 5. Grep Tool
+// 3. Grep Tool
 // ---------------------------------------------------------------------------
 
 const GrepParams = Type.Object({
@@ -1008,7 +938,7 @@ export function createGrepTool(projectRoot: string): AgentTool<typeof GrepParams
 
         return textResult(truncated);
       } catch (err: any) {
-        return textResult(`Grep failed: ${err?.message ?? String(err)}`);
+        return errorResult(`Grep failed: ${err?.message ?? String(err)}`);
       }
     },
   };
@@ -1061,7 +991,7 @@ export function createLsTool(projectRoot: string): AgentTool<typeof LsParams> {
 
         return textResult(details.join("\n"));
       } catch (err: any) {
-        return textResult(`Failed to list "${params.bookId}/${params.subdir ?? ""}": ${err?.message ?? String(err)}`);
+        return errorResult(`Failed to list "${params.bookId}/${params.subdir ?? ""}": ${err?.message ?? String(err)}`);
       }
     },
   };

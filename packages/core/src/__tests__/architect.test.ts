@@ -408,14 +408,14 @@ describe("ArchitectAgent", () => {
           "=== SECTION: roles ===",
           "---ROLE---",
           "tier: major",
-          "name: 林渡",
+          "name: 林庚",
           "---CONTENT---",
           "## 当前现状",
           "他在站台值夜班。",
           "",
           "=== SECTION: book_rules ===",
           "## 主角",
-          "- 名字：林渡",
+          "- 名字：林庚",
           "",
           "=== SECTION: pending_hooks ===",
           "| hook_id | 起始章节 | 类型 | 状态 | 最近推进 | 预期回收 | 回收节奏 | 上游依赖 | 回收卷 | 核心 | 半衰期 | 备注 |",
@@ -730,7 +730,7 @@ describe("ArchitectAgent", () => {
           "=== SECTION: roles ===",
           "---ROLE---",
           "tier: major",
-          "name: 林辞",
+          "name: 林乙",
           "---CONTENT---",
           "## 核心标签",
           "冷静、执着",
@@ -745,7 +745,7 @@ describe("ArchitectAgent", () => {
           "---",
           "version: \"1.0\"",
           "protagonist:",
-          "  name: 林辞",
+          "  name: 林乙",
           "---",
           "",
           "=== SECTION: pending_hooks ===",
@@ -762,7 +762,7 @@ describe("ArchitectAgent", () => {
     expect(output.volumeMap).toContain("段 1");
     expect(output.roles).toBeDefined();
     expect(output.roles!.length).toBe(2);
-    expect(output.roles![0]).toMatchObject({ tier: "major", name: "林辞" });
+    expect(output.roles![0]).toMatchObject({ tier: "major", name: "林乙" });
     expect(output.roles![1]).toMatchObject({ tier: "minor", name: "配角A" });
   });
 
@@ -783,14 +783,14 @@ describe("ArchitectAgent", () => {
         storyFrame: "## 主题\n\n段落内容",
         volumeMap: "## 卷一\n\n卷一段落",
         roles: [
-          { tier: "major", name: "林辞", content: "主角描写" },
+          { tier: "major", name: "林乙", content: "主角描写" },
           { tier: "minor", name: "配角A", content: "配角描写" },
         ],
       }, false, "zh");
 
       await expect(access(join(tmpDir, "story", "outline", "story_frame.md"))).resolves.not.toThrow();
       await expect(access(join(tmpDir, "story", "outline", "volume_map.md"))).resolves.not.toThrow();
-      await expect(access(join(tmpDir, "story", "roles", "主要角色", "林辞.md"))).resolves.not.toThrow();
+      await expect(access(join(tmpDir, "story", "roles", "主要角色", "林乙.md"))).resolves.not.toThrow();
       await expect(access(join(tmpDir, "story", "roles", "次要角色", "配角A.md"))).resolves.not.toThrow();
       // Shim 文件也要在（向后兼容读取点用）
       await expect(access(join(tmpDir, "story", "story_bible.md"))).resolves.not.toThrow();

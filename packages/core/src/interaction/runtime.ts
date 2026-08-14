@@ -85,6 +85,69 @@ interface InteractionToolMetadata {
   readonly details?: Readonly<Record<string, unknown>>;
 }
 
+interface StructuredOperationOutcome {
+  readonly succeeded: boolean;
+  readonly status: "completed" | "blocked" | "failed";
+  readonly reason?: string;
+}
+
+function readOperationField(value: unknown, key: string): unknown {
+  return value && typeof value === "object" && key in value
+    ? (value as Readonly<Record<string, unknown>>)[key]
+    : undefined;
+}
+
+function writerOperationOutcome(value: unknown): StructuredOperationOutcome {
+  const status = readOperationField(value, "status");
+  if (status === "ready-for-review") {
+    return { succeeded: true, status: "completed" };
+  }
+  if (status === "state-degraded") {
+    return {
+      succeeded: false,
+      status: "blocked",
+      reason: "Episode body was persisted, but derived story state is degraded and must be repaired.",
+    };
+  }
+  return {
+    succeeded: false,
+    status: "failed",
+    reason: typeof status === "string"
+      ? `Episode writing ended with status "${status}".`
+      : "Episode writing did not return a successful status.",
+  };
+}
+
+function reviserOperationOutcome(value: unknown): StructuredOperationOutcome {
+  const applied = readOperationField(value, "applied");
+  const status = readOperationField(value, "status");
+  const skippedReason = readOperationField(value, "skippedReason");
+  if (applied === false) {
+    return {
+      succeeded: false,
+      status: "blocked",
+      reason: typeof skippedReason === "string"
+        ? skippedReason
+        : "Revision was not applied; the original episode was preserved.",
+    };
+  }
+  if (status === "audit-failed") {
+    return {
+      succeeded: false,
+      status: "failed",
+      reason: "The revised episode still has critical audit failures.",
+    };
+  }
+  if (status === "state-degraded") {
+    return {
+      succeeded: false,
+      status: "blocked",
+      reason: "The revision was written, but derived story state is degraded and must be repaired.",
+    };
+  }
+  return { succeeded: true, status: "completed" };
+}
+
 function extractToolMetadata(value: unknown): InteractionToolMetadata {
   const episodeNumber = typeof value === "object" && value !== null && "episodeNumber" in value
     && typeof (value as { episodeNumber?: unknown }).episodeNumber === "number"
@@ -556,6 +619,23 @@ export async function runInteractionRequest(params: {
     },
   });
 
+  const markUnsuccessful = (
+    nextSession: InteractionSession,
+    outcome: StructuredOperationOutcome,
+    episodeNumber?: number,
+  ): InteractionSession => ({
+    ...clearPendingDecision(nextSession),
+    currentExecution: {
+      status: outcome.status,
+      bookId: nextSession.activeBookId,
+      episodeNumber: episodeNumber ?? nextSession.activeEpisodeNumber,
+      stageLabel: localize(language, {
+        zh: outcome.status === "blocked" ? "需要处理后继续" : "执行失败",
+        en: outcome.status === "blocked" ? "requires intervention" : "failed",
+      }),
+    },
+  });
+
   const helperContext: RuntimeRequestHelpers = {
     language,
     addEvent,
@@ -596,6 +676,25 @@ export async function runInteractionRequest(params: {
       const metadata = extractToolMetadata(toolResult);
       session = bindActiveBook(session, bookId, metadata.activeEpisodeNumber);
       session = appendToolEvents(session, metadata.events);
+      const outcome = writerOperationOutcome(toolResult);
+      if (!outcome.succeeded) {
+        const unsuccessful = markUnsuccessful(session, outcome, metadata.activeEpisodeNumber);
+        const detail = metadata.responseText ?? localize(language, {
+          zh: outcome.status === "blocked"
+            ? `${bookId} 的剧集正文已生成，但状态同步未完成，需要修复后继续。`
+            : `${bookId} 的下一集写作未通过质量门禁。`,
+          en: outcome.reason ?? `write_next for ${bookId} did not complete successfully.`,
+        });
+        return {
+          session: addEvent(
+            unsuccessful,
+            outcome.status === "blocked" ? "task.blocked" : "task.failed",
+            outcome.status,
+            detail,
+          ),
+          responseText: detail,
+        };
+      }
       const pendingDecision = metadata.pendingDecision ?? buildPendingDecision(
         session,
         request,
@@ -651,6 +750,25 @@ export async function runInteractionRequest(params: {
       const episodeNumber = metadata.activeEpisodeNumber ?? request.episodeNumber;
       session = bindActiveBook(session, bookId, episodeNumber);
       session = appendToolEvents(session, metadata.events);
+      const outcome = reviserOperationOutcome(toolResult);
+      if (!outcome.succeeded) {
+        const unsuccessful = markUnsuccessful(session, outcome, episodeNumber);
+        const detail = metadata.responseText ?? localize(language, {
+          zh: outcome.status === "blocked"
+            ? `第 ${episodeNumber} 集修订未应用，原稿已保留。`
+            : `第 ${episodeNumber} 集修订后仍未通过质量门禁。`,
+          en: outcome.reason ?? `${request.intent} for ${bookId} did not complete successfully.`,
+        });
+        return {
+          session: addEvent(
+            unsuccessful,
+            outcome.status === "blocked" ? "task.blocked" : "task.failed",
+            outcome.status,
+            detail,
+          ),
+          responseText: detail,
+        };
+      }
       const pendingDecision = metadata.pendingDecision ?? buildPendingDecision(
         session,
         request,

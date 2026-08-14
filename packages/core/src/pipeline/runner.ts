@@ -82,6 +82,7 @@ import { rewriteStructuredStateFromMarkdown } from "../state/state-bootstrap.js"
 import { appendFile, cp, readFile, readdir, writeFile, mkdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { atomicWriteFile } from "../utils/atomic-write.js";
 import {
   buildStateDegradedIssues,
   buildStateDegradedReviewNote,
@@ -445,7 +446,7 @@ export interface EpisodePipelineResult {
   readonly episodeDurationSeconds: number;
   readonly auditResult: AuditResult;
   readonly revised: boolean;
-  readonly status: "ready-for-review" | "audit-failed" | "state-degraded";
+  readonly status: "drafted" | "ready-for-review" | "audit-failed" | "state-degraded";
   readonly lengthWarnings?: ReadonlyArray<string>;
   readonly lengthTelemetry?: LengthTelemetry;
   readonly tokenUsage?: TokenUsageSummary;
@@ -564,7 +565,7 @@ interface MergedAuditEvaluation {
 }
 
 interface PreparedEpisodeAuditGates {
-  readonly runPostWriteChecks: (content: string) => ReadonlyArray<AuditIssue>;
+  readonly runPostWriteChecks: (content: string, format: "screenplay" | "prose") => ReadonlyArray<AuditIssue>;
   readonly compiledClaims: CompiledEpisodeClaims | null;
   readonly volumeContract: VolumeContract | null;
   readonly volumeProgress: VolumeProgressFile | null;
@@ -639,6 +640,41 @@ async function loadPersistedEpisodeScript(bookDir: string, episode: number): Pro
     return script;
   } catch {
     return undefined;
+  }
+}
+
+async function writePersistedEpisodeScriptPair(params: {
+  readonly markdownPath: string;
+  readonly jsonPath: string;
+  readonly script: EpisodeScript;
+}): Promise<void> {
+  const [previousMarkdown, previousJson] = await Promise.all([
+    readFile(params.markdownPath, "utf8"),
+    readFile(params.jsonPath, "utf8"),
+  ]);
+  try {
+    await atomicWriteFile(params.jsonPath, `${JSON.stringify(params.script, null, 2)}\n`, "utf8");
+    await atomicWriteFile(params.markdownPath, renderEpisodeScriptMarkdown(params.script), "utf8");
+  } catch (error) {
+    const rollbackErrors: unknown[] = [];
+    for (const [path, content] of [
+      [params.jsonPath, previousJson],
+      [params.markdownPath, previousMarkdown],
+    ] as const) {
+      try {
+        await atomicWriteFile(path, content, "utf8");
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (rollbackErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...rollbackErrors],
+        `Episode artifact update failed and rollback encountered ${rollbackErrors.length} additional error(s).`,
+        { cause: error },
+      );
+    }
+    throw error;
   }
 }
 
@@ -1855,7 +1891,11 @@ export class PipelineRunner {
       throw new Error(`No episodes to audit for "${bookId}"`);
     }
 
-    const content = await this.readEpisodeContent(bookDir, targetEpisode);
+    const episodeScript = await loadPersistedEpisodeScript(bookDir, targetEpisode);
+    if (!episodeScript) {
+      throw new Error(`Episode ${targetEpisode} has no valid authoritative screenplay JSON.`);
+    }
+    const content = renderEpisodeScriptMarkdown(episodeScript);
     const auditor = new ContinuityAuditor(this.agentCtxFor("auditor", bookId));
     const { profile: gp } = await this.loadGenreProfile(book.genre);
     const language = book.language ?? gp.language;
@@ -1907,7 +1947,6 @@ export class PipelineRunner {
       auditOptions,
       runPostWriteChecks: auditGates.runPostWriteChecks,
     });
-    const episodeScript = await loadPersistedEpisodeScript(bookDir, targetEpisode);
     const previousEpisodeScript = episodeScript
       ? await loadPersistedEpisodeScript(bookDir, targetEpisode - 1)
       : undefined;
@@ -1939,6 +1978,21 @@ export class PipelineRunner {
       issues: deduplicateAuditIssues([...evaluation.auditResult.issues, ...episodeIssues]),
     };
 
+    let stateCommitError: unknown;
+    const hadDurableSnapshot = await stat(
+      join(bookDir, "story", "snapshots", String(targetEpisode)),
+    ).then((entry) => entry.isDirectory()).catch(() => false);
+    if (deriveAuditPassed(result) && !hadDurableSnapshot) {
+      try {
+        await this._resyncEpisodeArtifactsLocked(bookId, targetEpisode, {
+          finalStatus: "ready-for-review",
+          auditIssues: result.issues,
+        });
+      } catch (error) {
+        stateCommitError = error;
+      }
+    }
+
     if (episodeScript) {
       const episodesDir = join(bookDir, "episodes");
       const paddedNum = String(targetEpisode).padStart(4, "0");
@@ -1967,9 +2021,6 @@ export class PipelineRunner {
         episode: targetEpisode,
         targetDurationSeconds: book.episodeDurationSeconds ?? EPISODE_DURATION_TARGET_SECONDS,
       });
-      // Canon evolves with the story: an audited episode that establishes a
-      // claim fact settles it and records character knowledge. Idempotent.
-      await applyEpisodeCanonUpdates({ bookDir, script: episodeScript });
     }
 
     // Update index with audit result
@@ -1978,7 +2029,7 @@ export class PipelineRunner {
     const hasDurableSnapshot = await stat(
       join(bookDir, "story", "snapshots", String(targetEpisode)),
     ).then((entry) => entry.isDirectory()).catch(() => false);
-    const stateRepairIssue: AuditIssue | undefined = deriveAuditPassed(result) && !hasDurableSnapshot
+    const stateRepairIssue: AuditIssue | undefined = deriveAuditPassed(result) && (!hasDurableSnapshot || stateCommitError !== undefined)
       ? {
           severity: "warning",
           category: "state-sync-required",
@@ -2072,9 +2123,19 @@ export class PipelineRunner {
       if (!episodeMeta) {
         throw new Error(`Episode ${targetEpisode} not found in index`);
       }
+      const latestPersistedEpisode = Math.max(...index.map((episode) => episode.episodeNumber));
+      if (targetEpisode !== latestPersistedEpisode) {
+        throw new Error(
+          `Only the latest episode can be revised safely (latest is ${latestPersistedEpisode}); rewrite from episode ${targetEpisode} to rebuild dependent state.`,
+        );
+      }
 
       // Re-audit to get structured issues (index only stores strings)
-      const content = await this.readEpisodeContent(bookDir, targetEpisode);
+      const authoritativeScript = await loadPersistedEpisodeScript(bookDir, targetEpisode);
+      if (!authoritativeScript) {
+        throw new Error(`Episode ${targetEpisode} has no valid authoritative screenplay JSON.`);
+      }
+      const content = renderEpisodeScriptMarkdown(authoritativeScript);
       const auditor = new ContinuityAuditor(this.agentCtxFor("auditor", bookId));
       const screenplayBook = book.format === "screenplay" || book.schemaVersion === "inkos-episode-v2";
       const { profile: gp } = await this.loadGenreProfile(book.genre);
@@ -2409,37 +2470,21 @@ export class PipelineRunner {
       const files = await readdir(episodesDir);
       const paddedNum = String(targetEpisode).padStart(4, "0");
       const existingFile = files.find((f) => f.startsWith(paddedNum) && f.endsWith(".md"));
-      if (!existingFile) {
+      const existingJsonFile = files.find((f) => f.startsWith(paddedNum) && f.endsWith(".json") && !f.endsWith("_review.json"));
+      if (!existingFile || !existingJsonFile) {
         throw new Error(`Episode ${targetEpisode} file not found in ${episodesDir} (expected filename starting with ${paddedNum})`);
       }
-      const reviseLang = book.language ?? gp.language;
-      const reviseHeading = reviseLang === "en"
-        ? `# Episode ${targetEpisode}: ${episodeMeta.title}`
-        : `# 第${targetEpisode}集 ${episodeMeta.title}`;
-      await writeFile(
-        join(episodesDir, existingFile),
-        `${reviseHeading}\n\n${normalizedRevision.content}`,
-        "utf-8",
-      );
-
-      // Keep the JSON sidecar in sync with the revised projection. Previously
-      // only the .md was rewritten, so deterministic gates that read the JSON
-      // (e.g. the emotional-hook question check) kept validating the stale
-      // pre-revision script and the episode could never pass (observed in
-      // 20-episode production testing).
-      const existingJsonFile = files.find((f) => f.startsWith(paddedNum) && f.endsWith(".json") && !f.endsWith("_review.json"));
-      if (existingJsonFile) {
-        await writeFile(
-          join(episodesDir, existingJsonFile),
-          `${JSON.stringify(normalizedRevision.script, null, 2)}\n`,
-          "utf-8",
-        );
-      }
+      await writePersistedEpisodeScriptPair({
+        markdownPath: join(episodesDir, existingFile),
+        jsonPath: join(episodesDir, existingJsonFile),
+        script: normalizedRevision.script,
+      });
 
       // An explicit revision may keep a body that still needs review, but
       // failed bodies must not mutate durable truth, memory, or snapshots.
       const storyDir = join(bookDir, "story");
       if (truthAccepted) {
+        await this.state.restoreCanonSnapshot(bookId, targetEpisode - 1);
         if (reviseOutput.updatedState !== "(状态卡未更新)") {
           await writeFile(join(storyDir, "current_state.md"), reviseOutput.updatedState, "utf-8");
         }
@@ -2501,6 +2546,7 @@ export class PipelineRunner {
           zh: `更新第${targetEpisode}集索引与快照`,
           en: `updating episode index and snapshots for episode ${targetEpisode}`,
         });
+        await applyEpisodeCanonUpdates({ bookDir, script: normalizedRevision.script });
         await this.state.snapshotState(bookId, targetEpisode);
         await this.syncNarrativeMemoryIndex(bookId);
         await this.syncCurrentStateFactHistory(bookId, targetEpisode);
@@ -2885,22 +2931,42 @@ export class PipelineRunner {
               const script = parseEpisodeScriptOutput(content, episodeNumber);
               const recentScripts = await loadRecentEpisodeScripts(bookDir, episodeNumber);
               const deterministicIssues = auditEpisodeScript(script, previousEpisodeScript, book.episodeDurationSeconds ?? EPISODE_DURATION_TARGET_SECONDS, settingsIndex, recentScripts, pipelineLang);
+              // The deterministic post-write gates (memo commitments, hook
+              // ledger, AI-tell words, claim/volume gates) must run before the
+              // short-circuit below, or the write path reports "passed" for
+              // episodes the standalone audit fails (observed: a
+              // memo-禁止事项违规 critical while auditEpisodeScript was clean).
+              // Same shot-surface derivation as evaluateMergedAudit so both
+              // paths see identical input; zero LLM cost, so the cost profile
+              // of a clean gate is unchanged.
+              const screenplayShotSurface = script.scenes.flatMap((scene) => scene.shots.flatMap((shot) => [
+                shot.visual,
+                shot.action,
+                shot.narration,
+                ...shot.dialogue.map((line) => `${line.speaker}：${line.text}`),
+                shot.sound,
+              ].filter((part): part is string => Boolean(part?.trim())))).join("\n");
+              const postWriteIssues = auditGates.runPostWriteChecks(screenplayShotSurface, "screenplay");
+              const deterministicBlockingIssues = deduplicateAuditIssues([
+                ...deterministicIssues,
+                ...postWriteIssues,
+              ]);
               // P0-4: a post-revision verification request (patch or rewrite)
               // must reach the LLM regression-checklist verifier even when the
               // deterministic gate is already clean — a clean gate cannot see
               // a lost hook payoff or silently dropped content.
               const verificationRequested = (options?.verificationIssues?.length ?? 0) > 0;
-              if (!verificationRequested && !deterministicIssues.some((issue) => issue.severity === "critical")) {
+              if (!verificationRequested && !deterministicBlockingIssues.some((issue) => issue.severity === "critical")) {
                 return {
                   auditResult: {
                     passed: true,
-                    issues: deterministicIssues,
+                    issues: deterministicBlockingIssues,
                     summary: "Deterministic screenplay quality gate completed.",
                   },
                   aiTellCount: 0,
-                  blockingCount: deterministicIssues.filter((issue) => issue.severity !== "info").length,
+                  blockingCount: deterministicBlockingIssues.filter((issue) => issue.severity !== "info").length,
                   criticalCount: 0,
-                  revisionBlockingIssues: deterministicIssues,
+                  revisionBlockingIssues: deterministicBlockingIssues,
                 };
               }
               const llmEvaluation = await this.evaluateMergedAudit({
@@ -3390,7 +3456,9 @@ export class PipelineRunner {
       hardLengthPassed,
       stateDegraded: episodeStatus === "state-degraded",
     });
-    const resolvedStatus = quality.status;
+    const resolvedStatus: EpisodePipelineResult["status"] = reviewTelemetry.terminationReason === "manual-mode"
+      ? "drafted"
+      : quality.status;
     if (currentOperationId && persistenceOutput.episodeScript) {
       performanceReport = this.buildOperationPerformanceReport(
         bookId,
@@ -3448,7 +3516,6 @@ export class PipelineRunner {
         logSnapshotStage: () =>
           this.logStage(stageLanguage, { zh: "更新剧集索引与快照", en: "updating episode index and snapshots" }),
       });
-      await this.state.commitEpisodePersistence(bookId, episodeNumber, this.activeOperationIds.get(bookId));
       // Review evidence is a derived sidecar. If it was not written (or was
       // lost during a recovery path), rebuild it deterministically from the
       // authoritative episode JSON so audit results never exist without the
@@ -3459,11 +3526,17 @@ export class PipelineRunner {
           episode: episodeNumber,
           targetDurationSeconds: book.episodeDurationSeconds ?? EPISODE_DURATION_TARGET_SECONDS,
         });
-        await applyEpisodeCanonUpdates({
-          bookDir,
-          script: persistenceOutput.episodeScript,
-        });
+        if (resolvedStatus === "ready-for-review") {
+          await applyEpisodeCanonUpdates({
+            bookDir,
+            script: persistenceOutput.episodeScript,
+          });
+          // Canon is part of durable story truth. Refresh the snapshot after
+          // applying it so reject/rewrite can restore the exact prior state.
+          await this.state.snapshotState(bookId, episodeNumber);
+        }
       }
+      await this.state.commitEpisodePersistence(bookId, episodeNumber, this.activeOperationIds.get(bookId));
       if (performanceReport?.status === "budget-exceeded") {
         const budget = revised ? 5 : resolvedStatus === "state-degraded" ? 4 : 3;
         this.emitDiagnostic({
@@ -3698,7 +3771,14 @@ export class PipelineRunner {
     };
   }
 
-  private async _resyncEpisodeArtifactsLocked(bookId: string, episodeNumber?: number): Promise<EpisodePipelineResult> {
+  private async _resyncEpisodeArtifactsLocked(
+    bookId: string,
+    episodeNumber?: number,
+    options: {
+      readonly finalStatus?: "ready-for-review" | "audit-failed";
+      readonly auditIssues?: ReadonlyArray<AuditIssue>;
+    } = {},
+  ): Promise<EpisodePipelineResult> {
     this.throwIfAborted();
     const book = await this.state.loadBookConfig(bookId);
     const bookDir = this.state.bookDir(bookId);
@@ -3870,18 +3950,22 @@ export class PipelineRunner {
       }
 
       this.throwIfAborted();
+      const finalStatus: "ready-for-review" | "audit-failed" = options.finalStatus
+        ?? (targetMeta.status === "state-degraded"
+          ? resolveStateDegradedBaseStatus(targetMeta)
+          : targetMeta.status === "audit-failed"
+            ? "audit-failed"
+            : "ready-for-review");
       await writer.saveEpisode(bookDir, syncedOutput, gp.numericalSystem, pipelineLang);
       await writer.saveNewTruthFiles(bookDir, syncedOutput, pipelineLang);
       await this.syncLegacyStructuredStateFromMarkdown(bookDir, targetEpisode, syncedOutput);
+      if (finalStatus === "ready-for-review" && authoritativeScript) {
+        await applyEpisodeCanonUpdates({ bookDir, script: authoritativeScript });
+      }
       await this.state.snapshotState(bookId, targetEpisode);
 
-      const finalStatus: "ready-for-review" | "audit-failed" = targetMeta.status === "state-degraded"
-        ? resolveStateDegradedBaseStatus(targetMeta)
-        : targetMeta.status === "audit-failed"
-          ? "audit-failed"
-          : "ready-for-review";
       const remainingAuditIssues = finalStatus === "audit-failed"
-        ? auditIssuesFromEpisodeRecovery(targetMeta, content)
+        ? options.auditIssues ?? auditIssuesFromEpisodeRecovery(targetMeta, content)
         : [];
 
       if (targetMeta.status === "state-degraded") {
@@ -4309,7 +4393,30 @@ ${matrix}`,
   private async assertNoPendingStateRepair(bookId: string): Promise<void> {
     const existingIndex = await this.state.loadEpisodeIndex(bookId);
     const latestEpisode = [...existingIndex].sort((left, right) => right.episodeNumber - left.episodeNumber)[0];
-    if (latestEpisode?.status !== "state-degraded" && latestEpisode?.status !== "audit-failed") {
+    if (!latestEpisode) {
+      return;
+    }
+
+    if (latestEpisode.status === "drafted") {
+      throw new Error(
+        `Latest episode ${latestEpisode.episodeNumber} is drafted but not audited. Audit it before continuing.`,
+      );
+    }
+
+    if (latestEpisode.status === "rejected") {
+      throw new Error(
+        `Latest episode ${latestEpisode.episodeNumber} is rejected. Rewrite or remove it before continuing.`,
+      );
+    }
+
+    const book = await this.state.loadBookConfig(bookId);
+    if (latestEpisode.status === "ready-for-review" && book.writing?.reviewMode === "manual") {
+      throw new Error(
+        `Latest episode ${latestEpisode.episodeNumber} is awaiting manual approval. Approve or reject it before continuing.`,
+      );
+    }
+
+    if (latestEpisode.status !== "state-degraded" && latestEpisode.status !== "audit-failed") {
       return;
     }
 
@@ -4383,19 +4490,21 @@ ${matrix}`,
       compiledClaims,
       volumeContract,
       volumeProgress,
-      runPostWriteChecks: (content) => {
-        const baseIssues = validatePostWrite(
-          content,
-          params.genreProfile,
-          parsedBookRules,
-          params.language,
-        ).map((violation) => ({
-          severity: violation.severity === "error" ? "critical" as const : "warning" as const,
-          category: violation.rule,
-          description: violation.description,
-          suggestion: violation.suggestion,
-          repairScope: violation.repairScope,
-        }));
+      runPostWriteChecks: (content, format) => {
+        const baseIssues = format === "prose"
+          ? validatePostWrite(
+              content,
+              params.genreProfile,
+              parsedBookRules,
+              params.language,
+            ).map((violation) => ({
+              severity: violation.severity === "error" ? "critical" as const : "warning" as const,
+              category: violation.rule,
+              description: violation.description,
+              suggestion: violation.suggestion,
+              repairScope: violation.repairScope,
+            }))
+          : [];
         const memoBody = params.episodeMemo?.body ?? "";
         const ledgerIssues = memoBody
           ? validateHookLedger(memoBody, content)
@@ -5296,7 +5405,7 @@ ${matrix}`,
       /** Which revision path produced the candidate under verification. */
       revisionKind?: "patch" | "rewrite";
     };
-    runPostWriteChecks?: (content: string) => ReadonlyArray<AuditIssue>;
+    runPostWriteChecks?: (content: string, format: "screenplay" | "prose") => ReadonlyArray<AuditIssue>;
   }): Promise<MergedAuditEvaluation> {
     const visibleContent = params.episodeContent
       .replace(/<!--\s*inkos-episode-script-json[\s\S]*?-->/giu, "")
@@ -5334,7 +5443,10 @@ ${matrix}`,
           episodeContent: screenplayShotSurface,
           language: params.language,
         });
-    const postWriteIssues = params.runPostWriteChecks?.(screenplayShotSurface) ?? [];
+    const postWriteIssues = params.runPostWriteChecks?.(
+      screenplayShotSurface,
+      isScreenplayProjection ? "screenplay" : "prose",
+    ) ?? [];
     const normalizedLlmIssues = isScreenplayProjection
       ? llmAudit.issues
         .filter((issue) => !(/(?:破折号|em dash|long dash)/iu.test(issue.category)
@@ -5651,6 +5763,10 @@ ${matrix}`,
   }
 
   private async readEpisodeContent(bookDir: string, episodeNumber: number): Promise<string> {
+    const authoritativeScript = await loadPersistedEpisodeScript(bookDir, episodeNumber);
+    if (authoritativeScript) {
+      return renderEpisodeScriptMarkdown(authoritativeScript);
+    }
     const paddedNum = String(episodeNumber).padStart(4, "0");
     const episodesDir = join(bookDir, "episodes");
     const files = await readdir(episodesDir).catch(() => []);

@@ -198,7 +198,9 @@ function findForbiddenActionEvidence(
   }
   const quoted = [...core.matchAll(/[“"']([^”"'\n]{2,80})[”"']/g)].map((match) => match[1]!);
   const terms = extractSensitiveConcepts(core, language);
-  for (const clause of splitClauses(content)) {
+  const questioningDirective = /(?:追问|质问|逼问|盘问|询问|发问|问出口|问起|问个明白|问一句|追着问|问他|问她|ask(?:s|ed|ing)?|question(?:ing|ed)?|interrogat|inquire|query|confront|demand)/iu.test(core);
+  const clauses = questioningDirective ? splitQuestionClauses(content) : splitClauses(content);
+  for (const clause of clauses) {
     if (requiresConcreteTimeEvidence(core, language) && !hasConcreteTimeEvidence(clause, language)) {
       continue;
     }
@@ -206,6 +208,7 @@ function findForbiddenActionEvidence(
       && !/(?:打|踢|击|挥|搏斗|制服|摔|撞|掐|刺|砸|拳|脚|倒地|fight|punch|kick|hit|strike|wrestle|tackle|subdue|knock)/iu.test(clause)) {
       continue;
     }
+    if (questioningDirective && !carriesQuestioningAct(clause, language)) continue;
     for (const phrase of quoted) {
       if (normalizeText(clause).includes(normalizeText(phrase)) && !isNegatedNear(clause, phrase, language)) {
         return clause.trim();
@@ -220,6 +223,24 @@ function findForbiddenActionEvidence(
     if (positiveMatches.length >= required) return clause.trim();
   }
   return undefined;
+}
+
+function splitQuestionClauses(content: string): string[] {
+  return (content.match(/[^。！？!?；;\n]+[。！？!?]?/gu) ?? [])
+    .map((clause) => clause.trim())
+    .filter(Boolean);
+}
+
+function carriesQuestioningAct(clause: string, language: "zh" | "en"): boolean {
+  const explicitVerbs = language === "en"
+    ? /\b(?:ask(?:s|ed|ing)?|question(?:s|ed|ing)?|interrogat\w*|inquir\w*|quer(?:y|ies|ied)|demand(?:s|ed|ing)?)\b/iu
+    : /追问|质问|逼问|盘问|反问|询问|发问|问出口|问起|问个明白|问一句|追着问|问他|问她/u;
+  const explicit = clause.match(explicitVerbs)?.[0];
+  if (explicit && !isNegatedNear(clause, explicit, language)) return true;
+  if (!/[?？]\s*[”」』"']?$/u.test(clause)) return false;
+  return language === "en"
+    ? /\b(?:who|what|when|where|why|how|which|whose|is|are|am|was|were|do|does|did|can|could|will|would|should|have|has|had)\b/iu.test(clause)
+    : /怎么|怎会|为何|为什么|凭什么|怎么回事|谁|什么|哪|哪里|哪儿|何处|吗|呢|几时|多少/u.test(clause);
 }
 
 function requiresConcreteTimeEvidence(text: string, language: "zh" | "en"): boolean {

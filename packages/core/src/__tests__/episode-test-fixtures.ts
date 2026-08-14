@@ -87,3 +87,7 @@ export function createEpisodeScript(episode = 1, title = "Archive Pressure") {
 export function createEpisodeScriptMarkdown(episode = 1, title?: string): string {
   return renderEpisodeScriptMarkdown(createEpisodeScript(episode, title));
 }
+
+export function createEpisodeScriptJson(episode = 1, title?: string): string {
+  return `${JSON.stringify(createEpisodeScript(episode, title), null, 2)}\n`;
+}

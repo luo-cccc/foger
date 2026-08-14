@@ -161,7 +161,7 @@ describe("ink dashboard", () => {
       <mod.InkTuiDashboard
         locale="zh-CN"
         projectName="inkos-demo"
-        activeBookTitle="夜港回声"
+        activeBookTitle="雾港回声"
         modelLabel="gpt-5.4 (openai)"
         session={createSession()}
         inputValue=""
@@ -171,7 +171,7 @@ describe("ink dashboard", () => {
 
     const frame = lastFrame() ?? "";
     expect(frame).toContain("项目 inkos-demo");
-    expect(frame).toContain("作品 夜港回声");
+    expect(frame).toContain("作品 雾港回声");
     expect(frame).toContain("深度 标准");
     expect(frame).toContain("项目");
   });
@@ -190,7 +190,7 @@ describe("ink dashboard", () => {
       pendingDecision: undefined,
       creationDraft: {
         concept: "港风商战悬疑，主角从灰产洗白。",
-        title: "夜港账本",
+        title: "雾港账本",
         nextQuestion: "你更想写长篇连载，还是十来章能收住？",
         missingFields: ["targetEpisodes"],
         readyToCreate: false,
@@ -214,6 +214,6 @@ describe("ink dashboard", () => {
     );
 
     const frame = lastFrame() ?? "";
-    expect(frame).toContain("草稿 夜港账本");
+    expect(frame).toContain("草稿 雾港账本");
   });
 });

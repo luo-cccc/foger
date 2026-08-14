@@ -45,7 +45,7 @@ describe("CanonClaimSchema", () => {
       id: "c-2",
       domain: "character",
       claimType: "belief",
-      content: "林辞相信师父终会归来。",
+      content: "林乙相信师父终会归来。",
       authority: { source: "roles" },
     });
     expect(parsed.authority.priority).toBe("soft");

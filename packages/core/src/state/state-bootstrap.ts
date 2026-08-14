@@ -587,7 +587,12 @@ async function loadDurableArtifactEpisodeNumbers(bookDir: string): Promise<numbe
         for (const entry of parsed) {
           const episodeNumber = entry?.episodeNumber;
           if (typeof episodeNumber !== "number" || !Number.isInteger(episodeNumber) || episodeNumber < 1) continue;
-          if (entry.status === "audit-failed" || entry.status === "state-degraded") {
+          if (![
+            "ready-for-review",
+            "approved",
+            "published",
+            "imported",
+          ].includes(String(entry.status))) {
             blocked.add(episodeNumber);
           } else {
             durable.push(episodeNumber);

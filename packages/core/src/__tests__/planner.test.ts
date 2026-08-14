@@ -152,7 +152,7 @@ async function seedStoryFiles(bookDir: string): Promise<void> {
   await Promise.all([
     writeFile(join(storyDir, "author_intent.md"), "# Intent\n- Tell a taut mystery.", "utf-8"),
     writeFile(join(storyDir, "current_focus.md"), "# Focus\n- Keep pressure on the seventh gate.", "utf-8"),
-    writeFile(join(storyDir, "story_bible.md"), "# Bible\n- Protagonist: 阿泽", "utf-8"),
+    writeFile(join(storyDir, "story_bible.md"), "# Bible\n- Protagonist: 阿川", "utf-8"),
     writeFile(join(storyDir, "volume_outline.md"), "# Outline\n- 第 1 章：开场", "utf-8"),
     writeFile(join(storyDir, "episode_summaries.md"), "# Summaries\n", "utf-8"),
     writeFile(join(storyDir, "book_rules.md"), "# Rules\n- 禁止反派降智", "utf-8"),
@@ -405,11 +405,11 @@ describe("PlannerAgent.planEpisode memo generation", () => {
     const outline = [
       "## 各卷主题与情绪曲线",
       "本书共四卷，每卷约二十章。",
-      "第一卷主题是怀疑的诞生，林澈从收到异常广播开始秘密调查。",
+      "第一卷主题是怀疑的诞生，林丙从收到异常广播开始秘密调查。",
     ].join("\n");
 
     expect(planner.findOutlineNode(outline, 2)).toBe(
-      "第一卷主题是怀疑的诞生，林澈从收到异常广播开始秘密调查。",
+      "第一卷主题是怀疑的诞生，林丙从收到异常广播开始秘密调查。",
     );
   });
 
@@ -592,7 +592,7 @@ ${VALID_EN_BODY}
         "---",
         "version: \"1.0\"",
         "protagonist:",
-        "  name: 阿泽",
+        "  name: 阿川",
         "  personalityLock: []",
         "  behavioralConstraints: []",
         "prohibitions:",

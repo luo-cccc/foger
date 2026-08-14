@@ -325,7 +325,7 @@ describe("runEpisodeReviewCycle v9", () => {
     expect(result.auditResult.overallScore).toBe(100);
   });
 
-  it("runs repair loop when score is below threshold, picks best version", async () => {
+  it("stops after critical blockers are fixed even when low-score warnings remain", async () => {
     const auditEpisode = vi.fn()
       .mockResolvedValueOnce(createAuditResult({
         passed: false,
@@ -381,13 +381,9 @@ describe("runEpisodeReviewCycle v9", () => {
       maxReviewIterations: 2,
     });
 
-    // Should have attempted 2 revisions:
-    // iter 1: 70 → 80 (+10, net improvement)
-    // iter 2: 80 → 76 (no net improvement, stop)
-    expect(reviseEpisode).toHaveBeenCalledTimes(2);
+    expect(reviseEpisode).toHaveBeenCalledTimes(1);
     expect(reviseEpisode.mock.calls[0]?.[4]).toBe("auto");
 
-    // Best version should be picked (score 80 from iter 1)
     expect(result.auditResult.overallScore).toBe(80);
     expect(result.finalContent).toBe("a".repeat(200));
     expect(result.revised).toBe(true);
@@ -398,7 +394,7 @@ describe("runEpisodeReviewCycle v9", () => {
       .mockResolvedValueOnce(createAuditResult({
         passed: false,
         overallScore: 80,
-        issues: [{ severity: "warning", category: "pacing", description: "needs work", suggestion: "tighten" }],
+        issues: [{ severity: "critical", category: "pacing", description: "needs work", suggestion: "tighten" }],
       }))
       .mockResolvedValueOnce(createAuditResult({
         passed: true,
@@ -454,7 +450,7 @@ describe("runEpisodeReviewCycle v9", () => {
       .mockResolvedValueOnce(createAuditResult({
         passed: false,
         overallScore: 80,
-        issues: [{ severity: "warning", category: "pacing", description: "slow", suggestion: "trim" }],
+        issues: [{ severity: "critical", category: "pacing", description: "slow", suggestion: "trim" }],
       }))
       .mockResolvedValueOnce(createAuditResult({
         passed: true,
@@ -513,7 +509,7 @@ describe("runEpisodeReviewCycle v9", () => {
       .mockResolvedValueOnce(createAuditResult({
         passed: false,
         overallScore: 80,
-        issues: [{ severity: "warning", category: "pacing", description: "slow", suggestion: "trim" }],
+        issues: [{ severity: "critical", category: "pacing", description: "slow", suggestion: "trim" }],
       }));
     const reviseEpisode = vi.fn().mockResolvedValue({
       revisedContent: "a".repeat(200),
@@ -560,12 +556,15 @@ describe("runEpisodeReviewCycle v9", () => {
       .mockResolvedValueOnce(createAuditResult({
         passed: false,
         overallScore: 70,
-        issues: [{ severity: "critical", category: "continuity", description: "broken", suggestion: "fix" }],
+        issues: [
+          { severity: "critical", category: "continuity", description: "broken", suggestion: "fix" },
+          { severity: "critical", category: "causality", description: "missing cause", suggestion: "add cause" },
+        ],
       }))
       .mockResolvedValueOnce(createAuditResult({
         passed: false,
         overallScore: 70,
-        issues: [{ severity: "warning", category: "pacing", description: "slow", suggestion: "trim" }],
+        issues: [{ severity: "critical", category: "causality", description: "missing cause", suggestion: "add cause" }],
       }))
       .mockResolvedValueOnce(createAuditResult({
         passed: false,
@@ -610,7 +609,7 @@ describe("runEpisodeReviewCycle v9", () => {
     });
 
     expect(reviseEpisode).toHaveBeenCalledTimes(2);
-    expect(result.finalContent).toBe("a".repeat(200));
+    expect(result.finalContent).toBe("b".repeat(200));
     expect(result.auditResult.overallScore).toBe(70);
   });
 
@@ -620,7 +619,7 @@ describe("runEpisodeReviewCycle v9", () => {
         passed: false,
         overallScore: 70,
         issues: [{
-          severity: "warning",
+          severity: "critical",
           category: "pacing",
           description: "The middle repeats the same beat.",
           suggestion: "Tighten the repeated beat.",
@@ -763,7 +762,7 @@ describe("runEpisodeReviewCycle v9", () => {
 
     expect(reviseEpisode).not.toHaveBeenCalled();
     expect(result.reviewTelemetry).toEqual({
-      terminationReason: "no-actionable-issues",
+      terminationReason: "initial-passed",
       auditCalls: 1,
       revisionCalls: 0,
       normalizationCalls: 0,
@@ -829,7 +828,7 @@ describe("runEpisodeReviewCycle v9", () => {
 
   it("does not spend another revision on an unchanged issue set and a higher random score", async () => {
     const issue: AuditIssue = {
-      severity: "warning",
+      severity: "critical",
       category: "pacing",
       description: "The middle repeats the same deduction.",
       suggestion: "Remove the duplicate deduction.",
@@ -878,13 +877,13 @@ describe("runEpisodeReviewCycle v9", () => {
 
   it("detects a revision cycle before re-auditing an already reviewed version", async () => {
     const firstIssue: AuditIssue = {
-      severity: "warning",
+      severity: "critical",
       category: "pacing",
       description: "First issue.",
       suggestion: "Fix first issue.",
     };
     const secondIssue: AuditIssue = {
-      severity: "warning",
+      severity: "critical",
       category: "continuity",
       description: "Second issue.",
       suggestion: "Fix second issue.",

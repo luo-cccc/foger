@@ -37,9 +37,9 @@ describe("validateEpisodeMemoCommitments", () => {
     const issues = validateEpisodeMemoCommitments(
       [
         "## 章尾必须发生的改变",
-        "关系改变：林渡与保安之间建立‘被监视’的隐形关系（林渡察觉到保安在看他，但不确定）。",
+        "关系改变：林庚与保安之间建立‘被监视’的隐形关系（林庚察觉到保安在看他，但不确定）。",
       ].join("\n"),
-      "电梯门合上前，林渡看见保安抬眼盯住他，又拨通电话低声说‘知道了’。他没有证据，只把背包抱得更紧。",
+      "电梯门合上前，林庚看见保安抬眼盯住他，又拨通电话低声说‘知道了’。他没有证据，只把背包抱得更紧。",
       "zh",
     );
 
@@ -84,9 +84,62 @@ describe("validateEpisodeMemoCommitments", () => {
     const issues = validateEpisodeMemoCommitments(
       [
         "## 不要做",
-        "- 不要让林澈在塔内遇到任何正面敌人或追兵——本章是探索取证，不是对抗。",
+        "- 不要让林丙在塔内遇到任何正面敌人或追兵——本章是探索取证，不是对抗。",
       ].join("\n"),
-      "林澈进入塔内后，两名正面敌人带着追兵堵住楼梯，他被迫开枪还击。",
+      "林丙进入塔内后，两名正面敌人带着追兵堵住楼梯，他被迫开枪还击。",
+      "zh",
+    );
+
+    expect(issues).toEqual([
+      expect.objectContaining({
+        severity: "critical",
+        category: "memo-禁止事项违规",
+        repairScope: "structural",
+      }),
+    ]);
+  });
+
+  it("does not flag an internal observation that only shares vocabulary with a forbidden questioning act", () => {
+    // Shared vocabulary in internal narration is not evidence of a
+    // questioning act.
+    const issues = validateEpisodeMemoCommitments(
+      [
+        "## 不要做",
+        "- 不要让谢策在本集追问\"你怎么知道我的名字\"——他的性格是看破不说破，追问会破坏人物底色，改为眼神审视和\"跟我走\"。",
+      ].join("\n"),
+      "谢策（旁白）：一个逃难的半大孩子，听到我的名字，反应比听到'韩权'还大。",
+      "zh",
+    );
+
+    expect(issues).toEqual([]);
+  });
+
+  it("still flags a questioning act phrased differently from the forbidden quote", () => {
+    const issues = validateEpisodeMemoCommitments(
+      [
+        "## 不要做",
+        "- 不要让谢策在本集追问\"你怎么知道我的名字\"。",
+      ].join("\n"),
+      "谢策：一个逃难少年，怎么会知道我的名字？",
+      "zh",
+    );
+
+    expect(issues).toEqual([
+      expect.objectContaining({
+        severity: "critical",
+        category: "memo-禁止事项违规",
+        repairScope: "structural",
+      }),
+    ]);
+  });
+
+  it("still flags the exact forbidden question when it is spoken", () => {
+    const issues = validateEpisodeMemoCommitments(
+      [
+        "## 不要做",
+        "- 不要让谢策在本集追问\"你怎么知道我的名字\"。",
+      ].join("\n"),
+      "谢策盯着他：\"你怎么知道我的名字？\"",
       "zh",
     );
 
@@ -102,12 +155,12 @@ describe("validateEpisodeMemoCommitments", () => {
   it("catches the real episode-3 deferred H002 reveal regression", () => {
     const memo = [
       "## 该兑现的 / 暂不掀的",
-      "- 暂不掀：H002（老莫是否为回声体）→ 本章只允许时间线间接印证，留到第4章与老莫对质。",
+      "- 暂不掀：H002（莫叔是否为镜像体）→ 本章只允许时间线间接印证，留到第4章与莫叔对质。",
       "## 本章 hook 账",
       "defer:",
-      "- H002 “老莫是否为回声体” → 本章不动，等到第4章与老莫对质时再推进",
+      "- H002 “莫叔是否为镜像体” → 本章不动，等到第4章与莫叔对质时再推进",
     ].join("\n");
-    const leakedDraft = "现在他手里有一份部分可读的回声体替代名单，十二个编号中一个直指老莫。";
+    const leakedDraft = "现在他手里有一份部分可读的镜像体替代名单，十二个编号中一个直指莫叔。";
 
     const issues = validateEpisodeMemoCommitments(memo, leakedDraft, "zh");
 
@@ -125,9 +178,9 @@ describe("validateEpisodeMemoCommitments", () => {
     const memo = [
       "## 本章 hook 账",
       "defer:",
-      "- H002 “老莫是否为回声体” → 本章不动",
+      "- H002 “莫叔是否为镜像体” → 本章不动",
     ].join("\n");
-    const draft = "老莫的出勤记录与替代时间线重合，但林澈仍无法确认他是否是回声体，只把疑点记下待验证。";
+    const draft = "莫叔的出勤记录与替代时间线重合，但林丙仍无法确认他是否是镜像体，只把疑点记下待验证。";
 
     expect(validateEpisodeMemoCommitments(memo, draft, "zh")).toEqual([]);
   });

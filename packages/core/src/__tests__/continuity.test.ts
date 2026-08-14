@@ -455,7 +455,7 @@ describe("ContinuityAuditor", () => {
     await mkdir(storyDir, { recursive: true });
 
     await Promise.all([
-      writeFile(join(storyDir, "current_state.md"), "# 当前状态\n\n- 林澈仍持有编号被改过的磁带。\n", "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), "# 当前状态\n\n- 林丙仍持有编号被改过的磁带。\n", "utf-8"),
       writeFile(join(storyDir, "pending_hooks.md"), "# 伏笔池\n\n- tape-id: 磁带编号来源未明。\n", "utf-8"),
       writeFile(join(storyDir, "episode_summaries.md"), "# 章节摘要\n\nSHOULD_DROP_OLD_SUMMARIES\n", "utf-8"),
       writeFile(join(storyDir, "subplot_board.md"), "# 支线\n\nSHOULD_DROP_SUBPLOTS\n", "utf-8"),
@@ -480,7 +480,7 @@ describe("ContinuityAuditor", () => {
     });
 
     try {
-      const episodeBody = "林澈把磁带装进证物袋，删掉了含混的判断。";
+      const episodeBody = "林丙把磁带装进证物袋，删掉了含混的判断。";
       const episodeContextSnapshot = await loadSnapshot(bookDir, 1);
       await auditor.auditEpisode(bookDir, episodeBody, 1, "urban", { episodeContextSnapshot });
       await auditor.auditEpisode(bookDir, episodeBody, 1, "urban", {
@@ -528,7 +528,7 @@ describe("ContinuityAuditor", () => {
       expect(verificationPromptTokens).toBeLessThan(fullPromptTokens * 0.6);
       expect(userPrompt).toContain("## 上次审计的阻塞问题");
       expect(userPrompt).toContain("出现了禁用句式");
-      expect(userPrompt).toContain("林澈仍持有编号被改过的磁带");
+      expect(userPrompt).toContain("林丙仍持有编号被改过的磁带");
       expect(userPrompt).toContain("tape-id");
       expect(userPrompt).toContain(episodeBody);
       expect(userPrompt).not.toContain("SHOULD_DROP_OLD_SUMMARIES");

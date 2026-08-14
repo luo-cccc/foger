@@ -13,6 +13,7 @@ import {
   planEditTransaction,
   type EditRequest,
 } from "../interaction/edit-controller.js";
+import { createEpisodeScriptJson, createEpisodeScriptMarkdown } from "./episode-test-fixtures.js";
 
 let projectRoot: string;
 
@@ -26,6 +27,12 @@ describe("truth authority", () => {
   it("normalizes supported truth files", () => {
     expect(normalizeTruthFileName("story_bible")).toBe("story_bible.md");
     expect(normalizeTruthFileName("current_state.md")).toBe("current_state.md");
+  });
+
+  it("rejects absolute and traversing truth-file names", () => {
+    expect(() => normalizeTruthFileName("../book_rules.md")).toThrow(/Invalid truth file name/);
+    expect(() => normalizeTruthFileName("story\\book_rules.md")).toThrow(/Invalid truth file name/);
+    expect(() => normalizeTruthFileName("/tmp/book_rules.md")).toThrow(/Invalid truth file name/);
   });
 
   it("classifies control and truth authority tiers", () => {
@@ -44,7 +51,7 @@ describe("edit controller", () => {
       bookId: "harbor",
       entityType: "protagonist",
       oldValue: "陆尘",
-      newValue: "林砚",
+      newValue: "林戊",
     });
 
     expect(result.transactionType).toBe("entity-rename");
@@ -91,19 +98,6 @@ describe("edit controller", () => {
     expect(result.requiresTruthRebuild).toBe(true);
   });
 
-  it("plans truth-file edits with authority metadata", () => {
-    const result = planEditTransaction({
-      kind: "truth-file-edit",
-      bookId: "harbor",
-      fileName: "book_rules",
-      instruction: "Lock the protagonist name to Lin Yan.",
-    });
-
-    expect(result.transactionType).toBe("truth-file-edit");
-    expect(result.truthAuthority).toBe("rules");
-    expect(result.affectedScope).toBe("book");
-  });
-
   it("plans focus edits as direction-level transactions", () => {
     const result = planEditTransaction({
       kind: "focus-edit",
@@ -133,12 +127,12 @@ describe("edit controller", () => {
         bookId: "harbor",
         entityType: "protagonist",
         oldValue: "陆尘",
-        newValue: "林砚",
+        newValue: "林戊",
       },
     );
 
-    await expect(readFile(join(bookDir, "story", "story_bible.md"), "utf-8")).resolves.toContain("林砚");
-    await expect(readFile(join(bookDir, "episodes", "0001_旧名字.md"), "utf-8")).resolves.toContain("林砚");
+    await expect(readFile(join(bookDir, "story", "story_bible.md"), "utf-8")).resolves.toContain("林戊");
+    await expect(readFile(join(bookDir, "episodes", "0001_旧名字.md"), "utf-8")).resolves.toContain("林戊");
     expect(result.touchedFiles.length).toBeGreaterThan(0);
   });
 
@@ -159,11 +153,11 @@ describe("edit controller", () => {
         bookId: "harbor",
         entityType: "protagonist",
         oldValue: "陆尘",
-        newValue: "林砚",
+        newValue: "林戊",
       },
     );
 
-    await expect(readFile(join(bookDir, "story", "story_bible.md"), "utf-8")).resolves.toContain("林砚");
+    await expect(readFile(join(bookDir, "story", "story_bible.md"), "utf-8")).resolves.toContain("林戊");
     await expect(readFile(join(bookDir, "story", "snapshots", "1", "current_state.md"), "utf-8")).resolves.toContain("陆尘");
   });
 
@@ -273,7 +267,7 @@ describe("edit controller", () => {
         targetText: "旧名字",
         replacementText: "新名字",
       },
-    )).rejects.toThrow(/INVALID_EPISODE_SCRIPT/);
+    )).rejects.toThrow(/EPISODE_JSON_AUTHORITY/);
     await expect(readFile(join(bookDir, "episodes", "0003_灰墙榜下.md"), "utf-8")).resolves.toContain("旧名字");
   });
 
@@ -309,7 +303,7 @@ describe("edit controller", () => {
         targetText: "她把账本 塞进外套里",
         replacementText: "她把账本贴着胸口藏好",
       },
-    )).rejects.toThrow(/INVALID_EPISODE_SCRIPT/);
+    )).rejects.toThrow(/EPISODE_JSON_AUTHORITY/);
   });
 
   it("rejects whole-episode replacement with legacy prose", async () => {
@@ -341,8 +335,107 @@ describe("edit controller", () => {
         episodeNumber: 2,
         fullText: "# 第2章 新章\n\n新正文完整替换。",
       },
-    )).rejects.toThrow(/INVALID_EPISODE_SCRIPT/);
+    )).rejects.toThrow(/EPISODE_JSON_AUTHORITY/);
     await expect(readFile(join(bookDir, "episodes", "0002_旧章.md"), "utf-8")).resolves.toContain("旧正文");
+  });
+
+  it("invalidates runtime and review sidecars after a valid episode replacement", async () => {
+    const bookDir = join(projectRoot, "books", "replace-valid");
+    await mkdir(join(bookDir, "episodes"), { recursive: true });
+    await mkdir(join(bookDir, "story", "runtime"), { recursive: true });
+    const episodePath = join(bookDir, "episodes", "0002_Original.md");
+    const episodeJsonPath = join(bookDir, "episodes", "0002_Original.json");
+    const runtimePath = join(bookDir, "story", "runtime", "episode-0002.plan.md");
+    const reviewPath = join(bookDir, "episodes", "0002_review.json");
+    await writeFile(episodePath, createEpisodeScriptMarkdown(2, "Original"), "utf-8");
+    await writeFile(episodeJsonPath, createEpisodeScriptJson(2, "Original"), "utf-8");
+    await writeFile(runtimePath, "stale plan", "utf-8");
+    await writeFile(reviewPath, "{}", "utf-8");
+    const episodeIndex: EpisodeMeta[] = [{
+      episodeNumber: 2,
+      title: "Original",
+      status: "ready-for-review",
+      episodeDurationSeconds: 90,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      auditIssues: [],
+      lengthWarnings: [],
+    }];
+    let savedIndex: ReadonlyArray<EpisodeMeta> = [];
+
+    const result = await executeEditTransaction(
+      {
+        bookDir: (bookId) => join(projectRoot, "books", bookId),
+        loadEpisodeIndex: async () => episodeIndex,
+        saveEpisodeIndex: async (_bookId, index) => { savedIndex = index; },
+      },
+      {
+        kind: "episode-replace",
+        bookId: "replace-valid",
+        episodeNumber: 2,
+        fullText: createEpisodeScriptMarkdown(2, "Revised"),
+      },
+    );
+
+    expect(await access(runtimePath).then(() => true).catch(() => false)).toBe(false);
+    expect(await access(reviewPath).then(() => true).catch(() => false)).toBe(false);
+    await expect(readFile(episodeJsonPath, "utf-8")).resolves.toContain('"title": "Revised"');
+    await expect(readFile(episodePath, "utf-8")).resolves.toContain("Revised");
+    expect(savedIndex[0]).toMatchObject({ status: "audit-failed" });
+    expect(savedIndex[0]?.recoveryState?.blockingIssues[0]?.severity).toBe("critical");
+    expect(result.touchedFiles).toEqual(expect.arrayContaining([
+      join("story", "runtime", "episode-0002.plan.md"),
+      join("episodes", "0002_review.json"),
+    ]));
+  });
+
+  it("rolls back episode and derived files when index persistence fails", async () => {
+    const bookDir = join(projectRoot, "books", "replace-rollback");
+    await mkdir(join(bookDir, "episodes"), { recursive: true });
+    await mkdir(join(bookDir, "story", "runtime"), { recursive: true });
+    const episodePath = join(bookDir, "episodes", "0002_Original.md");
+    const episodeJsonPath = join(bookDir, "episodes", "0002_Original.json");
+    const runtimePath = join(bookDir, "story", "runtime", "episode-0002.plan.md");
+    const reviewPath = join(bookDir, "episodes", "0002_review.json");
+    const original = createEpisodeScriptMarkdown(2, "Original");
+    const originalJson = createEpisodeScriptJson(2, "Original");
+    await writeFile(episodePath, original, "utf-8");
+    await writeFile(episodeJsonPath, originalJson, "utf-8");
+    await writeFile(runtimePath, "stale plan", "utf-8");
+    await writeFile(reviewPath, "{\"status\":\"stale\"}", "utf-8");
+    const episodeIndex: EpisodeMeta[] = [{
+      episodeNumber: 2,
+      title: "Original",
+      status: "ready-for-review",
+      episodeDurationSeconds: 90,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      auditIssues: [],
+      lengthWarnings: [],
+    }];
+    const saveEpisodeIndex = vi.fn()
+      .mockRejectedValueOnce(new Error("index write failed"))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(executeEditTransaction(
+      {
+        bookDir: (bookId) => join(projectRoot, "books", bookId),
+        loadEpisodeIndex: async () => episodeIndex,
+        saveEpisodeIndex,
+      },
+      {
+        kind: "episode-replace",
+        bookId: "replace-rollback",
+        episodeNumber: 2,
+        fullText: createEpisodeScriptMarkdown(2, "Revised"),
+      },
+    )).rejects.toThrow("index write failed");
+
+    await expect(readFile(episodePath, "utf-8")).resolves.toBe(original);
+    await expect(readFile(episodeJsonPath, "utf-8")).resolves.toBe(originalJson);
+    await expect(readFile(runtimePath, "utf-8")).resolves.toBe("stale plan");
+    await expect(readFile(reviewPath, "utf-8")).resolves.toBe("{\"status\":\"stale\"}");
+    expect(saveEpisodeIndex).toHaveBeenCalledTimes(2);
   });
 
   it("does not swallow unexpected filesystem errors while collecting editable files", async () => {
@@ -360,7 +453,7 @@ describe("edit controller", () => {
         bookId: "harbor",
         entityType: "protagonist",
         oldValue: "陆尘",
-        newValue: "林砚",
+        newValue: "林戊",
       },
     )).rejects.toThrow(/not a directory|ENOTDIR/i);
   });

@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { ComposeEpisodeResult, PlanEpisodeResult, RewriteEpisodeResult } from "./runner.js";
 import type { AuditResult } from "../agents/continuity.js";
@@ -23,30 +23,49 @@ import {
 import { atomicWriteFile } from "../utils/atomic-write.js";
 import { isSafeBookId } from "../utils/book-id.js";
 import { isNewLayoutBook } from "../utils/outline-paths.js";
-import { EpisodeReviewEvidenceSchema } from "./episode-review-evidence.js";
+import { loadEpisodeReviewEvidence } from "./episode-review-evidence.js";
 import { loadEpisodeRuntimeStateSnapshot } from "../state/runtime-state-store.js";
+import { EpisodeScriptSchema } from "../models/episode-script.js";
 
-/**
- * Approval requires that an existing review sidecar has no open blocking
- * findings. A REVISE evidence file means the deterministic gate found at
- * least one critical issue; approving over it would contradict the review
- * contract. Episodes without a review file are decided by the human caller.
- */
 async function findBlockedReviewEpisodes(
   bookDir: string,
   episodes: ReadonlyArray<EpisodeMeta>,
 ): Promise<number[]> {
   const blocked: number[] = [];
+  const episodesDir = join(bookDir, "episodes");
+  const files = await readdir(episodesDir).catch(() => [] as string[]);
   for (const episode of episodes) {
-    const reviewPath = join(
-      bookDir,
-      "episodes",
-      `${String(episode.episodeNumber).padStart(4, "0")}_review.json`,
+    if (episode.status !== "ready-for-review") {
+      blocked.push(episode.episodeNumber);
+      continue;
+    }
+    const padded = String(episode.episodeNumber).padStart(4, "0");
+    const jsonFile = files.find((file) =>
+      file.startsWith(`${padded}_`)
+      && file.endsWith(".json")
+      && !file.endsWith("_review.json"),
     );
-    const parsed = await readFile(reviewPath, "utf8")
-      .then((raw) => EpisodeReviewEvidenceSchema.safeParse(JSON.parse(raw)))
-      .catch(() => undefined);
-    if (parsed?.success && parsed.data.status === "REVISE") {
+    if (!jsonFile) {
+      blocked.push(episode.episodeNumber);
+      continue;
+    }
+    const currentContent = await readFile(join(episodesDir, jsonFile), "utf8").catch(() => undefined);
+    if (!currentContent) {
+      blocked.push(episode.episodeNumber);
+      continue;
+    }
+    try {
+      EpisodeScriptSchema.parse(JSON.parse(currentContent));
+    } catch {
+      blocked.push(episode.episodeNumber);
+      continue;
+    }
+    const evidence = await loadEpisodeReviewEvidence({
+      bookDir,
+      episode: episode.episodeNumber,
+      currentContent,
+    });
+    if (!evidence || evidence.status !== "PROVISIONAL") {
       blocked.push(episode.episodeNumber);
     }
   }
@@ -233,6 +252,8 @@ export class CoreMutationValidationError extends Error {
       | "INVALID_TRUTH_FILE"
       | "LEGACY_TRUTH_SHIM"
       | "EPISODE_HAS_BLOCKING_REVIEW_FINDINGS"
+      | "EPISODE_NOT_READY_FOR_APPROVAL"
+      | "UNSAFE_REJECT_WITH_DEPENDENTS"
       | "RUNTIME_STATE_INCONSISTENT",
     message: string,
   ) {
@@ -584,7 +605,7 @@ export async function executeCoreMutation(
         bookId: command.bookId,
         episodeNumber: command.episodeNumber,
         status: "audit-failed",
-        warning: `[warning] ${MANUAL_EPISODE_EDIT_ISSUE}`,
+        warning: `[critical] ${MANUAL_EPISODE_EDIT_ISSUE}`,
         execution,
       };
     }
@@ -594,7 +615,7 @@ export async function executeCoreMutation(
       const episodeNumbers: number[] = [];
       const now = new Date().toISOString();
       const pending = index.filter((episode) =>
-        episode.status === "ready-for-review" || episode.status === "audit-failed",
+        episode.status === "ready-for-review",
       );
       const blocked = await findBlockedReviewEpisodes(
         dependencies.state.bookDir(command.bookId),
@@ -608,7 +629,7 @@ export async function executeCoreMutation(
       }
       await assertRuntimeStateConsistent(dependencies.state.bookDir(command.bookId), "approve episodes");
       const updated = index.map((episode) => {
-        if (episode.status !== "ready-for-review" && episode.status !== "audit-failed") {
+        if (episode.status !== "ready-for-review") {
           return episode;
         }
         episodeNumbers.push(episode.episodeNumber);
@@ -623,6 +644,12 @@ export async function executeCoreMutation(
     }
 
     if (command.kind === "approve") {
+      if (index[episodeIndex]!.status !== "ready-for-review") {
+        throw new CoreMutationValidationError(
+          "EPISODE_NOT_READY_FOR_APPROVAL",
+          `Episode ${command.episodeNumber} is ${index[episodeIndex]!.status}; audit it successfully before approval.`,
+        );
+      }
       const blocked = await findBlockedReviewEpisodes(
         dependencies.state.bookDir(command.bookId),
         [index[episodeIndex]!],
@@ -649,6 +676,15 @@ export async function executeCoreMutation(
     }
 
     if (command.keepSubsequent) {
+      const dependentEpisodes = index
+        .filter((episode) => episode.episodeNumber > command.episodeNumber)
+        .map((episode) => episode.episodeNumber);
+      if (dependentEpisodes.length > 0) {
+        throw new CoreMutationValidationError(
+          "UNSAFE_REJECT_WITH_DEPENDENTS",
+          `Cannot reject episode ${command.episodeNumber} while keeping dependent episodes: ${dependentEpisodes.join(", ")}.`,
+        );
+      }
       const updated = [...index];
       updated[episodeIndex] = {
         ...updated[episodeIndex]!,

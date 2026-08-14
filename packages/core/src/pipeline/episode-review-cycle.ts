@@ -77,7 +77,6 @@ export interface EpisodeReviewEvaluationOptions {
 }
 
 const DEFAULT_MAX_REVIEW_ITERATIONS = 2;
-const PASS_SCORE_THRESHOLD = 85;
 const NET_IMPROVEMENT_EPSILON = 3;
 
 interface ReviewSnapshot {
@@ -272,7 +271,6 @@ export async function runEpisodeReviewCycle(params: {
 
   const isPassed = (assessment: ReviewAssessment): boolean =>
     !hasCriticalIssue(assessment.auditResult.issues)
-    && assessment.score >= PASS_SCORE_THRESHOLD
     && assessment.lengthInRange;
 
   const actionableIssueFingerprint = (assessment: ReviewAssessment): string =>
@@ -330,7 +328,6 @@ export async function runEpisodeReviewCycle(params: {
       selected: snapshot === selected,
       score: snapshot.score,
       passed: !hasCriticalIssue(snapshot.auditResult.issues)
-        && snapshot.score >= PASS_SCORE_THRESHOLD
         && snapshot.lengthInRange,
       episodeDurationSeconds: snapshot.episodeDurationSeconds,
       lengthInRange: snapshot.lengthInRange,
@@ -537,8 +534,8 @@ export async function runEpisodeReviewCycle(params: {
       if (isPassed(nextAssessment)) {
         terminationReason = "passed-after-revision";
         params.logStage({
-          zh: `修复后达到通过线（${nextAssessment.score} 分），退出循环`,
-          en: `repair reached pass threshold (${nextAssessment.score}), exiting loop`,
+          zh: "修复后已清除 critical 问题并满足硬性长度要求，退出循环",
+          en: "repair cleared critical issues and satisfied the hard length range; exiting the loop",
         });
         finalContent = revisedContent;
         finalWordCount = revisedWordCount;

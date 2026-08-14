@@ -70,7 +70,7 @@ export function buildGovernedMemoryEvidenceBlocks(
       : undefined,
     moodTrailBlock: moodTrailEntries.length > 0
       ? renderEvidenceBlock(
-          resolvedLanguage === "en" ? "Recent Mood / Episode Type Trail" : "近期情绪/章节类型轨迹",
+          resolvedLanguage === "en" ? "Recent Mood / Episode Type Trail" : "近期情绪/剧集类型轨迹",
           moodTrailEntries,
         )
       : undefined,

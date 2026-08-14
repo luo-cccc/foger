@@ -144,9 +144,9 @@ const NODE_JSON = JSON.stringify({
 });
 
 const EPISODE_MEMO = [
-  "# 第 1 章 memo",
+  "# 第 1 集 memo",
   "",
-  "## 本章目标",
+  "## 本集目标",
   "拿到旧账篡改物证并锁定师父失踪的追查方向",
   "",
   "## 关联线索",

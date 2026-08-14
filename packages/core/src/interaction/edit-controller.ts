@@ -1,9 +1,10 @@
-import { access, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { access, readdir, readFile, rename, unlink } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
 import type { EpisodeMeta } from "../models/episode.js";
 import { parseEpisodeScriptOutput, renderEpisodeScriptMarkdown } from "../models/episode-script.js";
 import { buildEpisodeRecoveryState } from "../pipeline/episode-recovery-policy.js";
-import { classifyTruthAuthority, normalizeTruthFileName, type TruthAuthority } from "./truth-authority.js";
+import { atomicWriteFile } from "../utils/atomic-write.js";
+import type { TruthAuthority } from "./truth-authority.js";
 
 export type EditRequest =
   | {
@@ -32,12 +33,6 @@ export type EditRequest =
       readonly instruction: string;
       readonly targetText?: string;
       readonly replacementText?: string;
-    }
-  | {
-      readonly kind: "truth-file-edit";
-      readonly bookId: string;
-      readonly fileName: string;
-      readonly instruction: string;
     }
   | {
       readonly kind: "focus-edit";
@@ -112,18 +107,6 @@ export function planEditTransaction(request: EditRequest): PlannedEditTransactio
         affectedScope: "episode",
         requiresTruthRebuild: true,
       };
-    case "truth-file-edit": {
-      const normalizedFileName = normalizeTruthFileName(request.fileName);
-      const truthAuthority = classifyTruthAuthority(normalizedFileName);
-      return {
-        transactionType: request.kind,
-        bookId: request.bookId,
-        normalizedFileName,
-        truthAuthority,
-        affectedScope: truthAuthority === "runtime-truth" ? "book" : truthAuthority === "memory" ? "book" : "book",
-        requiresTruthRebuild: truthAuthority === "runtime-truth" || truthAuthority === "memory",
-      };
-    }
     case "focus-edit":
       return {
         transactionType: request.kind,
@@ -150,10 +133,13 @@ async function collectEditableFiles(dir: string): Promise<ReadonlyArray<string>>
   const files = await Promise.all(entries.map(async (entry) => {
     const fullPath = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (entry.name === "snapshots") return [];
+      if (entry.name === "snapshots" || entry.name === "runtime") return [];
       return collectEditableFiles(fullPath);
     }
     if (!/\.(md|json)$/i.test(entry.name)) {
+      return [];
+    }
+    if (entry.name === "index.json" || /_review\.json$/i.test(entry.name)) {
       return [];
     }
     return [fullPath];
@@ -171,8 +157,67 @@ interface PlannedFileRename {
 // newValue is LLM-supplied (system boundary). A name embedded into a filename must stay a single
 // path component — reject path separators so a rename target can never escape its directory.
 function assertEntityRenameTargetIsSafe(newValue: string): void {
-  if (/[/\\]/.test(newValue)) {
+  if (!newValue.trim() || /[/\\\0]/.test(newValue)) {
     throw new Error(`Invalid rename target "${newValue}": entity names cannot contain path separators.`);
+  }
+}
+
+interface FileBackup {
+  readonly path: string;
+  readonly content: string;
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  return access(path).then(() => true).catch(() => false);
+}
+
+async function restoreBackups(backups: ReadonlyArray<FileBackup>): Promise<void> {
+  for (const backup of backups) {
+    await atomicWriteFile(backup.path, backup.content, "utf-8");
+  }
+}
+
+async function attemptRollback(
+  originalError: unknown,
+  actions: ReadonlyArray<() => Promise<void>>,
+): Promise<never> {
+  const rollbackErrors: unknown[] = [];
+  for (const action of actions) {
+    try {
+      await action();
+    } catch (error) {
+      rollbackErrors.push(error);
+    }
+  }
+  if (rollbackErrors.length > 0) {
+    throw new AggregateError(
+      [originalError, ...rollbackErrors],
+      `Edit transaction failed and rollback encountered ${rollbackErrors.length} additional error(s).`,
+      { cause: originalError },
+    );
+  }
+  throw originalError;
+}
+
+async function episodeDerivedBackups(root: string, episodeNumber: number): Promise<ReadonlyArray<FileBackup>> {
+  const padded = String(episodeNumber).padStart(4, "0");
+  const runtimeDir = join(root, "story", "runtime");
+  const runtimeFiles = (await readdir(runtimeDir).catch((error) => {
+    if (isMissingDirectoryError(error)) return [];
+    throw error;
+  }))
+    .filter((file) => file.startsWith(`episode-${padded}.`))
+    .map((file) => join(runtimeDir, file));
+  const reviewPath = join(root, "episodes", `${padded}_review.json`);
+  const paths = await fileExists(reviewPath) ? [...runtimeFiles, reviewPath] : runtimeFiles;
+  return Promise.all(paths.map(async (path) => ({ path, content: await readFile(path, "utf-8") })));
+}
+
+async function invalidateBackups(backups: ReadonlyArray<FileBackup>): Promise<void> {
+  for (const backup of backups) {
+    await unlink(backup.path).catch((error) => {
+      if (!isMissingDirectoryError(error)) throw error;
+    });
   }
 }
 
@@ -214,30 +259,80 @@ async function executeEntityRename(
 ): Promise<ExecutedEditTransaction> {
   const root = deps.bookDir(request.bookId);
   assertEntityRenameTargetIsSafe(request.newValue);
+  if (!request.oldValue || request.oldValue === request.newValue) {
+    throw new Error("Entity rename requires distinct non-empty old and new values.");
+  }
   const files = await collectEditableFiles(root);
   const plannedRenames = await planEntityFileRenames(root, files, request.oldValue, request.newValue);
   const matcher = new RegExp(escapeRegExp(request.oldValue), "g");
   const touched = new Set<string>();
-
+  const rewrites: Array<FileBackup & { readonly nextContent: string }> = [];
   for (const filePath of files) {
     const content = await readFile(filePath, "utf-8");
     const nextContent = content.replace(matcher, request.newValue);
-    if (nextContent === content) {
-      continue;
-    }
-    await writeFile(filePath, nextContent, "utf-8");
+    if (nextContent === content) continue;
+    rewrites.push({ path: filePath, content, nextContent });
     touched.add(relative(root, filePath));
   }
-
-  for (const planned of plannedRenames) {
-    await rename(planned.fromAbs, planned.toAbs);
-    touched.delete(planned.from);
-    touched.add(planned.to);
-  }
-
-  if (touched.size === 0) {
+  if (rewrites.length === 0 && plannedRenames.length === 0) {
     throw new Error(`No occurrences of "${request.oldValue}" were found in "${request.bookId}".`);
   }
+
+  const touchedEpisodes = new Set<number>();
+  for (const rewrite of rewrites) {
+    const match = relative(root, rewrite.path).replaceAll("\\", "/").match(/^episodes\/(\d{4})_/u);
+    if (match?.[1]) touchedEpisodes.add(Number(match[1]));
+  }
+  const originalIndex = await deps.loadEpisodeIndex(request.bookId);
+  const derivedBackups = (await Promise.all(
+    [...touchedEpisodes].map((episode) => episodeDerivedBackups(root, episode)),
+  )).flat();
+  const completedRenames: PlannedFileRename[] = [];
+
+  try {
+    for (const rewrite of rewrites) {
+      await atomicWriteFile(rewrite.path, rewrite.nextContent, "utf-8");
+    }
+    for (const planned of plannedRenames) {
+      await rename(planned.fromAbs, planned.toAbs);
+      completedRenames.push(planned);
+      touched.delete(planned.from);
+      touched.add(planned.to);
+    }
+
+    let updatedIndex: ReadonlyArray<EpisodeMeta> = originalIndex.map((episode) => ({
+      ...episode,
+      title: episode.title.replace(matcher, request.newValue),
+    }));
+    for (const episodeNumber of touchedEpisodes) {
+      const { markdownPath } = await findEpisodeMarkdownPath(root, episodeNumber);
+      const content = await readFile(markdownPath, "utf-8");
+      const episodeMeta = updatedIndex.find((episode) => episode.episodeNumber === episodeNumber);
+      updatedIndex = markEpisodeForManualReview(
+        updatedIndex,
+        episodeNumber,
+        `Entity rename ${request.oldValue} -> ${request.newValue} requires review.`,
+        content,
+        episodeMeta?.episodeDurationSeconds,
+      );
+    }
+    await deps.saveEpisodeIndex(request.bookId, updatedIndex);
+    await invalidateBackups(derivedBackups);
+  } catch (error) {
+    await attemptRollback(error, [
+      async () => {
+        for (const planned of completedRenames.reverse()) {
+          if (await fileExists(planned.toAbs)) await rename(planned.toAbs, planned.fromAbs);
+        }
+      },
+      () => restoreBackups(rewrites),
+      () => restoreBackups(derivedBackups),
+      () => deps.saveEpisodeIndex(request.bookId, originalIndex),
+    ]);
+  }
+
+  for (const backup of derivedBackups) touched.add(relative(root, backup.path));
+  if (touchedEpisodes.size > 0) touched.add("episodes/index.json");
 
   const touchedFiles = [...touched];
   const renameNote = plannedRenames.length > 0
@@ -247,40 +342,58 @@ async function executeEntityRename(
     transactionType: request.kind,
     bookId: request.bookId,
     touchedFiles,
-    reviewRequired: false,
-    summary: `Renamed ${request.oldValue} to ${request.newValue} across ${touchedFiles.length} files${renameNote}.`,
+    reviewRequired: true,
+    summary: `Renamed ${request.oldValue} to ${request.newValue} across ${touchedFiles.length} files${renameNote}; affected episodes require review.`,
   };
 }
 
-async function findEpisodePath(root: string, episodeNumber: number): Promise<{ readonly episodesDir: string; readonly episodePath: string; readonly episodeFile: string }> {
+async function findEpisodeMarkdownPath(root: string, episodeNumber: number): Promise<{
+  readonly episodesDir: string;
+  readonly markdownPath: string;
+  readonly markdownFile: string;
+}> {
   const episodesDir = join(root, "episodes");
   const paddedEpisode = String(episodeNumber).padStart(4, "0");
-  const episodeFile = (await readdir(episodesDir).catch((error) => {
-    if (isMissingDirectoryError(error)) {
-      return [];
-    }
+  const files = await readdir(episodesDir).catch((error) => {
+    if (isMissingDirectoryError(error)) return [];
     throw error;
-  }))
-    .find((file) => file.startsWith(`${paddedEpisode}_`) && file.endsWith(".md"));
-
-  if (!episodeFile) {
-    throw new Error(`Episode ${episodeNumber} not found.`);
-  }
-  return { episodesDir, episodePath: join(episodesDir, episodeFile), episodeFile };
+  });
+  const markdownFile = files.find((file) => file.startsWith(`${paddedEpisode}_`) && file.endsWith(".md"));
+  if (!markdownFile) throw new Error(`Episode ${episodeNumber} not found.`);
+  return { episodesDir, markdownPath: join(episodesDir, markdownFile), markdownFile };
 }
 
-async function clearEpisodeRuntimeFiles(root: string, episodeNumber: number): Promise<ReadonlyArray<string>> {
+async function findEpisodePaths(root: string, episodeNumber: number): Promise<{
+  readonly episodesDir: string;
+  readonly markdownPath: string;
+  readonly markdownFile: string;
+  readonly jsonPath: string;
+  readonly jsonFile: string;
+}> {
+  const { episodesDir, markdownPath, markdownFile } = await findEpisodeMarkdownPath(root, episodeNumber);
   const paddedEpisode = String(episodeNumber).padStart(4, "0");
-  const runtimeDir = join(root, "story", "runtime");
-  const runtimeFiles = (await readdir(runtimeDir).catch((error) => {
+  const files = await readdir(episodesDir).catch((error) => {
     if (isMissingDirectoryError(error)) {
       return [];
     }
     throw error;
-  }))
-    .filter((file) => file.startsWith(`episode-${paddedEpisode}.`));
-  await Promise.all(runtimeFiles.map((file) => unlink(join(runtimeDir, file)).catch(() => undefined)));
-  return runtimeFiles.map((file) => relative(root, join(runtimeDir, file)));
+  });
+  const jsonFile = files.find((file) =>
+    file.startsWith(`${paddedEpisode}_`)
+    && file.endsWith(".json")
+    && !file.endsWith("_review.json"),
+  );
+
+  if (!jsonFile) {
+    throw new Error(`EPISODE_JSON_AUTHORITY: episode ${episodeNumber} has no authoritative screenplay JSON.`);
+  }
+  return {
+    episodesDir,
+    markdownPath,
+    markdownFile,
+    jsonPath: join(episodesDir, jsonFile),
+    jsonFile,
+  };
 }
 
 function markEpisodeForManualReview(
@@ -292,7 +405,7 @@ function markEpisodeForManualReview(
 ): ReadonlyArray<EpisodeMeta> {
   const now = new Date().toISOString();
   const recoveryIssue = {
-    severity: "warning" as const,
+    severity: "critical" as const,
     category: "manual-episode-edit",
     description: issue,
     suggestion: "Re-audit the edited episode before accepting it.",
@@ -306,7 +419,7 @@ function markEpisodeForManualReview(
         ...(typeof episodeDurationSeconds === "number" ? { episodeDurationSeconds } : {}),
         auditIssues: [
           ...episode.auditIssues.filter((existing) => !existing.includes(issue)),
-          `[warning] ${issue}`,
+          `[critical] ${issue}`,
         ],
         reviewNote: undefined,
         recoveryState: buildEpisodeRecoveryState({
@@ -321,12 +434,14 @@ function markEpisodeForManualReview(
 
 function canonicalizeEpisodeScript(content: string, episodeNumber: number): {
   readonly markdown: string;
+  readonly json: string;
   readonly durationSeconds: number;
 } {
   try {
     const script = parseEpisodeScriptOutput(content, episodeNumber);
     return {
       markdown: renderEpisodeScriptMarkdown(script),
+      json: `${JSON.stringify(script, null, 2)}\n`,
       durationSeconds: script.estimatedDurationSeconds,
     };
   } catch (error) {
@@ -345,27 +460,43 @@ async function executeEpisodeReplace(
   if (!fullText) {
     throw new Error("Episode replacement requires fullText.");
   }
-  const { episodePath } = await findEpisodePath(root, request.episodeNumber);
+  const { markdownPath, jsonPath } = await findEpisodePaths(root, request.episodeNumber);
   const canonical = canonicalizeEpisodeScript(fullText, request.episodeNumber);
-  await writeFile(episodePath, canonical.markdown, "utf-8");
-  const removedRuntimeFiles = await clearEpisodeRuntimeFiles(root, request.episodeNumber);
-
+  const [originalMarkdown, originalJson] = await Promise.all([
+    readFile(markdownPath, "utf-8"),
+    readFile(jsonPath, "utf-8"),
+  ]);
+  const originalIndex = await deps.loadEpisodeIndex(request.bookId);
+  const derivedBackups = await episodeDerivedBackups(root, request.episodeNumber);
   const updatedIndex = markEpisodeForManualReview(
-    await deps.loadEpisodeIndex(request.bookId),
+    originalIndex,
     request.episodeNumber,
     MANUAL_EPISODE_EDIT_ISSUE,
     canonical.markdown,
     canonical.durationSeconds,
   );
-  await deps.saveEpisodeIndex(request.bookId, updatedIndex);
+  try {
+    await atomicWriteFile(jsonPath, canonical.json, "utf-8");
+    await atomicWriteFile(markdownPath, canonical.markdown, "utf-8");
+    await deps.saveEpisodeIndex(request.bookId, updatedIndex);
+    await invalidateBackups(derivedBackups);
+  } catch (error) {
+    await attemptRollback(error, [
+      () => atomicWriteFile(jsonPath, originalJson, "utf-8"),
+      () => atomicWriteFile(markdownPath, originalMarkdown, "utf-8"),
+      () => restoreBackups(derivedBackups),
+      () => deps.saveEpisodeIndex(request.bookId, originalIndex),
+    ]);
+  }
 
   return {
     transactionType: request.kind,
     bookId: request.bookId,
     episodeNumber: request.episodeNumber,
     touchedFiles: [
-      relative(root, episodePath),
-      ...removedRuntimeFiles,
+      relative(root, jsonPath),
+      relative(root, markdownPath),
+      ...derivedBackups.map((backup) => relative(root, backup.path)),
       "episodes/index.json",
     ],
     reviewRequired: true,
@@ -378,12 +509,15 @@ async function executeEpisodeLocalEdit(
   request: Extract<EditRequest, { kind: "episode-local-edit" }>,
 ): Promise<ExecutedEditTransaction> {
   const root = deps.bookDir(request.bookId);
-  const { episodePath } = await findEpisodePath(root, request.episodeNumber);
+  const { markdownPath, jsonPath } = await findEpisodePaths(root, request.episodeNumber);
   if (!request.targetText || request.replacementText === undefined) {
     throw new Error("Episode-local edits require targetText and replacementText.");
   }
 
-  const content = await readFile(episodePath, "utf-8");
+  const [content, originalJson] = await Promise.all([
+    readFile(markdownPath, "utf-8"),
+    readFile(jsonPath, "utf-8"),
+  ]);
   const nextContent = replaceEpisodeTargetText(content, request.targetText, request.replacementText);
   if (nextContent === content) {
     throw new Error(`Target text was not found in episode ${request.episodeNumber}.`);
@@ -395,25 +529,37 @@ async function executeEpisodeLocalEdit(
       "EPISODE_JSON_AUTHORITY: the edit changed only the Markdown projection. Edit the embedded EpisodeScript JSON or replace the full EpisodeScript artifact.",
     );
   }
-  await writeFile(episodePath, canonical.markdown, "utf-8");
-
-  const removedRuntimeFiles = await clearEpisodeRuntimeFiles(root, request.episodeNumber);
+  const originalIndex = await deps.loadEpisodeIndex(request.bookId);
+  const derivedBackups = await episodeDerivedBackups(root, request.episodeNumber);
   const updatedIndex = markEpisodeForManualReview(
-    await deps.loadEpisodeIndex(request.bookId),
+    originalIndex,
     request.episodeNumber,
     MANUAL_EPISODE_EDIT_ISSUE,
     canonical.markdown,
     canonical.durationSeconds,
   );
-  await deps.saveEpisodeIndex(request.bookId, updatedIndex);
+  try {
+    await atomicWriteFile(jsonPath, canonical.json, "utf-8");
+    await atomicWriteFile(markdownPath, canonical.markdown, "utf-8");
+    await deps.saveEpisodeIndex(request.bookId, updatedIndex);
+    await invalidateBackups(derivedBackups);
+  } catch (error) {
+    await attemptRollback(error, [
+      () => atomicWriteFile(jsonPath, originalJson, "utf-8"),
+      () => atomicWriteFile(markdownPath, content, "utf-8"),
+      () => restoreBackups(derivedBackups),
+      () => deps.saveEpisodeIndex(request.bookId, originalIndex),
+    ]);
+  }
 
   return {
     transactionType: request.kind,
     bookId: request.bookId,
     episodeNumber: request.episodeNumber,
     touchedFiles: [
-      relative(root, episodePath),
-      ...removedRuntimeFiles,
+      relative(root, jsonPath),
+      relative(root, markdownPath),
+      ...derivedBackups.map((backup) => relative(root, backup.path)),
       "episodes/index.json",
     ],
     reviewRequired: true,
@@ -422,17 +568,24 @@ async function executeEpisodeLocalEdit(
 }
 
 function replaceEpisodeTargetText(content: string, targetText: string, replacementText: string): string {
-  const exact = content.split(targetText).join(replacementText);
-  if (exact !== content) return exact;
+  const firstExact = content.indexOf(targetText);
+  if (firstExact >= 0) {
+    if (content.indexOf(targetText, firstExact + targetText.length) >= 0) {
+      throw new Error("Episode-local edit target appears more than once; provide a unique target.");
+    }
+    return `${content.slice(0, firstExact)}${replacementText}${content.slice(firstExact + targetText.length)}`;
+  }
 
   const pattern = flexibleWhitespacePattern(targetText);
   if (pattern) {
-    let matched = false;
-    const replaced = content.replace(pattern, () => {
-      matched = true;
-      return replacementText;
-    });
-    if (matched) return replaced;
+    const matches = [...content.matchAll(pattern)];
+    if (matches.length > 1) {
+      throw new Error("Episode-local edit target appears more than once after whitespace normalization; provide a unique target.");
+    }
+    if (matches[0]?.index !== undefined) {
+      const match = matches[0][0];
+      return `${content.slice(0, matches[0].index)}${replacementText}${content.slice(matches[0].index + match.length)}`;
+    }
   }
 
   return replaceApproximateParagraph(content, targetText, replacementText);
@@ -523,19 +676,6 @@ export async function executeEditTransaction(
       return executeEpisodeReplace(deps, request);
     case "episode-local-edit":
       return executeEpisodeLocalEdit(deps, request);
-    case "truth-file-edit": {
-      const root = deps.bookDir(request.bookId);
-      const normalizedFileName = normalizeTruthFileName(request.fileName);
-      const filePath = join(root, "story", normalizedFileName);
-      await writeFile(filePath, request.instruction, "utf-8");
-      return {
-        transactionType: request.kind,
-        bookId: request.bookId,
-        touchedFiles: [relative(root, filePath)],
-        reviewRequired: false,
-        summary: `Updated ${normalizedFileName}.`,
-      };
-    }
     default:
       throw new Error(`Edit transaction "${request.kind}" is not executable yet.`);
   }

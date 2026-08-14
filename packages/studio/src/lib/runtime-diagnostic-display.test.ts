@@ -51,7 +51,7 @@ describe("buildRuntimeDiagnosticViewModel", () => {
       [
         "# 本集设定工作集 — 第 7 集",
         "",
-        "视角：林澈",
+        "视角：林丙",
         "",
         "## 本集可用设定（writer 可渲染）",
         "- [C1] 灵脉需要代价",
@@ -75,7 +75,7 @@ describe("buildRuntimeDiagnosticViewModel", () => {
 
     expect(model?.facts).toEqual(expect.arrayContaining([
       expect.objectContaining({ label: "剧集", value: "7" }),
-      expect.objectContaining({ label: "视角", value: "林澈" }),
+      expect.objectContaining({ label: "视角", value: "林丙" }),
       expect.objectContaining({ label: "计划揭示", value: "1" }),
     ]));
     expect(model?.sections).toEqual(expect.arrayContaining([
@@ -450,7 +450,7 @@ describe("buildRuntimeDiagnosticViewModel", () => {
         "- S1「债务」：状态=高压；最近触达=ch8",
         "",
         "近期情感线：",
-        "- 林澈：ch8 愧疚",
+        "- 林丙：ch8 愧疚",
         "",
         "下一集规划焦点：",
         "- 让债务变成公开选择",

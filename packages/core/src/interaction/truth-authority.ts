@@ -18,6 +18,15 @@ const NORMALIZED_TRUTH_FILES = new Set([
 
 export function normalizeTruthFileName(fileName: string): string {
   const trimmed = fileName.trim().toLowerCase();
+  if (
+    !trimmed
+    || trimmed.startsWith("/")
+    || trimmed.includes("\\")
+    || trimmed.includes("\0")
+    || trimmed.split("/").some((segment) => segment === ".." || segment === ".")
+  ) {
+    throw new Error(`Invalid truth file name: ${JSON.stringify(fileName)}`);
+  }
   const normalized = trimmed.endsWith(".md") ? trimmed : `${trimmed}.md`;
   if (!NORMALIZED_TRUTH_FILES.has(normalized)) {
     return normalized;

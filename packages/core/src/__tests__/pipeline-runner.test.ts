@@ -10,12 +10,13 @@ import { WriterAgent, type WriteEpisodeOutput } from "../agents/writer.js";
 import { ContinuityAuditor } from "../agents/continuity.js";
 import { StateValidatorAgent } from "../agents/state-validator.js";
 import type { BookConfig } from "../models/book.js";
+import type { GenreProfile } from "../models/genre-profile.js";
 import {
   attachEpisodeContextArtifacts,
   attachEpisodePlanningMemory,
   type EpisodeContextSnapshot,
 } from "../pipeline/episode-context.js";
-import { createEpisodeScriptMarkdown } from "./episode-test-fixtures.js";
+import { createEpisodeScriptJson, createEpisodeScriptMarkdown } from "./episode-test-fixtures.js";
 
 const ZERO_USAGE = {
   promptTokens: 0,
@@ -109,6 +110,71 @@ describe("buildImportFoundationSource", () => {
     expect(source).toContain("OPEN-1");
     expect(source).toContain("TAIL-36");
     expect(source).not.toContain("chapter");
+  });
+});
+
+describe("PipelineRunner post-write gate format split", () => {
+  it("skips prose style blockers for screenplay while retaining governed memo checks", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const genreProfile: GenreProfile = {
+      id: "test",
+      name: "test",
+      language: "zh",
+      episodeTypes: [],
+      fatigueWords: [],
+      pacingRule: "",
+      numericalSystem: false,
+      powerScaling: false,
+      eraResearch: false,
+      auditDimensions: [],
+      satisfactionTypes: [],
+    };
+
+    try {
+      const gates = await (runner as any).prepareEpisodeAuditGates({
+        bookId,
+        bookDir: state.bookDir(bookId),
+        episodeNumber: 1,
+        language: "zh",
+        genreProfile,
+        episodeMemo: {
+          body: [
+            "## 本集 Hook ledger",
+            "advance:",
+            "- H001 \"门钥匙\" → progressing｜证据：钥匙落地的动作",
+          ].join("\n"),
+        },
+      });
+      const issues = gates.runPostWriteChecks(
+        "这不是误会，而是核心动机——信息边界必须重写。",
+        "screenplay",
+      );
+
+      expect(issues.some((issue: { category: string }) => issue.category === "hook-evidence-missing")).toBe(true);
+      expect(issues.map((issue: { category: string }) => issue.category)).not.toEqual(expect.arrayContaining([
+        "禁止句式",
+        "禁止破折号",
+        "报告术语",
+      ]));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reads the authoritative JSON when the Markdown projection diverges", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const episodesDir = join(state.bookDir(bookId), "episodes");
+    try {
+      await writeFile(join(episodesDir, "0001_Authority.md"), "# stale markdown projection", "utf-8");
+      await writeFile(join(episodesDir, "0001_Authority.json"), createEpisodeScriptJson(1, "JSON Authority"), "utf-8");
+
+      const content = await (runner as any).readEpisodeContent(state.bookDir(bookId), 1);
+
+      expect(content).toContain("JSON Authority");
+      expect(content).not.toContain("stale markdown projection");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

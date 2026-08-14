@@ -59,7 +59,9 @@ function coreWorkflowTargets(workflow: CoreWorkflowMutationKind): ReadonlyArray<
     case "compose-episode":
       return ["story/runtime"];
     case "audit-episode":
-      return ["episodes/index.json", "story/audit_drift.md"];
+      // A passing audit of a manually staged draft also commits its replayed
+      // truth, snapshot, Canon, and derived review evidence.
+      return ["episodes", "story"];
     case "rewrite-episode":
       // Rewriting rolls truth back and removes all later screenplay/episode
       // artifacts before regeneration. Back up the complete affected roots so
@@ -713,6 +715,15 @@ export class StateManager {
     } catch {
       // state directory missing — skip
     }
+
+    const canonDir = join(storyDir, "canon");
+    const snapshotCanonDir = join(snapshotDir, "canon");
+    await rm(snapshotCanonDir, { recursive: true, force: true });
+    try {
+      await cp(canonDir, snapshotCanonDir, { recursive: true });
+    } catch {
+      // canon directory missing — older or partially initialized project
+    }
   }
 
   async isCompleteBookDirectory(bookDir: string): Promise<boolean> {
@@ -807,6 +818,17 @@ export class StateManager {
         await rm(stateDir, { recursive: true, force: true });
       }
 
+      const snapshotCanonDir = join(snapshotDir, "canon");
+      const canonDir = join(storyDir, "canon");
+      try {
+        await stat(snapshotCanonDir);
+        await rm(canonDir, { recursive: true, force: true });
+        await cp(snapshotCanonDir, canonDir, { recursive: true });
+      } catch {
+        // Legacy snapshots did not include Canon. Preserve the existing Canon
+        // rather than deleting the book's foundational claims.
+      }
+
       return true;
     } catch {
       return false;
@@ -816,6 +838,20 @@ export class StateManager {
   async restoreEpisodeState(bookId: string, episodeNumber: number): Promise<boolean> {
     await this.loadEpisodeBookConfig(bookId);
     return this.restoreState(bookId, episodeNumber);
+  }
+
+  async restoreCanonSnapshot(bookId: string, episodeNumber: number): Promise<boolean> {
+    const storyDir = join(this.bookDir(bookId), "story");
+    const snapshotCanonDir = join(storyDir, "snapshots", String(episodeNumber), "canon");
+    const canonDir = join(storyDir, "canon");
+    try {
+      await stat(snapshotCanonDir);
+      await rm(canonDir, { recursive: true, force: true });
+      await cp(snapshotCanonDir, canonDir, { recursive: true });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**

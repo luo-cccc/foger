@@ -60,10 +60,10 @@ Keep commits atomic — one logical change per commit. Split new files, interfac
 
 ## Pull Request Checklist
 
-- [ ] `pnpm build` passes
-- [ ] `pnpm test` passes (all existing + new tests)
-- [ ] `pnpm typecheck` passes
+- [ ] `pnpm verify` passes
+- [ ] `git diff --check` passes
 - [ ] New features have tests
+- [ ] README / architecture / operations / release notes are updated where behavior changed
 - [ ] No unrelated formatting changes (keep diffs focused)
 - [ ] Commit messages follow the convention above
 
@@ -74,7 +74,7 @@ Keep commits atomic — one logical change per commit. Split new files, interfac
 - Immutable patterns: `{ ...obj, key: value }` over mutation
 - Prefer functions under 50 lines and new domain modules under 800 lines. When changing an existing oversized module, extract a coherent business domain instead of adding another unrelated responsibility.
 - Errors must surface, not be swallowed (`catch { }` without re-throw needs a comment)
-- Publishable package manifests must use registry-installable internal versions, not `workspace:*`; `pnpm` links local packages through the workspace config during development.
+- Source package manifests use `workspace:*` for internal dependencies. Prepack rewrites them to registry versions; never hand-edit source manifests to imitate packed output.
 - Studio and CLI must call core application use cases for series/episode mutations. Do not duplicate rollback, locking, validation, or persistence sequences in an interface package.
 - Structured JSON is authoritative runtime state. Markdown truth files are readable projections and must remain rebuildable.
 - Multi-file episode writes require the shared persistence transaction; direct config/index writes require atomic helpers.
@@ -84,7 +84,7 @@ Keep commits atomic — one logical change per commit. Split new files, interfac
 
 1. Create `packages/cli/src/commands/<name>.ts`
 2. Export a `Command` instance
-3. Register it in `packages/cli/src/index.ts`
+3. Register it in `packages/cli/src/program.ts`
 4. Add `--json` output support
 5. Support book-id auto-detection when only one book exists
 
@@ -116,7 +116,17 @@ Changes to locks, transaction markers, recovery, project configuration, or proce
 
 Studio Playwright tests run through `pnpm --filter @actalk/inkos-studio test:e2e`, which allocates an isolated temporary project root and dynamic ports. Do not invoke Playwright directly because the launcher provides the required runtime metadata. Changes to persistence, locking, or episode mutations must keep the suite green.
 
-Real-provider runs are manual acceptance tests, not commit-level tests. Keep credentials outside the repository, summarize durable user-visible findings in the dated release notes, and remove raw `.tmp-*` projects with `pnpm clean` after review. An interrupted report is not authoritative: cross-check the episode index, structured truth, snapshots, and runtime telemetry before documenting its outcome.
+Real-provider runs are manual acceptance tests, not commit-level tests. Keep credentials outside the repository, summarize durable user-visible findings in the dated release notes, and remove raw projects and reports with `pnpm clean` after review. Do not commit one-off tool-review documents or paid-run transcripts. An interrupted report is not authoritative: cross-check the episode index, structured truth, snapshots, and runtime telemetry before documenting its outcome.
+
+### Paid-run data must not contaminate source or tests
+
+Every contamination found in this codebase traced back to one path: a paid production run generated a book, its characters/plots got copied into a regression-test fixture, and the fixture then leaked into production code, prompts, or spec documents as an example. The guard (`scripts/audit-contamination.mjs`) blocks denylisted proper nouns in production files and tests under `packages/*/src`, plus `genres/`, `scripts/`, and the canonical spec docs (`README*.md`, `CONTRIBUTING.md`, `docs/architecture.md`, `docs/operations.md`). Dated release notes may retain concise historical conclusions, but not full scripts or raw model output.
+
+Rules:
+
+- Never use a paid-book proper noun (character, faction, place, artifact, book title) in production code, tests, comments, prompts, genre files, Studio copy, or spec docs; use neutral invented fixtures instead.
+- When a new paid run introduces names, register them in `KNOWN_CONTAMINATION` inside `scripts/audit-contamination.mjs`, then neutralize any copied fixture before it lands under a scanned source tree.
+- `pnpm audit:contamination` is part of `pnpm verify`; a failing guard blocks merge.
 
 ## Questions?
 

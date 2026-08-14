@@ -3,10 +3,10 @@ import { assertSafeBookId, deriveBookIdFromTitle, isSafeBookId } from "../utils/
 
 describe("book id safety", () => {
   it("accepts ids produced by InkOS title derivation", () => {
-    expect(deriveBookIdFromTitle("夜港账本")).toBe("夜港账本");
+    expect(deriveBookIdFromTitle("雾港账本")).toBe("雾港账本");
     expect(deriveBookIdFromTitle(" Harbor: Ledger! ")).toBe("harbor-ledger");
     expect(isSafeBookId("harbor-ledger")).toBe(true);
-    expect(isSafeBookId("夜港账本")).toBe(true);
+    expect(isSafeBookId("雾港账本")).toBe(true);
     expect(isSafeBookId("天机破诡：仙帝重生救苍生")).toBe(true);
   });
 

@@ -76,7 +76,7 @@ describe("interaction runtime", () => {
         automationMode: "semi",
         creationDraft: {
           concept: "港风商战悬疑，主角从灰产洗白。",
-          title: "夜港账本",
+          title: "雾港账本",
           readyToCreate: false,
           missingFields: ["genre"],
         },
@@ -101,10 +101,10 @@ describe("interaction runtime", () => {
         automationMode: "semi",
         creationDraft: {
           concept: "港风商战悬疑，主角从灰产洗白。",
-          title: "夜港账本",
+          title: "雾港账本",
           genre: "urban",
           worldPremise: "近未来港口城，账本牵出多方势力。",
-          protagonist: "林砚，水货账房出身，擅长记账和看人。",
+          protagonist: "林戊，水货账房出身，擅长记账和看人。",
           conflictCore: "洗白与旧债回潮的对撞。",
           nextQuestion: "卷一先查账还是先砸场？",
           missingFields: ["targetEpisodes"],
@@ -119,7 +119,7 @@ describe("interaction runtime", () => {
       tools: makeTools(),
     });
 
-    expect(result.responseText).toContain("夜港账本");
+    expect(result.responseText).toContain("雾港账本");
     expect(result.responseText).toContain("近未来港口城");
     expect(result.responseText).toContain("卷一先查账还是先砸场");
   });
@@ -206,6 +206,54 @@ describe("interaction runtime", () => {
       "task.started",
       "task.completed",
     ]);
+  });
+
+  it("records audit-failed write output as a failed task", async () => {
+    const result = await runInteractionRequest({
+      session: InteractionSessionSchema.parse({
+        sessionId: "session-write-failed",
+        projectRoot: "/tmp/project",
+        activeBookId: "harbor",
+        automationMode: "auto",
+        messages: [],
+        events: [],
+      }),
+      request: { intent: "write_next", bookId: "harbor" },
+      tools: makeTools({
+        writeNextEpisode: vi.fn(async () => ({
+          episodeNumber: 8,
+          status: "audit-failed",
+        })),
+      }),
+    });
+
+    expect(result.session.currentExecution?.status).toBe("failed");
+    expect(result.session.events.at(-1)).toMatchObject({ kind: "task.failed", status: "failed" });
+    expect(result.session.pendingDecision).toBeUndefined();
+  });
+
+  it("records state-degraded write output as blocked", async () => {
+    const result = await runInteractionRequest({
+      session: InteractionSessionSchema.parse({
+        sessionId: "session-write-degraded",
+        projectRoot: "/tmp/project",
+        activeBookId: "harbor",
+        automationMode: "semi",
+        messages: [],
+        events: [],
+      }),
+      request: { intent: "write_next", bookId: "harbor" },
+      tools: makeTools({
+        writeNextEpisode: vi.fn(async () => ({
+          episodeNumber: 8,
+          status: "state-degraded",
+        })),
+      }),
+    });
+
+    expect(result.session.currentExecution?.status).toBe("blocked");
+    expect(result.session.events.at(-1)).toMatchObject({ kind: "task.blocked", status: "blocked" });
+    expect(result.session.pendingDecision).toBeUndefined();
   });
 
   it("moves content-producing work into waiting_human in semi mode", async () => {
@@ -308,6 +356,32 @@ describe("interaction runtime", () => {
     });
 
     expect(reviseDraft).toHaveBeenCalledWith("harbor", 5, "rewrite");
+  });
+
+  it("does not complete a revision that was not applied", async () => {
+    const result = await runInteractionRequest({
+      session: InteractionSessionSchema.parse({
+        sessionId: "session-revision-skipped",
+        projectRoot: "/tmp/project",
+        activeBookId: "harbor",
+        automationMode: "manual",
+        messages: [],
+        events: [],
+      }),
+      request: { intent: "revise_episode", bookId: "harbor", episodeNumber: 5 },
+      tools: makeTools({
+        reviseDraft: vi.fn(async () => ({
+          episodeNumber: 5,
+          applied: false,
+          status: "unchanged",
+          skippedReason: "candidate did not improve",
+        })),
+      }),
+    });
+
+    expect(result.session.currentExecution?.status).toBe("blocked");
+    expect(result.session.events.at(-1)).toMatchObject({ kind: "task.blocked", status: "blocked" });
+    expect(result.responseText).toContain("原稿已保留");
   });
 
   it("routes update_focus to the focus updater", async () => {
@@ -421,14 +495,14 @@ describe("interaction runtime", () => {
         intent: "rename_entity",
         bookId: "harbor",
         oldValue: "陆尘",
-        newValue: "林砚",
+        newValue: "林戊",
       },
       tools: makeTools({
         renameEntity,
       }),
     });
 
-    expect(renameEntity).toHaveBeenCalledWith("harbor", "陆尘", "林砚");
+    expect(renameEntity).toHaveBeenCalledWith("harbor", "陆尘", "林戊");
   });
 
   it("routes patch_episode_text to the episode patch tool and waits for review", async () => {

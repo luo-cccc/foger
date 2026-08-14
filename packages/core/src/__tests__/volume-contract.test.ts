@@ -20,11 +20,11 @@ describe("volume contract", () => {
       "# Volume Map",
       "",
       "## 第一卷 暗账初开（第1-40章）",
-      "Objective: 林月把七号门异常从传闻钉成内城账本入口。",
+      "Objective: 林己把七号门异常从传闻钉成内城账本入口。",
       "KR1: 拿到七号门被动过手脚的现场实证。",
-      "KR2: 让阿泽从旁观者变成共同担责者。",
+      "KR2: 让阿川从旁观者变成共同担责者。",
       "KR3: 锁定内城旧契与师门失踪之间的账本通道。",
-      "卷尾不可逆事件：林月公开撕下杂役腰牌，失去退回外门的可能。",
+      "卷尾不可逆事件：林己公开撕下杂役腰牌，失去退回外门的可能。",
     ].join("\n"));
 
     expect(contracts).toHaveLength(1);
@@ -34,8 +34,8 @@ describe("volume contract", () => {
       title: "暗账初开（第1-40章）",
       episodeStart: 1,
       episodeEnd: 40,
-      objective: "林月把七号门异常从传闻钉成内城账本入口。",
-      irreversibleEvent: "林月公开撕下杂役腰牌，失去退回外门的可能。",
+      objective: "林己把七号门异常从传闻钉成内城账本入口。",
+      irreversibleEvent: "林己公开撕下杂役腰牌，失去退回外门的可能。",
     });
     expect(contracts[0]!.keyResults.map((kr) => kr.id)).toEqual(["V1-KR1", "V1-KR2", "V1-KR3"]);
   });
@@ -142,23 +142,23 @@ describe("volume contract", () => {
   it("detects visible Chinese KR advancement from partial prose restatements", () => {
     const contract = extractVolumeContracts([
       "## 第一卷 暗账初开（第1-5章）",
-      "Objective: 林月把七号门异常从传闻钉成内城账本入口。",
+      "Objective: 林己把七号门异常从传闻钉成内城账本入口。",
       "KR1: 拿到七号门被动过手脚的现场实证。",
-      "卷尾不可逆事件：林月公开撕下杂役腰牌，失去退回外门的可能。",
+      "卷尾不可逆事件：林己公开撕下杂役腰牌，失去退回外门的可能。",
     ].join("\n"))[0]!;
 
     expect(detectVisibleKrRefs(
       contract,
-      "林月在七号门墙缝里找到现场实证，证明机关确实被人动过手脚。",
+      "林己在七号门墙缝里找到现场实证，证明机关确实被人动过手脚。",
     )).toEqual(["V1-KR1"]);
   });
 
   it("accepts Chinese irreversible volume-end events from partial prose restatements", () => {
     const contract = extractVolumeContracts([
       "## 第一卷 暗账初开（第1-5章）",
-      "Objective: 林月把七号门异常从传闻钉成内城账本入口。",
+      "Objective: 林己把七号门异常从传闻钉成内城账本入口。",
       "KR1: 拿到七号门被动过手脚的现场实证。",
-      "卷尾不可逆事件：林月公开撕下杂役腰牌，失去退回外门的可能。",
+      "卷尾不可逆事件：林己公开撕下杂役腰牌，失去退回外门的可能。",
     ].join("\n"))[0]!;
     const memo: EpisodeMemo = {
       episode: 5,
@@ -175,7 +175,7 @@ describe("volume contract", () => {
       contract,
       phase: "post",
       episodeNumber: 5,
-      text: "林月在七号门墙缝里找到现场实证，证明机关确实被人动过手脚。随后她当众扯碎杂役腰牌，从此不能退回外门。",
+      text: "林己在七号门墙缝里找到现场实证，证明机关确实被人动过手脚。随后她当众扯碎杂役腰牌，从此不能退回外门。",
     });
 
     expect(issues.map((issue) => issue.category)).not.toContain("volume-end-irreversible-missing");

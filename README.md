@@ -6,7 +6,7 @@
 <h1 align="center">漫剧剧本生产系统</h1>
 
 <p align="center">
-  面向 100 集竖屏漫剧的规划、分镜写作、连续性审计、修订与完本管理
+  面向长篇竖屏漫剧的规划、分镜写作、连续性审查、修订、审批与完本管理
 </p>
 
 <p align="center">
@@ -15,75 +15,60 @@
 
 ## 产品定位
 
-InkOS 将原长篇小说生产链改造成统一的漫剧剧本工作流。系统默认规划 100 集，每集目标 150 秒（约 2.5 分钟），并以结构化 `EpisodeScript JSON` 作为权威创作真源，同时生成便于阅读和交付的分镜 Markdown。
+InkOS 是 Episode-first 的文本漫剧生产系统。默认目标为 100 集、每集 150 秒，并以结构化 `EpisodeScript JSON` 作为剧本权威真源。Markdown 只用于阅读和交付投影，不能反向覆盖 JSON。
 
-创作标准统一为：
-
-> 新颖设定 × 熟悉爽点 × 高压关系 × 高频反转 × 情绪钩子
-
-每一集都经过：
+单集主流程：
 
 ```text
-Planner → Composer → Writer → 确定性质量门 → 状态结算 → Auditor → 持久化
+Planner → Composer → Writer → 确定性门禁 → Auditor/Reviser → 状态结算 → 持久化
 ```
 
-正常生产最多调用 Planner、Writer、Auditor 三次模型。结构化剧本的状态、摘要、Hook 和交接胶囊由本地 reducer 推导，不再默认调用额外的 LLM Settlement。
+首轮通过时通常只需要 Planner、Writer 和 Auditor 模型调用。状态、摘要、Hook、Canon 演化和交接胶囊由本地确定性逻辑推导；审查失败时才进入修订循环。
 
 ## 最新更新
 
-### 2026-08-13
+### 2026-08-14
 
-- **旧小说时代残留治理**：修复分镜格式下 AI 味检测被短路（`analyzeAITells` + 英文 AI-tell 词密度此前只在自由文本分支运行，剧本格式完全失效，现对镜头表面跑）；英文 AI-tell 词表从 3 份不一致副本收敛为单一权威并删除死代码；删除从不生效的 `inputGovernanceMode` 死字段与 `foundation-scale` 的 `episodic` 死开关。
-- **跨集凑时长重复检测**：补上分镜格式下被短路的跨集重复门禁——新增镜头表面短语重复 + 行为签名重合（Jaccard）两个确定性信号，检测"复用上一集镜头写法/舞台调度凑时长"，接入写路径与审计路径（最近 3 集）。
-- **创作输出上限提升**：writer/reviser/canon-extractor 的 per-call max-tokens 从硬编码 8192 改为 `min(32768, 模型卡片上限)`——deepseek-v4-flash 等大模型用满 32768，小模型自动回落自身上限。放大制作（更长单集/更多镜头）不再被输出长度截断。
-- **生产工具去污染**：清掉所有从真实付费测试书渗入生产源码的剧情细节；建书提示词新增**世界命名硬约束**——世界名必须从标题与设定派生、禁止"XX界/XX大陆/XX域"占位命名。
-- **模板感收敛**：writer 新增节拍变奏指令，标题句式结构轮换检测（连续 3 集同句式壳自动换名）。
-- **题材去模板化**：15 题材疲劳词全部唯一、爽点池扩到 8-10 类、审计维度题材差异化。
-- **污染守卫**：新增 `scripts/audit-contamination.mjs` 拒绝测试夹具/付费书专名进入生产源码，接入 `pnpm verify`。
-- **真实生产闭环**：结尾情绪钩子改在 Writer 边界要求具体观众疑问句，政治敏感词前置阻断；Hook 账本记录计划回收集和终局证据，提前回收不再从自由文本猜测；未认领 Canon 事实达到默认 50 条时暂停规划/写作并要求 `inkos canon refresh`；返修只处理归属的 critical，审计失败或状态降级剧集禁止默认导出。
-- 验证：core 148 文件 1449 测试、studio 420 测试全绿。
+- **统一剧本真源**：人工编辑、审计、修订、同步和导出统一读取 `episodes/*.json`，JSON 与 Markdown 成对提交或回滚。
+- **明确生产检查点**：手动模式初稿进入 `drafted`，不推进状态、快照或 Canon；审计通过后进入 `ready-for-review`，手动模式批准后才能继续。
+- **收紧审批与交付**：批准要求当前 JSON 对应的有效审查证据；默认导出和全剧完结只接受 `approved/published`，`--approved-only` 可导出已批准子集。
+- **状态与 Canon 可恢复**：逐集快照包含结构化状态和 Canon；拒绝、重写与最新集修订会恢复相应基线。
 
 [查看完整更新记录](docs/releases/release-notes.md)
 
 ## 核心能力
 
-- **100 集规划**：全剧总纲、10 个故事篇章、篇章计划、单集计划和分镜剧本逐层收敛。
-- **结构化分镜**：每个镜头包含景别、机位、时长、画面、动作、对白、旁白、声音和转场。
-- **戏剧合同**：强制区分反转、局部兑现、情绪钩子、出去压力和最终状态变化。
-- **前置内容门禁**：Writer 在落盘前拒绝非具体观众问题式的结尾情绪钩子，以及禁止发布的政治敏感词。
-- **连续性治理**：跟踪人物位置、伤势、能力、道具、信息权限、关系压力、世界规则和带可验证证据的 Hook 生命周期。
-- **状态交接**：每集生成带剧本哈希的 handoff capsule，恢复时校验来源，避免使用过期状态。
-- **证据审查**：审计问题包含严重级别、规则类别、描述、修复建议、证据引用和源文件哈希。
-- **可靠持久化**：剧本 JSON、Markdown、索引、状态、摘要、审查和交接数据在同一事务中提交或回滚。
-- **全剧完本审计**：最终集必须解决主线、人物弧线、关键 Hook 和核心关系冲突，才能标记完成。
-- **Canon 积压治理**：未认领事实达到阈值时暂停后续规划和写作，要求显式刷新 Canon，避免正文逐集脱离权威设定。
-- **多入口操作**：提供 Studio、CLI、TUI 和自然语言 Chat。
+- 全剧总纲、篇章计划、单集计划和 EpisodeScript 分层生产。
+- 结构化场景与镜头，包括景别、机位、时长、画面、动作、对白、旁白、声音和转场。
+- 单集戏剧合同：进入状态、目标、阻力、因果升级、局部结果、出去压力和交接状态。
+- 确定性 schema、时长、合同、Canon、Hook、角色引用、AI 味和跨集重复检查。
+- 带严重级别、责任方、证据位置和正文哈希的审查证据。
+- JSON/Markdown、索引、运行状态、快照、Canon 和 sidecar 的事务化持久化与恢复。
+- Studio、CLI、TUI 和自然语言 Agent 共用 Core 业务入口。
 
 ## 快速开始
 
-环境要求：Node.js 20+，pnpm 9+。
+要求：Node.js 20+，pnpm 9+。
 
 ```bash
 pnpm install
 pnpm build
-```
 
-创建项目并配置模型：
-
-```bash
 inkos init my-drama
 cd my-drama
-
-inkos config set-global \
-  --provider custom \
-  --base-url https://api.deepseek.com \
-  --api-key-env DEEPSEEK_API_KEY \
-  --model deepseek-chat
 ```
 
-密钥应放入环境变量或项目密钥库，不要写入 `inkos.json`、剧本、日志或报告。
+配置模型。密钥只放在环境变量或本地密钥存储中：
 
-创建一部漫剧：
+```bash
+inkos config set-global \
+  --provider custom \
+  --base-url https://api.example.com/v1 \
+  --api-key-env MY_LLM_API_KEY \
+  --model my-model
+```
+
+创建并生产一部漫剧：
 
 ```bash
 inkos book create \
@@ -92,54 +77,61 @@ inkos book create \
   --episodes 100 \
   --duration 150 \
   --brief creative-brief.md
-```
 
-规划、编排并生成下一集：
-
-```bash
 inkos plan episode 零点来电
 inkos compose episode 零点来电
 inkos write next 零点来电
 ```
 
-审计、修订与查看进度：
+审查、修订和审批：
 
 ```bash
 inkos audit 零点来电 1
 inkos revise 零点来电 1
-inkos series status 零点来电
-inkos series complete 零点来电
+inkos review list 零点来电
+inkos review approve 零点来电 1
 ```
 
-导出交付物：
+默认导出要求所有剧集均已批准或发布：
 
 ```bash
 inkos export 零点来电 --format screenplay-md
 inkos export 零点来电 --format screenplay-json
 inkos export 零点来电 --format dialogue
+
+# 只导出已批准部分
+inkos export 零点来电 --format screenplay-md --approved-only
 ```
 
-设定维护（书超纲续写或 canon 增量入库时使用）：
+维护与完本：
 
 ```bash
 inkos foundation extend 零点来电 --episodes 120
 inkos canon refresh 零点来电
+inkos series status 零点来电
+inkos series complete 零点来电
 ```
 
 直接运行 `inkos` 会启动 Studio，默认地址为 `http://127.0.0.1:4567`。
 
+## 状态规则
+
+| 状态 | 含义 | 是否可继续生产 |
+| --- | --- | --- |
+| `drafted` | 手动模式初稿，尚未审计 | 否 |
+| `ready-for-review` | 审计通过，真相与快照已提交 | 自动模式可以；手动模式需先批准 |
+| `audit-failed` | 存在阻断问题或人工编辑后待重审 | 否 |
+| `state-degraded` | 正文可用，但状态提交或恢复不完整 | 否 |
+| `approved` / `published` | 可交付状态 | 是 |
+| `rejected` | 已拒绝，依赖状态必须回滚或重写 | 否 |
+
+批准还要求当前 Episode JSON 有合法、哈希匹配且状态为 `PROVISIONAL` 的审查证据。详细状态转换见[架构说明](docs/architecture.md)。
+
 ## 单集合同
 
-每集剧本必须满足：
+每集包含 1～3 个场景；默认 150 秒目标对应约 8～20 个镜头，下限为硬约束、上限为软告警。默认软时长区间为 120～180 秒，硬区间为 90～210 秒。
 
-- 1～3 个场景；镜头数按目标时长动态预算（150 秒目标约 8～20 个），仅下限为硬约束、上限为软告警。
-- 目标时长默认 150 秒；软区间为 ±30 秒（120～180 秒），硬区间为 90～210 秒。
-- 每个镜头必须有可制作的视觉信息。
-- 心理活动必须转换为动作、表情、对白或旁白。
-- 至少包含一个明确冲突、一个有铺垫的方向性转折和一个局部兑现。
-- 结尾必须产生由本集结果自然引出的新压力，并改变关系、信息、权力或生存状态；情绪钩子必须写成关于关系、危险、身份、牺牲或选择的具体观众疑问句。
-
-结构化合同的主要字段：
+结构化合同字段：
 
 ```text
 incomingState
@@ -152,8 +144,6 @@ handoffState
 informationPermissions
 ```
 
-完整模型与审计规则见[架构说明](docs/architecture.md)。
-
 ## 项目结构
 
 ```text
@@ -161,47 +151,39 @@ books/<series-id>/
 ├── book.json
 ├── episodes/
 │   ├── index.json
-│   ├── 0001_标题.json
-│   ├── 0001_标题.md
-│   └── 0001_review.json
+│   ├── 0001_标题.json       # 权威剧本
+│   ├── 0001_标题.md         # 阅读投影
+│   └── 0001_review.json     # 审查证据
 └── story/
-    ├── canon/            # 结构化设定（claims / world_system / asset_registry / unclaimed_facts）
-    ├── outline/
-    ├── roles/
-    ├── state/
-    ├── runtime/
-    ├── snapshots/
+    ├── canon/               # 结构化设定
+    ├── outline/             # 总纲与卷计划
+    ├── roles/               # 角色资料
+    ├── state/               # 结构化运行状态
+    ├── runtime/             # 单次操作派生物与诊断
+    ├── snapshots/           # 逐集状态与 Canon 快照
     ├── current_state.md
     ├── pending_hooks.md
     └── episode_summaries.md
 ```
 
-`episodes/*.json` 是剧本权威真源。Markdown 是阅读和导出投影。`story/state/*.json` 保存结构化运行状态，`story/runtime/` 保存单次操作的计划、上下文、规则、审查、性能和交接数据，`story/canon/` 保存机器可校验的结构化设定（随剧集确定性演化，可通过 `inkos canon refresh` 增量入库）。Hook 的计划回收集与铺设、推进、终局证据一并存储，提前回收只按完整终局证据判定，不从自由文本猜测。
+旧小说目录、旧 schema 和旧 runtime 不会被静默解释为 Episode v2 项目。
 
-旧小说目录、旧 schema 或旧字段不会被静默解释为漫剧项目。
-
-## 开发与验证
+## 开发与文档
 
 ```bash
-pnpm check:hygiene
-pnpm typecheck
-pnpm audit:semantic-patterns
-pnpm build
-pnpm test
-pnpm verify:publish-manifests
+pnpm verify
+pnpm clean:dry-run
+pnpm clean
 ```
 
-清理构建和测试产物：
-
-```bash
-pnpm clean:build
-```
-
-更多维护说明见[运行与维护](docs/operations.md)。
+- [文档索引](docs/README.md)
+- [架构说明](docs/architecture.md)
+- [运行与维护](docs/operations.md)
+- [贡献指南](CONTRIBUTING.md)
 
 ## 边界
 
-当前版本只负责文本漫剧生产，不包含出图、配音、音效素材、视频生成或资产生产链。第一版导出范围为分镜 Markdown、结构化 JSON、全剧状态/完本报告和角色台词表。
+当前版本只负责文本剧本与结构化生产数据，不包含出图、配音、音效、视频生成或媒体资产制作。
 
 ## License
 

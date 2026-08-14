@@ -165,15 +165,15 @@ describe("compileEpisodeClaims", () => {
       id: "claim-010",
       domain: "character",
       claimType: "character_exception",
-      content: "老周作为档案室技术员，认识沈鸢并答应过她不告诉林澈；他通过维修磁带机间接协助林澈。",
-      scope: { appliesTo: ["老周"] },
-      visibility: { readerKnownFrom: 1, characterKnownBy: ["老周"], hiddenFrom: ["林澈"] },
-      constraints: { nonGeneralizable: true, requiresCost: ["老周被停职"], forbiddenUses: [] },
+      content: "周甲作为档案室技术员，认识沈乙并答应过她不告诉林丙；他通过维修磁带机间接协助林丙。",
+      scope: { appliesTo: ["周甲"] },
+      visibility: { readerKnownFrom: 1, characterKnownBy: ["周甲"], hiddenFrom: ["林丙"] },
+      constraints: { nonGeneralizable: true, requiresCost: ["周甲被停职"], forbiddenUses: [] },
     });
     const compiled = compileEpisodeClaims([deferredRelationship], {
       episodeNumber: 1,
-      pov: "林澈",
-      memo: "暂不掀：老周认识母亲，本章只让老周作为同事出现，不暴露任何记忆。",
+      pov: "林丙",
+      memo: "暂不掀：周甲认识母亲，本章只让周甲作为同事出现，不暴露任何记忆。",
     });
 
     expect(compiled.revealNow).toEqual([]);

@@ -12,7 +12,7 @@ export interface EpisodePersistenceUsage {
   readonly totalTokens: number;
 }
 
-export type EpisodePersistenceStatus = "ready-for-review" | "audit-failed" | "state-degraded";
+export type EpisodePersistenceStatus = "drafted" | "ready-for-review" | "audit-failed" | "state-degraded";
 
 export async function persistEpisodeArtifacts(params: {
   readonly episodeNumber: number;

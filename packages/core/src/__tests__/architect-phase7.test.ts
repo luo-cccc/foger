@@ -61,7 +61,7 @@ const PHASE7_RESPONSE = [
   "=== SECTION: roles ===",
   "---ROLE---",
   "tier: major",
-  "name: 林辞",
+  "name: 林乙",
   "---CONTENT---",
   "## 核心标签",
   "沉默",

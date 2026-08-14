@@ -57,14 +57,14 @@ describe("outline-paths", () => {
     const minorDir = join(bookDir, "story", "roles", "次要角色");
     await mkdir(majorDir, { recursive: true });
     await mkdir(minorDir, { recursive: true });
-    await writeFile(join(majorDir, "林辞.md"), "主角核心卡", "utf-8");
+    await writeFile(join(majorDir, "林乙.md"), "主角核心卡", "utf-8");
     await writeFile(join(majorDir, "沈默.md"), "对手卡", "utf-8");
     await writeFile(join(minorDir, "老张.md"), "次要卡", "utf-8");
 
     const cards = await readRoleCards(bookDir);
     expect(cards).toHaveLength(3);
     const byName = Object.fromEntries(cards.map((card) => [card.name, card]));
-    expect(byName["林辞"]?.tier).toBe("major");
+    expect(byName["林乙"]?.tier).toBe("major");
     expect(byName["沈默"]?.tier).toBe("major");
     expect(byName["老张"]?.tier).toBe("minor");
   });
@@ -72,10 +72,10 @@ describe("outline-paths", () => {
   it("composes role cards into character-context prose grouped by tier", async () => {
     const majorDir = join(bookDir, "story", "roles", "主要角色");
     await mkdir(majorDir, { recursive: true });
-    await writeFile(join(majorDir, "林辞.md"), "## 核心标签\n沉静的观察者\n", "utf-8");
+    await writeFile(join(majorDir, "林乙.md"), "## 核心标签\n沉静的观察者\n", "utf-8");
 
     const context = await readCharacterContext(bookDir, "(empty)");
-    expect(context).toContain("林辞");
+    expect(context).toContain("林乙");
     expect(context).toContain("主要角色");
     expect(context).toContain("沉静的观察者");
   });

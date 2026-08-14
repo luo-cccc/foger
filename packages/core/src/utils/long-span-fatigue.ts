@@ -227,7 +227,7 @@ function buildEpisodeTypeIssue(
   return {
     severity: "warning",
     category: "节奏单调",
-    description: `最近${streak}章章节类型持续停留在“${repeatedType}”，长篇节奏可能开始固化。`,
+    description: `最近${streak}集的剧集类型持续停留在“${repeatedType}”，长篇节奏可能开始固化。`,
     suggestion: "下一集应切换剧集功能，不要连续重复同一种布局/推进节拍。",
   };
 }
@@ -253,7 +253,7 @@ function buildMoodIssue(
   return {
     severity: "warning",
     category: "情绪单调",
-    description: `最近${highTensionStreak}章持续高压（${recentMoods.join(" -> ")}），缺少明显的情绪释放。`,
+    description: `最近${highTensionStreak}集持续高压（${recentMoods.join(" -> ")}），缺少明显的情绪释放。`,
     suggestion: "下一集安排一次喘息、温情、幽默或静场释放，再继续加压。",
   };
 }
@@ -357,7 +357,7 @@ function buildSentencePatternIssue(
   return {
     severity: "warning",
     category: boundary === "opening" ? "开头同构" : "结尾同构",
-    description: `最近3章${boundary === "opening" ? "开头" : "结尾"}句式高度相似（相邻相似度${pairText}），容易形成模板化${boundary === "opening" ? "开篇" : "章尾"}。当前句式近似“${sample}”。`,
+    description: `最近3集${boundary === "opening" ? "开头" : "结尾"}句式高度相似（相邻相似度${pairText}），容易形成模板化${boundary === "opening" ? "开场" : "集尾"}。当前句式近似“${sample}”。`,
     suggestion: boundary === "opening"
       ? "下一集换一个开篇入口，用动作、后果或异常信息切入，不要连续沿用同一种抬镜句。"
       : "下一集换一个收束方式，用行动后果、角色决断或新变量落板，不要连续用解释性句子收尾。",

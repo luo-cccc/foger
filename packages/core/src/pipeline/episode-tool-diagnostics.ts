@@ -110,16 +110,24 @@ export function auditEpisodeToolDiagnostics(script: EpisodeScript, previous?: Ep
 
   const entries = new Set<string>();
   const duplicatedEntries = new Set<string>();
+  let priorSurface = "";
+  const arrivalPattern = /(?:突然|忽然|凭空|suddenly|appears? out of nowhere)[^，。！？;]{0,6}(?:出现|闯入|现身|闪出|冒出|窜出|跳出|杀出|赶来|登场|进来|进入|进门|钻出|冲出|冲进|arrive|enter|emerge|appear|pop\s+up|show\s+up)/iu;
+  const setupPattern = /脚步|敲门|门铃|警报|通报|来报|呼喊|喊声|影子|人影|车声|引擎|逼近|赶来消息|已经到了|正在路上|footsteps?|knock|doorbell|alarm|warning|approach(?:ing)?|on the way|engine|shadow|voice/iu;
   for (const scene of script.scenes) {
     for (const shot of scene.shots) {
       const mentioned = shot.dialogue?.map((line) => line.speaker) ?? [];
-      for (const speaker of mentioned) {
-        if (entries.has(speaker)) continue;
-        entries.add(speaker);
+      if (shot.action) {
+        const arrival = shot.action.match(arrivalPattern);
+        if (arrival) {
+          const prefix = shot.action.slice(0, arrival.index ?? 0);
+          const nearbySubject = shot.action.slice(Math.max(0, (arrival.index ?? 0) - 16), arrival.index ?? 0);
+          const establishedActor = [...entries].some((speaker) => nearbySubject.includes(speaker));
+          const hasSetup = setupPattern.test(prefix) || setupPattern.test(priorSurface.slice(-240));
+          if (!establishedActor && !hasSetup) duplicatedEntries.add(shot.id);
+        }
       }
-      if (shot.action && /突然|忽然|凭空|suddenly|appears? out of nowhere/iu.test(shot.action)) {
-        duplicatedEntries.add(shot.id);
-      }
+      for (const speaker of mentioned) entries.add(speaker);
+      priorSurface += `\n${shot.visual}\n${shot.action ?? ""}\n${shot.narration ?? ""}\n${shot.dialogue.map((line) => `${line.speaker}:${line.text}`).join("\n")}`;
     }
   }
   if (duplicatedEntries.size > 0) {

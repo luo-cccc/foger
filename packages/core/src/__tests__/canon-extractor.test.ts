@@ -60,8 +60,8 @@ function writeFoundation(bookDir: string): void {
     "utf-8",
   );
   fs.writeFileSync(
-    path.join(story, "roles", "主要角色", "林辞.md"),
-    "## 当前现状\n林辞是杂役。\n\n## 特殊\n他能听到器物低语。\n",
+    path.join(story, "roles", "主要角色", "林乙.md"),
+    "## 当前现状\n林乙是杂役。\n\n## 特殊\n他能听到器物低语。\n",
     "utf-8",
   );
 }
@@ -87,7 +87,7 @@ describe("CanonExtractor", () => {
         (c) => c.claimType === "objective_rule" || c.claimType === "prohibition",
       );
       expect(hardClaims.every((c) => c.authority.priority === "hard")).toBe(true);
-      expect(result.protagonistSystem?.name).toBe("林辞");
+      expect(result.protagonistSystem?.name).toBe("林乙");
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -116,7 +116,7 @@ describe("CanonExtractor", () => {
             },
           ],
           worldSystem: { objectiveRules: ["灵气恒定"], taboos: [] },
-          protagonistSystem: { name: "林辞" },
+          protagonistSystem: { name: "林乙" },
           systemRelations: { mode: "hybrid", auditRules: ["主角例外不得泛化"] },
         }),
         true,
@@ -145,7 +145,7 @@ describe("CanonExtractor", () => {
       expect(await hasCanon(tmp)).toBe(true);
       const loaded = await loadCanonBundle(tmp);
       expect(loaded.claims.claims[0]?.id).toBe("w-1");
-      expect(loaded.protagonistSystem?.name).toBe("林辞");
+      expect(loaded.protagonistSystem?.name).toBe("林乙");
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -186,7 +186,7 @@ describe("CanonExtractor", () => {
       expect(result.claims[0]?.relations).toBeUndefined();
       expect(result.claims[0]?.constraints.requiresCost).toEqual([]);
       expect(result.protagonistSystem).toMatchObject({
-        name: "林辞",
+        name: "林乙",
         exceptionality: "他能听到器物低语。",
       });
       expect(result.systemRelations).toMatchObject({ mode: "hybrid" });
@@ -207,10 +207,10 @@ describe("CanonExtractor", () => {
           id: "style-1",
           domain: "world",
           claimType: "objective_rule",
-          content: "叙事视角严格锁定在林辞感知范围内，不使用上帝视角。",
-          scope: { appliesTo: ["林辞"] },
+          content: "叙事视角严格锁定在林乙感知范围内，不使用上帝视角。",
+          scope: { appliesTo: ["林乙"] },
           authority: { source: "story_frame", priority: "hard" },
-          visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["林辞"] },
+          visibility: { readerKnownFrom: 30, characterKnownBy: [], hiddenFrom: ["林乙"] },
           constraints: { requiresCost: ["失去线索"], forbiddenUses: [] },
         }],
         worldSystem: {},
@@ -244,12 +244,12 @@ describe("CanonExtractor", () => {
           id: "character-1",
           domain: "character",
           claimType: "character_exception",
-          content: "老周暗中协助林澈调查磁带。",
-          scope: { appliesTo: ["老周"] },
-          authority: { source: "roles/老周", priority: "strong" },
-          visibility: { characterKnownBy: ["老周"], hiddenFrom: ["林澈"] },
+          content: "周甲暗中协助林丙调查磁带。",
+          scope: { appliesTo: ["周甲"] },
+          authority: { source: "roles/周甲", priority: "strong" },
+          visibility: { characterKnownBy: ["周甲"], hiddenFrom: ["林丙"] },
           constraints: {
-            requiresCost: ["老周可能被停职或住院", "每次协助都会失去一段记忆"],
+            requiresCost: ["周甲可能被停职或住院", "每次协助都会失去一段记忆"],
             forbiddenUses: [],
           },
         }],

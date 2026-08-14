@@ -1,5 +1,14 @@
 # InkOS 更新记录
 
+### 2026-08-14（剧本真源、审查状态机与文档收口）
+
+- **Episode JSON 权威闭环**：人工替换、局部补丁、实体重命名、审计、修订、同步和导出统一读取权威 JSON；JSON 与 Markdown 投影成对提交或回滚，成功编辑会失效旧 runtime/review sidecar。
+- **手动模式检查点**：手动模式初稿持久化为 `drafted`，不推进真相、快照或 Canon；显式审计通过后重放状态并进入 `ready-for-review`，批准后才允许继续。
+- **审批与批量审批收紧**：批准要求合法 EpisodeScript JSON、当前正文哈希匹配且状态为 `PROVISIONAL` 的审查证据；`approve-all` 只处理 `ready-for-review`，不再覆盖 `audit-failed`。
+- **Canon 与回滚一致**：Canon 纳入逐集快照，只随审查通过且状态结算成功的剧集演化；拒绝、重写和最新集修订按相应快照恢复。
+- **交付和完本统一**：默认导出与 `series complete` 只接受全部剧集为 `approved/published`；`--approved-only` 提供明确的部分导出选择，缺失或非法 JSON 直接失败。
+- **文档整理**：中英文 README 同步当前状态机和交付前置条件；架构与运维文档从阶段性修复流水账收敛为长期契约；删除一次性工具审查和付费运行原始报告，保留本更新记录中的长期结论。
+
 ### 2026-08-13（真实生产闭环：内容门禁、Hook 证据与 Canon 治理）
 
 - **结尾情绪钩子前置校验**：Writer 落盘前要求 `emotionalHook` 是关于关系、危险、身份、牺牲或选择的具体观众疑问句；模糊承诺直接以 `INVALID_EMOTIONAL_HOOK` 拒绝，不再等 Auditor 事后反复抓取和触发整集返修。
@@ -42,7 +51,7 @@
 - **复跑发现的残留修复**：写路径 `hardLengthPassed` 仍用字面量 60-120 判定，147 秒剧集被误判 audit-failed，已改为引用硬区间常量；`BookConfigSchema.episodeDurationSeconds` 上限从 120 同步为 210（4 处），否则默认 150 秒建书直接被 schema 拒绝。
 - **writer 解析失败再加固**：writer 内部修复重试失败后，runner 从零重新生成一次；最终失败把原始输出留存到 `story/runtime/episode-XXXX-writer-raw-fail.txt` 并在错误信息附路径，失败 attempt 的 token 并入该集用量；解析失败错误携带稳定机器码 `WRITER_OUTPUT_PARSE_FAILED` 与 `rawOutput`。
 - **配置可诊断性**：`ProjectConfigSchema` 校验失败的 llm 字段错误改写为可执行提示，说明配置来源（configSource=studio 时 inkos.json 端点被接管）并指向 `INKOS_LLM_BASE_URL` 等环境变量与 `inkos config set-global`。
-- **复跑验证**（`docs/测试报告-子夜当铺-20集复跑-150秒改造验证.md`）：同一创意、同一模型（deepseek-v4-flash）20 集复跑——20/20 initial-passed、零 revise、零内容人工干预、完本门禁一次通过（首测需人工对账 6 条伏笔），单集时长 147-154 秒、镜头 10-19 个，总 token 456,650（时长 +67% 而 token 低于首测），生产耗时约为首测 1/3。验证：core 1425 / cli 215 / studio 420 测试全绿，`pnpm verify` 全链路通过。
+- **复跑验证**：同一创意与模型完成 20 集复跑，20/20 initial-passed、零内容人工干预、完本门禁一次通过；单集时长和镜头数落在新预算内。原始付费运行报告已按当前数据隔离规则移除，长期结论保留于此。
 
 ### 2026-08-10（drama-skills 改造复审缺口修复）
 
@@ -54,7 +63,7 @@
 
 ### 2026-08-10（drama-skills 借鉴改造 P1–P2）
 
-- 按 `docs/ref/inkos-drama-skills-改造方案.md` 完成 Writer/Reviser 工艺深化（P1）与 Planner/系统层（P2）全部条目，zh/en 提示词双份同步，`pnpm verify` 全量通过，20 集零失败基线不变。
+- 完成 Writer/Reviser 工艺深化（P1）与 Planner/系统层（P2）全部条目，zh/en 提示词双份同步，`pnpm verify` 全量通过，20 集零失败基线不变。原阶段方案文档已在落地后清理，当前行为以架构与运维文档为准。
 - P1-1 Writer 对白纪律新增"对白手法的失效条件"段（dialogue-craft 反向条件表）：潜台词、打断、沉默、先承认一部分、借第三人施压各配失效条件，craft_default 语气，不进确定性门禁。
 - P1-2 SCR-09 长发言断开：Writer 纪律明确长发言只在议程转折处用动作行断开、无内部转折应缩短；确定性门禁新增 `long-speech-without-action`（同一说话人单镜头合计 >160 字且镜头无 action 字段时报 craft_default 警告，不阻断），原单句 >80 字规则保留。
 - P1-3 Reviser 提示词按 script-craft §9 组织为"一遍只解决一种失败"：多 finding 按 因果→场景运动→可表演性→对白→生产事实→交接 顺序逐个处理，FIXED_ISSUES 声明每处修改解决的 finding；局部修订的保留保证由确定性 patch 应用器与修订复核承担。

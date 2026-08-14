@@ -93,7 +93,7 @@ describe("Phase 5 hotfix 2 — bookRules.body decoupling", () => {
         "---",
         "version: \"1.0\"",
         "protagonist:",
-        "  name: 林辞",
+        "  name: 林乙",
         "  personalityLock: [沉默]",
         "  behavioralConstraints: []",
         "prohibitions:",
@@ -107,7 +107,7 @@ describe("Phase 5 hotfix 2 — bookRules.body decoupling", () => {
     );
 
     const rendered = await readPlannerBookRules(storyDir);
-    expect(rendered).toContain("林辞");
+    expect(rendered).toContain("林乙");
     expect(rendered).toContain("不得神化主角");
     // The story_frame prose must NOT be duplicated via book rules body.
     expect(rendered).not.toContain("独家的五段散文正文内容");

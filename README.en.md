@@ -6,7 +6,7 @@
 <h1 align="center">Serialized Vertical Drama Production System</h1>
 
 <p align="center">
-  Planning, storyboard writing, continuity review, revision, and completion control for 100-episode drama series
+  Planning, storyboard writing, continuity review, revision, approval, and completion control for long-running vertical drama
 </p>
 
 <p align="center">
@@ -15,31 +15,36 @@
 
 ## Product Scope
 
-InkOS is an episode-first production system for short vertical drama scripts. It defaults to 100 episodes at a 150-second target (about 2.5 minutes) each. Structured `EpisodeScript JSON` is the creative source of truth, while screenplay Markdown is a readable and exportable projection.
+InkOS is an episode-first text production system for vertical drama. The default target is 100 episodes at 150 seconds each. Structured `EpisodeScript JSON` is authoritative; Markdown is a readable delivery projection and never overrides JSON.
 
-The production standard is:
-
-> Novel premise × familiar payoff × high-pressure relationships × causal reversals × emotional hooks
-
-Each episode follows:
+The episode pipeline is:
 
 ```text
-Planner → Composer → Writer → deterministic gates → state reduction → Auditor → persistence
+Planner → Composer → Writer → deterministic gates → Auditor/Reviser → state reduction → persistence
 ```
 
-The normal path uses at most three model calls. Runtime state, summaries, hooks, and handoff capsules are derived locally from the structured script.
+A first-pass success normally uses Planner, Writer, and Auditor model calls. Runtime state, summaries, hooks, Canon evolution, and handoff capsules are derived deterministically. Revision calls are added only when review finds blocking issues.
 
 ## Latest Update
 
-### 2026-08-13
+### 2026-08-14
 
-- Production gates now reject a vague ending hook before persistence: it must be a concrete audience question about a relationship, danger, identity, sacrifice, or choice. Writer output containing blocked political-sensitive terms is also rejected at the boundary instead of being discovered after review.
-- Hook lifecycle data now stores the target payoff episode plus seed, advance, and payoff evidence. Early-payoff detection only fires when all declared payoff evidence appears; it no longer guesses from names or free-form notes.
-- Unclaimed canon facts are accumulated deterministically. At the default backlog of 50, planning and writing stop with `CANON_REFRESH_REQUIRED`; run `inkos canon refresh <book-id>` and review the resulting claims before continuing. Exports are blocked for audit-failed or state-degraded episodes.
-- Revision triage sends the Reviser only critical findings it owns, preserving other findings as review evidence and avoiding a full rewrite for unrelated warnings.
-- Cross-episode shot-surface and action-signature checks detect padding through repeated staging, while the cleanup command removes only caches, reports, and temporary artifacts unless `clean:build` is explicitly used.
+- **One screenplay authority**: editing, auditing, revision, synchronization, and export read `episodes/*.json`; JSON and Markdown are committed or rolled back together.
+- **Explicit production checkpoints**: manual mode persists a `drafted` episode without advancing truth, snapshots, or Canon. A passing audit moves it to `ready-for-review`; manual mode then requires approval before continuation.
+- **Strict approval and delivery**: approval requires valid evidence for the current JSON hash. Default export and series completion accept only `approved/published`; `--approved-only` exports the approved subset.
+- **Recoverable state and Canon**: per-episode snapshots include structured state and Canon. Rejection, rewrite, and latest-episode revision restore the matching baseline.
 
 [Full release history](docs/releases/release-notes.md)
+
+## Capabilities
+
+- Hierarchical series, arc, episode-plan, and EpisodeScript production.
+- Structured scenes and shots with framing, camera, duration, visuals, action, dialogue, narration, sound, and transitions.
+- Episode contracts covering incoming state, objective, opposition, causal escalation, local result, outgoing pressure, and handoff state.
+- Deterministic schema, duration, contract, Canon, Hook, character-reference, AI-tell, and cross-episode repetition checks.
+- Review evidence with severity, ownership, evidence references, and source hashes.
+- Transactional persistence and recovery for JSON/Markdown, indexes, runtime state, snapshots, Canon, and sidecars.
+- Shared Core application boundaries for Studio, CLI, TUI, and natural-language Agent workflows.
 
 ## Quick Start
 
@@ -51,7 +56,21 @@ pnpm build
 
 inkos init my-drama
 cd my-drama
+```
 
+Configure a model. Keep the key in an environment variable or local secret store:
+
+```bash
+inkos config set-global \
+  --provider custom \
+  --base-url https://api.example.com/v1 \
+  --api-key-env MY_LLM_API_KEY \
+  --model my-model
+```
+
+Create and produce a series:
+
+```bash
 inkos book create \
   --title "Midnight Call" \
   --genre urban \
@@ -64,29 +83,55 @@ inkos compose episode midnight-call
 inkos write next midnight-call
 ```
 
-Review, revise, complete, and export:
+Audit, revise, and approve:
 
 ```bash
 inkos audit midnight-call 1
 inkos revise midnight-call 1
-inkos series status midnight-call
-inkos series complete midnight-call
+inkos review list midnight-call
+inkos review approve midnight-call 1
+```
 
+Default export requires every episode to be approved or published:
+
+```bash
 inkos export midnight-call --format screenplay-md
 inkos export midnight-call --format screenplay-json
 inkos export midnight-call --format dialogue
 
-# Required when the canon backlog reaches its configured threshold
+# Export only approved episodes
+inkos export midnight-call --format screenplay-md --approved-only
+```
+
+Maintenance and completion:
+
+```bash
+inkos foundation extend midnight-call --episodes 120
 inkos canon refresh midnight-call
+inkos series status midnight-call
+inkos series complete midnight-call
 ```
 
 Running `inkos` without a subcommand starts Studio at `http://127.0.0.1:4567`.
 
+## Episode States
+
+| Status | Meaning | Can production continue? |
+| --- | --- | --- |
+| `drafted` | Manual-mode draft, not audited | No |
+| `ready-for-review` | Audit passed; truth and snapshot committed | Yes in auto mode; manual mode requires approval |
+| `audit-failed` | Blocking findings or a manual edit awaiting re-audit | No |
+| `state-degraded` | Screenplay persisted, but state commit or recovery is incomplete | No |
+| `approved` / `published` | Deliverable | Yes |
+| `rejected` | Rejected; dependent state must be rolled back or rewritten | No |
+
+Approval also requires valid `PROVISIONAL` review evidence whose hash matches the current Episode JSON. See [Architecture](docs/architecture.md) for the transition rules.
+
 ## Episode Contract
 
-Each episode must contain 1–3 scenes, a visible conflict, a prepared directional reversal, a local payoff, and outgoing pressure caused by the result. Its ending emotional hook must be a concrete audience question about a relationship, danger, identity, sacrifice, or choice. Shot count follows a dynamic budget derived from the target duration (about 8–20 shots at the default 150-second target) — only the lower bound is a hard constraint; the upper bound is a soft warning. The 150-second default target has a ±30-second soft range (120–180 seconds) and a 90–210 second hard range.
+Each episode contains 1-3 scenes. At the default 150-second target, the dynamic shot budget is roughly 8-20 shots; the lower bound is hard and the upper bound is a warning. The default soft duration range is 120-180 seconds and the hard range is 90-210 seconds.
 
-The structured contract tracks:
+Contract fields:
 
 ```text
 incomingState
@@ -99,48 +144,46 @@ handoffState
 informationPermissions
 ```
 
-See [Architecture](docs/architecture.md) for the data flow and review rules.
-
-## Storage
+## Project Layout
 
 ```text
 books/<series-id>/
 ├── book.json
 ├── episodes/
 │   ├── index.json
-│   ├── 0001_Title.json
-│   ├── 0001_Title.md
-│   └── 0001_review.json
+│   ├── 0001_Title.json       # authoritative screenplay
+│   ├── 0001_Title.md         # readable projection
+│   └── 0001_review.json      # review evidence
 └── story/
-    ├── outline/
-    ├── roles/
-    ├── state/
-    ├── runtime/
-    ├── snapshots/
+    ├── canon/                # structured setting authority
+    ├── outline/              # series and volume plans
+    ├── roles/                # character profiles
+    ├── state/                # structured runtime truth
+    ├── runtime/              # operation artifacts and diagnostics
+    ├── snapshots/            # per-episode state and Canon snapshots
     ├── current_state.md
     ├── pending_hooks.md
     └── episode_summaries.md
 ```
 
-Episode JSON is authoritative. Markdown is a projection. Structured state, evidence reports, performance telemetry, and recovery capsules are persisted separately and committed transactionally with the script. Hook records retain their target payoff episode and lifecycle evidence; early payoff is evaluated only against declared payoff evidence, never inferred from free-form text.
+Legacy novel layouts, schemas, and runtime artifacts are never silently interpreted as Episode v2 projects.
 
-## Development
+## Development And Docs
 
 ```bash
-pnpm check:hygiene
-pnpm typecheck
-pnpm audit:semantic-patterns
-pnpm build
-pnpm test
-pnpm verify:publish-manifests
-pnpm clean:build
+pnpm verify
+pnpm clean:dry-run
+pnpm clean
 ```
 
-See [Operations](docs/operations.md) for maintenance guidance.
+- [Documentation index](docs/README.md)
+- [Architecture](docs/architecture.md)
+- [Operations](docs/operations.md)
+- [Contributing](CONTRIBUTING.md)
 
-## Current Boundary
+## Boundary
 
-InkOS produces text screenplay artifacts only. Image generation, voice, sound asset production, video generation, and media asset pipelines are not part of this release.
+This release produces text screenplay artifacts and structured production data. Image, voice, sound, video, and media-asset generation are out of scope.
 
 ## License
 

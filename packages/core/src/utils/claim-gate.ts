@@ -433,7 +433,13 @@ function hasBypassSignal(text: string, claim: CanonClaim): boolean {
   // fire constantly in ordinary prose ("他直接推门而入") and produced critical
   // false positives on hard/institution rule bypass checks. Real bypasses in the
   // corpus pair a rule mention with an explicit circumvention verb below.
-  if (/无视|绕过|越过|跳过|破例|例外|失效|失灵|作废|不再生效|无需(?:遵守|遵循|服从|执行)|不必(?:遵守|遵循|服从|执行)|bypass(?:es|ed)?|ignore(?:s|d)?/i.test(text)) {
+  if (/无视|绕过|跳过|破例|例外|失效|失灵|作废|不再生效|无需(?:遵守|遵循|服从|执行)|不必(?:遵守|遵循|服从|执行)|bypass(?:es|ed)?|ignore(?:s|d)?/i.test(text)) {
+    return true;
+  }
+
+  // "越过" is ambiguous: it is spatial in "目光越过人群", but a real
+  // circumvention verb when its object is a rule, permission or control boundary.
+  if (/越过[^。！？\n]{0,10}(?:规则|规矩|限制|权限|门槛|程序|流程|审批|审查|封锁|禁令|边界|防线|认证|授权|许可|契约|誓约|校验)/u.test(text)) {
     return true;
   }
 

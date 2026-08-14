@@ -17,7 +17,7 @@ const book: BookConfig = {
   updatedAt: "2026-01-01T00:00:00.000Z",
 };
 
-function episode(episodeNumber: number, status: EpisodeMeta["status"] = "ready-for-review"): EpisodeMeta {
+function episode(episodeNumber: number, status: EpisodeMeta["status"] = "approved"): EpisodeMeta {
   return {
     episodeNumber,
     title: `Episode ${episodeNumber}`,
@@ -212,5 +212,33 @@ describe("series completion gate", () => {
       finalEpisodeScript: resolvedFinalScript,
     });
     expect(completed.completed).toBe(true);
+  });
+
+  it("requires every episode to be approved or published", () => {
+    const runtimeState = {
+      manifest: { lastAppliedEpisode: 2 },
+      hooks: { hooks: [] },
+      episodeSummaries: { rows: [{
+        episodeNumber: 2,
+        title: "Final",
+        characters: "hero, ally",
+        events: "The conspiracy is exposed.",
+        stateChanges: "The system is dismantled.",
+        hookActivity: "all core hooks resolved",
+        mood: "resolved",
+        episodeType: "episode",
+        payoff: "Victims recover their identities.",
+        relationshipChange: "The hero and ally choose an honest alliance.",
+      }] },
+    } as never;
+
+    for (const episodes of [
+      [episode(1, "rejected"), episode(2)],
+      [episode(1), episode(2, "ready-for-review")],
+    ]) {
+      const report = evaluateSeriesCompletion({ book, episodes, runtimeState, finalEpisodeScript: resolvedFinalScript });
+      expect(report.completed).toBe(false);
+      expect(report.issues.map((issue) => issue.code)).toContain("blocking-episode");
+    }
   });
 });

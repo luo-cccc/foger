@@ -357,11 +357,66 @@ function extractLedgerEntry(line: string): HookLedgerEntry | undefined {
 function extractExplicitEvidence(descriptor: string): ReadonlyArray<string> {
   const marker = descriptor.match(/(?:\||；|;|\(|（)?\s*(?:evidence|visible evidence|证据|可见载体)\s*[:：]\s*([^|；;）)\n]+)/iu);
   if (!marker?.[1]) return [];
-  return [...new Set(marker[1]
-    .split(/[、,/，]+/u)
-    .map((value) => value.trim().replace(/["“”'`]/g, ""))
-    .filter((value) => value.length >= 2))];
+  const raw = marker[1]!;
+  const items: string[] = [];
+  // Quoted lines are the most precise carriers the planner can attach
+  // ("明天跟我走" 的对白) — keep them as standalone evidence items, otherwise
+  // stripping the quotes fuses them with a suffix ("明天跟我走的对白") that
+  // can never appear verbatim in the draft.
+  for (const quoted of raw.matchAll(/[“"']([^”"'\n]{2,80})[”"']/g)) {
+    items.push(quoted[1]!);
+  }
+  const rest = raw.replace(/[“"'][^”"'\n]{2,80}[”"']/g, " ");
+  for (const part of rest.split(/[、,/，]+/u)) {
+    const value = part.trim();
+    // Drop pure-suffix leftovers ("的对白" after a quoted line) and keep
+    // descriptive carriers ("长者递饼的动作") for fuzzy evidence matching.
+    if (value.length < 2 || stripEvidenceSuffix(value).length === 0) continue;
+    items.push(value);
+  }
+  return [...new Set(items)];
 }
+
+/**
+ * Strip descriptive carrier suffixes from an evidence item so its content
+ * words can be matched against the draft. "长者递饼的动作" can never appear
+ * verbatim in prose (the draft shows the action, not its label), so the
+ * suffix is noise for substring matching.
+ */
+function stripEvidenceSuffix(text: string): string {
+  return text
+    .replace(/(?:的|之)?(?:台词|对白|画面|动作|问话|沉默|眼神|神态|表情|反应|镜头|声音|音效|物件|道具|信息|变化|状态|瞬间|样子|行为|场景|桥段|细节)(?=$)/u, "")
+    .replace(/\b(?:line|dialogue|shot|action|reaction|look|gaze|silence|object|prop|sound|moment|change|state|detail|behavior)\b\s*$/iu, "")
+    .trim();
+}
+
+/**
+ * Evidence is satisfied when the draft echoes the item — either the full
+ * phrase verbatim (planner wrote the actual line: "明天跟我走") or a majority
+ * of its content-bearing words/characters. One shared name or object is not
+ * enough to prove that the committed action or state change occurred.
+ */
+function evidenceEchoes(draft: string, evidence: string): boolean {
+  if (/^[a-z]/i.test(evidence)) {
+    if (draft.toLowerCase().includes(evidence.toLowerCase())) return true;
+    const asciiWords = (stripEvidenceSuffix(evidence).match(/[A-Za-z]{3,}/g) ?? [])
+      .map((word) => word.toLowerCase())
+      .filter((word) => !ASCII_STOPWORDS.has(word));
+    if (asciiWords.length === 0) return false;
+    const hits = asciiWords.filter((word) => draft.toLowerCase().includes(word)).length;
+    return hits >= Math.max(1, Math.ceil(asciiWords.length * 0.6));
+  }
+  if (draft.includes(evidence)) return true;
+  const core = stripEvidenceSuffix(evidence);
+  if (!core) return false;
+  const chars = [...new Set((core.match(/[\u4e00-\u9fff]/gu) ?? [])
+    .filter((char) => !ZH_EVIDENCE_STOP_CHARS.has(char)))];
+  if (chars.length === 0) return false;
+  const hits = chars.filter((char) => draft.includes(char)).length;
+  return hits >= Math.max(2, Math.ceil(chars.length * 0.6));
+}
+
+const ZH_EVIDENCE_STOP_CHARS = new Set(["的", "了", "在", "是", "有", "和", "与", "及", "中", "上", "下", "对", "把", "被"]);
 
 /**
  * Extract content-matching tokens from a ledger line's descriptor.
@@ -413,10 +468,7 @@ const ASCII_STOPWORDS = new Set([
 
 function draftEchoesEntry(draft: string, entry: HookLedgerEntry): boolean {
   if (entry.evidence.length > 0) {
-    const draftLower = draft.toLowerCase();
-    return entry.evidence.every((evidence) => (
-      /^[a-z]/i.test(evidence) ? draftLower.includes(evidence.toLowerCase()) : draft.includes(evidence)
-    ));
+    return entry.evidence.every((evidence) => evidenceEchoes(draft, evidence));
   }
   if (entry.keywords.length > 0) {
     const draftLower = draft.toLowerCase();

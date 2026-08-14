@@ -96,6 +96,15 @@ writeCommand
           }
           break;
         }
+
+        if (result.status === "drafted") {
+          if (!opts.json) {
+            log(language === "en"
+              ? "Manual audit and approval are required before continuing. Stopping batch."
+              : "手动审查与批准完成前不能继续，已停止后续连写。");
+          }
+          break;
+        }
       }
 
       if (opts.json) {

@@ -308,7 +308,7 @@ describe("runtime-state-store memory helpers", () => {
           {
             episodeNumber: 12,
             title: "河埠对账",
-            characters: "林月",
+            characters: "林己",
             events: "第一次写入。",
             stateChanges: "第一次写入。",
             hookActivity: "mentor-debt 推进",
@@ -318,7 +318,7 @@ describe("runtime-state-store memory helpers", () => {
           {
             episodeNumber: 12,
             title: "重复河埠对账",
-            characters: "林月",
+            characters: "林己",
             events: "第二次写入。",
             stateChanges: "第二次写入。",
             hookActivity: "mentor-debt 推进",

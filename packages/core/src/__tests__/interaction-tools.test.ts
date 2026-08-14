@@ -7,7 +7,10 @@ import {
   buildEpisodeFileLookup,
   createInteractionToolsFromDeps,
 } from "../interaction/project-tools.js";
-import { createEpisodeScriptMarkdown } from "./episode-test-fixtures.js";
+import {
+  createEpisodeScriptJson,
+  createEpisodeScriptMarkdown,
+} from "./episode-test-fixtures.js";
 
 let projectRoot: string;
 
@@ -91,7 +94,11 @@ describe("interaction tools", () => {
       const script = createEpisodeScriptMarkdown(1)
         .replaceAll("Mara", "Alpha")
         .replaceAll("Taryn", "Gamma");
+      const scriptJson = createEpisodeScriptJson(1)
+        .replaceAll("Mara", "Alpha")
+        .replaceAll("Taryn", "Gamma");
       await writeFile(join(root, "books", "harbor", "episodes", "0001_Start.md"), script, "utf-8");
+      await writeFile(join(root, "books", "harbor", "episodes", "0001_Start.json"), scriptJson, "utf-8");
       await writeFile(join(root, "books", "harbor", "episodes", "index.json"), JSON.stringify([{
         episodeNumber: 1,
         title: "Start",
@@ -125,7 +132,7 @@ describe("interaction tools", () => {
       const tools = createInteractionToolsFromDeps(pipeline as never, state as never);
 
       await tools.renameEntity("harbor", "Alpha", "Beta");
-      await tools.patchEpisodeText("harbor", 1, "Gamma", "Delta");
+      await tools.patchEpisodeText("harbor", 1, "Keep the seal", "Destroy the seal");
 
       expect(acquireBookLock).toHaveBeenNthCalledWith(1, "harbor");
       expect(acquireBookLock).toHaveBeenNthCalledWith(2, "harbor");
@@ -345,9 +352,9 @@ describe("interaction tools", () => {
       platform: "tomato",
       episodeDurationSeconds: 2800,
       targetEpisodes: 120,
-      blurb: "一个做灰产生意的人，准备在夜港洗白，却先被旧账拖回去。",
+      blurb: "一个做灰产生意的人，准备在雾港洗白，却先被旧账拖回去。",
       worldPremise: "近未来架空香港，港口账本牵出多方势力。",
-      protagonist: "林砚，水货账房出身，聪明克制，不轻易信人。",
+      protagonist: "林戊，水货账房出身，聪明克制，不轻易信人。",
       conflictCore: "洗白与旧债回潮的对撞。",
       volumeOutline: "卷一先查账，再暴露港口旧案。",
       authorIntent: "# 作者意图\n\n写成冷硬、克制、利益驱动的商战悬疑。\n",

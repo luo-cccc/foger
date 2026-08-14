@@ -181,7 +181,10 @@ export function BookDetail({
   ) ?? 0;
   const latestEpisode = data?.episodes.find((episode) => episode.episodeNumber === latestPersistedEpisode);
   const continuationBlocked = latestEpisode?.status === "audit-failed"
-    || latestEpisode?.status === "state-degraded";
+    || latestEpisode?.status === "state-degraded"
+    || latestEpisode?.status === "drafted"
+    || latestEpisode?.status === "rejected"
+    || (reviewMode === "manual" && latestEpisode?.status === "ready-for-review");
   const latestStateDegradedEpisode = data?.episodes.at(-1)?.status === "state-degraded"
     ? data.episodes.at(-1)?.episodeNumber
     : undefined;
@@ -609,7 +612,19 @@ export function BookDetail({
                 ? (book.language === "en"
                     ? `Episode ${latestEpisode.episodeNumber} has degraded state. Repair or rewrite it before continuing.`
                     : `第 ${latestEpisode.episodeNumber} 集状态结算失败，请先修复状态或重写。`)
-                : undefined}
+                : latestEpisode?.status === "drafted"
+                  ? (book.language === "en"
+                      ? `Episode ${latestEpisode.episodeNumber} is not audited yet.`
+                      : `第 ${latestEpisode.episodeNumber} 集尚未审查。`)
+                  : latestEpisode?.status === "rejected"
+                    ? (book.language === "en"
+                        ? `Episode ${latestEpisode.episodeNumber} is rejected. Rewrite it before continuing.`
+                        : `第 ${latestEpisode.episodeNumber} 集已拒绝，请先重写。`)
+                    : reviewMode === "manual" && latestEpisode?.status === "ready-for-review"
+                      ? (book.language === "en"
+                          ? `Episode ${latestEpisode.episodeNumber} is awaiting manual approval.`
+                          : `第 ${latestEpisode.episodeNumber} 集等待人工批准。`)
+                      : undefined}
             data-testid="write-next-button"
             className="flex items-center gap-2 px-5 py-2.5 text-sm font-bold bg-primary text-primary-foreground rounded-xl hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20 disabled:opacity-50"
           >

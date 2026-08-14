@@ -182,8 +182,8 @@ describe("applyEpisodeRuntimeStateDelta", () => {
               {
                 episodeNumber: 12,
                 title: "河埠对账",
-                characters: "林月",
-                events: "林月核对货单。",
+                characters: "林己",
+                events: "林己核对货单。",
                 stateChanges: "师债线索收束。",
                 hookActivity: "mentor-debt 推进",
                 mood: "紧绷",
@@ -202,7 +202,7 @@ describe("applyEpisodeRuntimeStateDelta", () => {
           episodeSummary: {
             episodeNumber: 12,
             title: "再写一版河埠对账",
-            characters: "林月",
+            characters: "林己",
             events: "重复写入。",
             stateChanges: "重复写入。",
             hookActivity: "mentor-debt 推进",
@@ -237,7 +237,7 @@ describe("applyEpisodeRuntimeStateDelta", () => {
             {
               episodeNumber: 12,
               title: "旧版河埠对账",
-              characters: "林月",
+              characters: "林己",
               events: "旧摘要。",
               stateChanges: "旧变化。",
               hookActivity: "旧钩子",
@@ -257,7 +257,7 @@ describe("applyEpisodeRuntimeStateDelta", () => {
         episodeSummary: {
           episodeNumber: 12,
           title: "新版河埠对账",
-          characters: "林月",
+          characters: "林己",
           events: "新摘要。",
           stateChanges: "新变化。",
           hookActivity: "新钩子",
@@ -357,8 +357,8 @@ describe("applyEpisodeRuntimeStateDelta", () => {
               {
                 episodeNumber: 4,
                 title: "雨夜的暗号",
-                characters: "林澈",
-                events: "林澈发现暗号来自监听系统。",
+                characters: "林丙",
+                events: "林丙发现暗号来自监听系统。",
                 stateChanges: "目标转向设备清单。",
                 hookActivity: "morse-controller seeded",
                 mood: "警觉",

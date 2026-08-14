@@ -88,7 +88,7 @@ function baseBook(): BookConfig {
 const CONSOLIDATED_RESPONSE = [
   "=== SECTION: story_frame ===",
   "## 主题与基调",
-  "一段主题散文，结尾指向主角卡：本书主角是林辞，完整弧线详见 roles/主要角色/林辞.md。",
+  "一段主题散文，结尾指向主角卡：本书主角是林乙，完整弧线详见 roles/主要角色/林乙.md。",
   "## 核心冲突与对手定性",
   "主角 vs 体制。对手有自己的逻辑。",
   "## 世界观底色",
@@ -118,7 +118,7 @@ const CONSOLIDATED_RESPONSE = [
   "=== SECTION: roles ===",
   "---ROLE---",
   "tier: major",
-  "name: 林辞",
+  "name: 林乙",
   "---CONTENT---",
   "## 核心标签",
   "沉默、执拗",
@@ -143,13 +143,13 @@ const CONSOLIDATED_RESPONSE = [
   "## 核心标签",
   "精致、疏离",
   "## 反差细节",
-  "唯独对林辞从不说谎",
+  "唯独对林乙从不说谎",
   "## 人物小传",
   "体制内家庭。",
   "## 当前现状",
   "新任区域办公室副职，第 0 章刚上任一周。",
   "## 关系网络",
-  "与林辞复杂。",
+  "与林乙复杂。",
   "## 内在驱动",
   "在规则内做到最好。",
   "## 成长弧光",
@@ -157,7 +157,7 @@ const CONSOLIDATED_RESPONSE = [
   "",
   "=== SECTION: book_rules ===",
   "## 主角",
-  "- 名字：林辞",
+  "- 名字：林乙",
   "- 性格锁：沉默、执拗",
   "- 行为约束：不对长辈失礼",
   "",
@@ -381,7 +381,7 @@ describe("Phase 5 consolidation — parser accepts 5-section output (current_sta
     expect(out.volumeOutline).toContain("节奏原则");
     expect(out.bookRules).toContain("## 主角");
     expect(out.pendingHooks).toContain("H01");
-    expect(out.roles?.map((role) => role.name)).toContain("林辞");
+    expect(out.roles?.map((role) => role.name)).toContain("林乙");
   });
 
   it("accepts localized SECTION names and localized role-card delimiters", async () => {
@@ -406,7 +406,7 @@ describe("Phase 5 consolidation — parser accepts 5-section output (current_sta
     expect(out.volumeMap).toContain("节奏原则");
     expect(out.bookRules).toContain("## 主角");
     expect(out.pendingHooks).toContain("H01");
-    expect(out.roles?.map((role) => role.name)).toContain("林辞");
+    expect(out.roles?.map((role) => role.name)).toContain("林乙");
   });
 
   it("accepts plain Markdown section headings without SECTION markers", async () => {
@@ -466,7 +466,7 @@ describe("Phase 5 consolidation — parser accepts 5-section output (current_sta
       "=== SECTION: roles ===",
       "---ROLE---",
       "tier: major",
-      "name: 林辞",
+      "name: 林乙",
       "---CONTENT---",
       "## 核心标签",
       "沉默",
@@ -484,7 +484,7 @@ describe("Phase 5 consolidation — parser accepts 5-section output (current_sta
       "从独行到托付。",
       "=== SECTION: book_rules ===",
       "## 主角",
-      "- 名字：林辞",
+      "- 名字：林乙",
       "## 禁止事项",
       "- 不得美化体制暴力",
       "",
@@ -539,7 +539,7 @@ describe("Phase 5 consolidation — readCurrentStateWithFallback derives initial
     const derived = await readCurrentStateWithFallback(bookDir, "(missing)");
     // Derived block should mention the role names and their Current_State text.
     expect(derived).toContain("初始状态");
-    expect(derived).toContain("林辞");
+    expect(derived).toContain("林乙");
     expect(derived).toContain("码头边上的旧书店做账房");
     expect(derived).toContain("沈默");
     expect(derived).toContain("新任区域办公室副职");

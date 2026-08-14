@@ -256,7 +256,7 @@ export function validatePostWrite(
   if (/不是[^，。！？\n]{0,30}[，,]?\s*而是/.test(content)) {
     violations.push({
       rule: "禁止句式",
-      severity: "error",
+      severity: "warning",
       description: "出现了「不是……而是……」句式",
       suggestion: "改用直述句",
     });
@@ -266,7 +266,7 @@ export function validatePostWrite(
   if (content.includes("——")) {
     violations.push({
       rule: "禁止破折号",
-      severity: "error",
+      severity: "warning",
       description: "出现了破折号「——」",
       suggestion: "用逗号或句号断句",
     });
@@ -338,14 +338,14 @@ export function validatePostWrite(
   if (foundTerms.length > 0) {
     violations.push({
       rule: "报告术语",
-      severity: "error",
+      severity: "warning",
       description: `正文中出现分析报告术语：${foundTerms.map(t => `"${t}"`).join("、")}`,
       suggestion: "这些术语只能用于 PRE_WRITE_CHECK 内部推理，正文中用口语化表达替代",
     });
   }
 
   // 7. 正文中的剧集号指称（如"第33集"、"episode 33"）
-  const episodeRefPattern = /(?:第\s*\d+\s*章|[Cc]hapter\s+\d+)/g;
+  const episodeRefPattern = /(?:第\s*\d+\s*(?:集|章)|(?:[Ee]pisode|[Cc]hapter)\s+\d+)/g;
   const episodeRefs = content.match(episodeRefPattern);
   if (episodeRefs && episodeRefs.length > 0) {
     const unique = [...new Set(episodeRefs)];

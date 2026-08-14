@@ -1,76 +1,142 @@
 # 运行与维护
 
-## 环境
+## 环境与密钥
 
 - Node.js 20 或更高版本。
 - pnpm 9 或更高版本。
-- 模型密钥通过环境变量或 `.inkos/secrets.json` 提供。
+- 模型密钥通过环境变量、全局配置密钥文件或 Studio 本地密钥存储提供。
 
-不要把真实密钥写入 `inkos.json`、`.env.example`、代码、剧本、日志、报告或提交历史。
+不要把真实密钥写入 `inkos.json`、`.env.example`、源码、剧本、日志、报告或提交历史。真实模型运行前先确认 Provider、模型、输出上限和预算。
 
-## 常用验证
+## 日常生产
+
+自动审查模式：
 
 ```bash
-pnpm check:hygiene
-pnpm typecheck
-pnpm audit:semantic-patterns
-pnpm audit:contamination
-pnpm build
-pnpm test
-pnpm verify:publish-manifests
-git diff --check
+inkos write next <book-id>
+inkos review list <book-id>
+inkos review approve <book-id> <episode>
 ```
 
-Core 聚焦测试：
+自动模式在审查通过后提交真相并进入 `ready-for-review`，可继续下一集；审批仍是默认交付和完本的必要条件。
+
+手动审查模式：
 
 ```bash
-pnpm --filter @actalk/inkos-core test
+inkos config set writing.reviewMode manual
+inkos write next <book-id>                # 结果为 drafted
+inkos audit <book-id> <episode>           # 通过后为 ready-for-review
+inkos review approve <book-id> <episode>  # 批准后才能继续
 ```
 
-测试使用确定性 LLM stub 时不会产生付费请求。真实模型测试必须显式注入密钥，并在运行前确认调用预算。
+人工编辑剧本后，正文会进入需要重新审查的状态。不要直接修改 `episodes/index.json`、`story/state/`、`story/runtime/` 或快照来伪造通过结果。
 
-## 设定与 canon 维护
+## 状态处理
+
+| 最新集状态 | 处理方式 |
+| --- | --- |
+| `drafted` | 运行 `inkos audit <book-id> <episode>` |
+| `ready-for-review` | 手动模式执行 approve/reject；自动模式可继续，交付前仍需 approve |
+| `audit-failed` | 运行 `inkos revise`、`write rewrite`，或修正权威 JSON 后重新审计 |
+| `state-degraded` | 优先运行 `inkos write repair-state <book-id> <episode>`；人工改过 JSON 时使用 `write sync` |
+| `rejected` | 重写或移除该集；较早集拒绝会要求处理所有后续依赖 |
+
+恢复命令：
 
 ```bash
-# 重写 volume_map 以覆盖新的目标集数（保留 story_frame / roles / book_rules / pending_hooks）
+# 从权威 Episode JSON 重建 Markdown、真相和派生索引
+inkos write sync <book-id> <episode>
+
+# 不改正文，只修复该集状态派生物
+inkos write repair-state <book-id> <episode>
+
+# 重写某集；默认处理所有后续依赖
+inkos write rewrite <book-id> <episode>
+```
+
+不要使用 `--keep-subsequent` 保留已经依赖被改写正文的后续集；Core 会拒绝已存在依赖集的危险保留请求。
+
+## 审批、导出与完本
+
+批准要求剧集为 `ready-for-review`、Episode JSON 合法，且当前 JSON 哈希与 `PROVISIONAL` 审查证据一致。`approve-all` 只处理满足条件的待审剧集，不包含 `audit-failed`。
+
+```bash
+inkos review list <book-id>
+inkos review approve <book-id> <episode>
+inkos review approve-all <book-id>
+inkos review reject <book-id> <episode>
+```
+
+默认导出要求每一集均为 `approved/published`：
+
+```bash
+inkos export <book-id> --format screenplay-md
+inkos export <book-id> --format screenplay-json
+inkos export <book-id> --format dialogue
+
+# 明确导出已批准子集
+inkos export <book-id> --format screenplay-md --approved-only
+```
+
+`inkos series complete <book-id>` 同样要求全部剧集已批准或发布，并通过终局冲突、人物弧线、Hook 和关系收束检查。
+
+## Canon 与卷计划
+
+```bash
+# 扩展 volume_map，保留 story_frame、roles、规则和 Hook
 inkos foundation extend <book-id> --episodes <n>
 
-# 把未认领剧集事实合并为新 canon claims（一次显式 LLM 调用，不进单集预算）
+# 将未认领事实裁决为已有 claim、变体、新资产或 unresolved
 inkos canon refresh <book-id>
 ```
 
-每集持久化时，未被既有 claim 覆盖的交接知识/状态变化会确定性收集到 `story/canon/unclaimed_facts.json`（幂等，供 `canon refresh` 消费）。当积压达到 `PipelineConfig.unclaimedFactsBacklogThreshold`（默认 50 条）时，`plan episode` 与 `write next` 会以 `CANON_REFRESH_REQUIRED` 暂停；执行 `inkos canon refresh <book-id>` 并审阅新 claims 后再继续。该闸门不自动把 Writer 临时发明的角色或设定写入 Canon。卷合同超纲（待写集号超出大纲卷范围）会在写结果中给出非阻断警告，请先运行 `inkos foundation extend` 再继续写作。
+未认领事实达到配置阈值时，`plan episode` 和 `write next` 会返回 `CANON_REFRESH_REQUIRED`。刷新后应人工审阅新增 claims；系统不会自动把 Writer 临时发明的设定写成权威事实。
 
-## 内容与交付门禁
+## 内容门禁
 
-- Writer 落盘前会拒绝不是具体观众疑问句的结尾情绪钩子（关系、危险、身份、牺牲或选择），错误码为 `INVALID_EMOTIONAL_HOOK`。
-- Writer 落盘前会拒绝命中的禁止发布政治敏感词，错误码为 `BLOCKED_SENSITIVE_CONTENT`；不要依赖审计报告作为内容红线的唯一拦截点。
-- Hook 的提前回收只依据 `targetPayoffEpisode` 与全部 `payoffEvidence` 判定。维护 Hook 时，在 Planner memo 的新增/推进项中写明 `证据：` 或 `evidence:` 的可见载体；不要以角色名或自由文本备注代替终局证据。
-- `audit-failed` 或 `state-degraded` 剧集不能默认导出。先完成修订、重审和状态恢复，再执行 `inkos export`。
+- 情绪钩子必须是关于关系、危险、身份、牺牲或选择的具体观众疑问。
+- 禁止发布的敏感内容在 Writer 边界阻断，不依赖事后审查兜底。
+- Hook 提前回收只按 `targetPayoffEpisode` 与完整 `payoffEvidence` 判断。
+- Warning-only 审查不触发自动整集修订；critical 或硬性长度问题才进入自动修复。
+- Episode v2 执行结构化剧本门禁；遗留 prose 才执行完整小说散文规则。
 
-## 污染守卫与题材配置
+## 验证
 
-- `pnpm audit:contamination`（已接入 `pnpm verify`）：拒绝付费测试书专名（角色/门派/地名/书名）出现在生产源码、提示词与 Studio 文案中。新付费书产生的角色请先登记到 `scripts/audit-contamination.mjs` 的 `KNOWN_CONTAMINATION`，并保持不进提示词与管线代码。
-- 内置题材（`packages/core/genres/*.md`）维护规则：`fatigueWords` 只放题材特有词——通用 AI 味词（中文：仿佛/不禁/宛如/竟然/忽然/猛地；英文：delve/tapestry/testament 等）由 auditor 统一硬编码检查，不要写回题材文件；爽点池保持 ≥8 类以支撑长卷轮换。`genre-config.test.ts` 会强制这些约束。
-
-## 输出长度（max-tokens）
-
-writer / reviser / canon-extractor 的每次调用输出上限为 `min(32768, 模型卡片 maxOutput)`，随模型能力自适应：
-
-- 大模型（如 deepseek-v4-flash，maxOutput 393216）用满 32768。
-- 小模型（如 gpt-4o，maxOutput 16384）自动回落到自身 16384，不会触发 API 的 max_tokens 超限。
-
-需要整体收紧输出时，设置环境变量（只降不升）：
+提交前优先运行完整离线门禁：
 
 ```bash
-INKOS_MAX_OUTPUT_TOKENS_PER_CALL=8192
+pnpm verify
+git diff --check
 ```
 
-放大制作（更长单集、更多镜头、更长对白）无需任何配置即可受益——只要模型卡片声明更大的 maxOutput，上限就自动放宽。
+`pnpm verify` 包含代码卫生、类型检查、语义审计、污染审计、构建、Studio bundle 检查、全部测试和发布清单检查。
 
-## 清理
+分包测试：
 
-仓库自带安全清理脚本：
+```bash
+pnpm --filter @actalk/inkos-core test
+pnpm --filter @actalk/inkos test
+pnpm --filter @actalk/inkos-studio test
+```
+
+涉及锁、事务标记、恢复或进程生命周期时，额外运行：
+
+```bash
+pnpm stress:process
+```
+
+真实 Provider 测试是手工验收，不属于普通单元测试。原始输出放在 Git 忽略的隔离目录；长期结论写入 `docs/releases/release-notes.md`。
+
+## 污染防护
+
+`pnpm audit:contamination` 扫描生产源码、测试、提示词、题材配置、脚本和规范文档，拒绝付费生产项目专名进入 Agent 会读取的上下文。
+
+- 付费生产数据和原始报告不得提交到源码树。
+- 回归测试必须使用中性虚构名和最小必要剧情。
+- 新付费运行产生的专名登记到 `scripts/audit-contamination.mjs`，同时保证这些名字不进入被扫描文件。
+- 更新历史可以记录长期结论，但不要粘贴完整剧本、密钥、绝对生产路径或大段模型原始输出。
+
+## 清理与项目数据
 
 ```bash
 pnpm clean:dry-run
@@ -78,32 +144,19 @@ pnpm clean
 pnpm clean:build
 ```
 
-`pnpm clean` 只删除已知缓存、覆盖率、报告、日志和临时目录；不会删除 `node_modules`、`dist`、`books/`、`.inkos/` 或生产数据。`clean:build` 才会额外删除各包 `dist`；两者都不删除源码或 `node_modules`。
+- `clean` 删除已知缓存、覆盖率、报告、日志和临时项目。
+- `clean:build` 额外删除包内 `dist`。
+- 清理脚本不会删除 `node_modules`、`books/`、`.inkos/` 或生产数据。
 
-## 项目数据
+生产与付费测试项目应位于仓库外，或位于明确的 Git 忽略隔离目录。人工删除数据前必须核对绝对路径、项目 ID、导出目录、遥测、Canon 和状态缓存；外部生产数据通常无法通过 Git 恢复。
 
-生产或付费测试项目应位于仓库外，或位于 Git 忽略的隔离目录。清理测试剧情时应同时处理：
+## 旧格式与发布
 
-- `books/<series-id>`。
-- 对应导出文件。
-- `.inkos/runtime/llm-calls/<series-id>.jsonl`。
-- `story/canon/` 下的结构化设定（`claims.json`、`world_system.json`、`asset_registry.json`、`unclaimed_facts.json`）。
-- `story/state/claim_visibility.json` 等状态文件。
-- 可能包含剧本上下文的编译缓存。
+Episode v2 不继续写旧小说项目。检测到旧 schema、`chapters/` 或旧 runtime 时应返回 `UNSUPPORTED_LEGACY_FORMAT`，不能静默迁移。
 
-删除前必须核对绝对路径和项目 ID。删除后的外部测试数据通常不能通过 Git 恢复。
+发布前确认：
 
-## 旧格式
-
-Episode v2 不继续写旧小说项目。检测到旧 schema、`chapters/` 或旧 runtime 形式时应返回 `UNSUPPORTED_LEGACY_FORMAT`，不能静默迁移或解释。
-
-内部持久化 schema 中尚存的旧字段名只能出现在明确的适配边界。新的 reducer、业务合同和公共交互统一使用 Episode 语义。
-
-## 发布检查
-
-提交前确认：
-
-- README 最新更新只保留最新日期块。
-- `docs/releases/release-notes.md` 保留完整历史并追加当天内容。
-- 没有构建产物、测试剧情、临时报告或密钥进入提交。
-- 全量测试、类型检查、构建、发布清单和 `git diff --check` 通过。
+- README 只保留最新日期块，中英文内容同步。
+- 架构和运维文档描述当前行为，历史变化进入 release notes。
+- 没有构建产物、生产剧情、临时报告、绝对生产路径或密钥进入提交。
+- `pnpm verify` 与 `git diff --check` 通过。

@@ -66,7 +66,7 @@ describe("isBookFoundationComplete", () => {
     // The architect routinely writes roles to character_matrix.md instead of the
     // roles/ dir; the runtime reads either, so this book IS complete/usable.
     await writeFoundation(dir, { bookJson: true, storyFrame: true, volumeMap: true, bookRules: true, pendingHooks: true });
-    await writeFile(join(dir, "story", "character_matrix.md"), "## 林秋\n- 定位: 主角");
+    await writeFile(join(dir, "story", "character_matrix.md"), "## 林丁\n- 定位: 主角");
     expect(await isBookFoundationComplete(dir)).toBe(true);
   });
 

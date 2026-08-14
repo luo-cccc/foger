@@ -47,8 +47,8 @@ describe("state projections", () => {
         {
           episodeNumber: 12,
           title: "河埠对账",
-          characters: "林月",
-          events: "林月核对货单与誓令碎片",
+          characters: "林己",
+          events: "林己核对货单与誓令碎片",
           stateChanges: "师债线索进一步收束",
           hookActivity: "mentor-debt 推进",
           mood: "紧绷",
@@ -57,8 +57,8 @@ describe("state projections", () => {
         {
           episodeNumber: 11,
           title: "雨巷旧账",
-          characters: "林月",
-          events: "林月查到旧账册断页",
+          characters: "林己",
+          events: "林己查到旧账册断页",
           stateChanges: "师债线被重新钉牢",
           hookActivity: "mentor-debt 推进",
           mood: "压抑",
@@ -72,8 +72,8 @@ describe("state projections", () => {
       "",
       "| 剧集 | 标题 | 出场人物 | 关键事件 | 状态变化 | 伏笔动态 | 情绪基调 | 剧集类型 |",
       "| --- | --- | --- | --- | --- | --- | --- | --- |",
-      "| 11 | 雨巷旧账 | 林月 | 林月查到旧账册断页 | 师债线被重新钉牢 | mentor-debt 推进 | 压抑 | 主线推进 |",
-      "| 12 | 河埠对账 | 林月 | 林月核对货单与誓令碎片 | 师债线索进一步收束 | mentor-debt 推进 | 紧绷 | 主线推进 |",
+      "| 11 | 雨巷旧账 | 林己 | 林己查到旧账册断页 | 师债线被重新钉牢 | mentor-debt 推进 | 压抑 | 主线推进 |",
+      "| 12 | 河埠对账 | 林己 | 林己核对货单与誓令碎片 | 师债线索进一步收束 | mentor-debt 推进 | 紧绷 | 主线推进 |",
       "",
     ].join("\n"));
   });

@@ -524,200 +524,6 @@ function shouldRunDirectWriteNext(args: {
   return isWriteNextInstruction(args.instruction);
 }
 
-type ExternalChatEditResult = {
-  readonly responseText: string;
-  readonly activeBookId?: string;
-};
-
-const CHAT_EDIT_TEXT_EXTENSIONS = /\.(md|json)$/i;
-const CHAT_EDIT_ALLOWED_ROOTS = new Set(["books", "genres"]);
-
-function parseReplacementInstruction(instruction: string): { oldText: string; newText: string } | null {
-  const inFileQuoted = instruction.match(/(?:里|里的|中|中的|里面)\s*[「“"]([\s\S]+?)[」”"]\s*(?:改成|替换成|换成)\s*[「“"]([\s\S]+?)[」”"]/);
-  if (inFileQuoted?.[1] && inFileQuoted[2] !== undefined) {
-    return { oldText: inFileQuoted[1], newText: inFileQuoted[2] };
-  }
-  const quoted = instruction.match(/(?:把|将)\s*[「“"]([\s\S]+?)[」”"]\s*(?:改成|替换成|换成)\s*[「“"]([\s\S]+?)[」”"]/);
-  if (quoted?.[1] && quoted[2] !== undefined) {
-    return { oldText: quoted[1], newText: quoted[2] };
-  }
-  const plain = instruction.match(/(?:把|将)\s+([^\s，。；;]+)\s*(?:改成|替换成|换成)\s+([^\n，。；;]+)/);
-  if (plain?.[1] && plain[2] !== undefined) {
-    return { oldText: plain[1], newText: plain[2].trim() };
-  }
-  return null;
-}
-
-function isExplicitExternalChatEditInstruction(instruction: string): boolean {
-  const trimmed = instruction.trim();
-  if (!trimmed) return false;
-  if (/[?？]\s*$/.test(trimmed)) return false;
-  if (/^(?:请问|能否|能不能|可以|可不可以|是否|是不是|怎么|怎样|为什么|如果|假如|要不要|建议|讨论)\b/u.test(trimmed)) {
-    return false;
-  }
-
-  const imperative = trimmed.replace(/^(?:请|麻烦|帮我|直接|现在)\s*/u, "");
-  return /^(?:第\s*\d{1,4}\s*集\s*)?(?:把|将)\s*/u.test(imperative);
-}
-
-function parseEpisodeNumberForEdit(instruction: string): number | null {
-  const match = instruction.match(/第\s*(\d{1,4})\s*集/);
-  if (!match?.[1]) return null;
-  const episodeNumber = Number.parseInt(match[1], 10);
-  return Number.isInteger(episodeNumber) && episodeNumber > 0 ? episodeNumber : null;
-}
-
-function parseExplicitEditPath(instruction: string): string | null {
-  const match = instruction.match(/(?:把|将)\s+([^「“"\s，。；;]+?\.[A-Za-z0-9]+)\s*(?:里|里的|中|中的|里面)/);
-  return match?.[1]?.trim() ?? null;
-}
-
-function resolveExternalChatEditPath(root: string, requestedPath: string): { path: string; rel: string } {
-  if (isAbsolute(requestedPath)) {
-    throw new ApiError(400, "UNSUPPORTED_CHAT_EDIT_TARGET", "Chat external edits only support project-relative content paths.");
-  }
-  const projectRoot = resolve(root);
-  const resolved = resolve(projectRoot, requestedPath);
-  const rel = relative(projectRoot, resolved).replace(/\\/g, "/");
-  if (!rel || rel.startsWith("../") || rel === "..") {
-    throw new ApiError(400, "UNSUPPORTED_CHAT_EDIT_TARGET", "Chat external edit path escapes the project root.");
-  }
-  const first = rel.split("/")[0] ?? "";
-  if (!CHAT_EDIT_ALLOWED_ROOTS.has(first)) {
-    throw new ApiError(400, "UNSUPPORTED_CHAT_EDIT_TARGET", "Chat external edits cannot modify source code, config, or arbitrary project files.");
-  }
-  if (rel.includes("/.inkos/") || rel.endsWith("/.inkos") || rel.includes("/secrets") || rel.endsWith(".env")) {
-    throw new ApiError(400, "UNSUPPORTED_CHAT_EDIT_TARGET", "Chat external edits cannot modify secrets or runtime internals.");
-  }
-  if (
-    /^books\/[^/]+\/(?:book\.json|\.episode-persistence\.json|\.write\.lock)$/i.test(rel)
-    || /^books\/[^/]+\/episodes\/index\.json$/i.test(rel)
-    || /^books\/[^/]+\/story\/(?:runtime|state|snapshots|canon)(?:\/|$)/i.test(rel)
-  ) {
-    throw new ApiError(400, "UNSUPPORTED_CHAT_EDIT_TARGET", "Chat external edits cannot modify controlled book state files.");
-  }
-  if (!CHAT_EDIT_TEXT_EXTENSIONS.test(rel)) {
-    throw new ApiError(400, "UNSUPPORTED_CHAT_EDIT_TARGET", "Chat external edits only support text content files.");
-  }
-  return { path: resolved, rel };
-}
-
-async function findEpisodeFile(root: string, bookId: string, episodeNumber: number): Promise<string | null> {
-  const episodesDir = join(root, "books", bookId, "episodes");
-  const padded = String(episodeNumber).padStart(4, "0");
-  const files = await readdir(episodesDir).catch(() => []);
-  const match = files.find((file) => file.startsWith(`${padded}_`) && file.endsWith(".md"));
-  return match ? join(episodesDir, match) : null;
-}
-
-function parseBookEpisodeFromRelativePath(rel: string): { bookId: string; episodeNumber: number } | null {
-  const match = rel.match(/^books\/([^/]+)\/episodes\/(\d{4})_[^/]+\.md$/);
-  if (!match?.[1] || !match[2]) return null;
-  const episodeNumber = Number.parseInt(match[2], 10);
-  return Number.isInteger(episodeNumber) ? { bookId: match[1], episodeNumber } : null;
-}
-
-function parseBookTruthFromRelativePath(rel: string): { bookId: string; fileName: string } | null {
-  const match = rel.match(/^books\/([^/]+)\/story\/(.+)$/);
-  if (!match?.[1] || !match[2]) return null;
-  try {
-    return { bookId: match[1], fileName: assertSafeTruthFileName(match[2]) };
-  } catch {
-    return null;
-  }
-}
-
-async function tryHandleExternalChatEdit(params: {
-  readonly root: string;
-  readonly state: StateManager;
-  readonly instruction: string;
-  readonly activeBookId: string | null;
-}): Promise<ExternalChatEditResult | null> {
-  const replacement = parseReplacementInstruction(params.instruction);
-  if (!replacement) return null;
-  if (!isExplicitExternalChatEditInstruction(params.instruction)) return null;
-
-  const explicitPath = parseExplicitEditPath(params.instruction);
-  if (explicitPath) {
-    const target = resolveExternalChatEditPath(params.root, explicitPath);
-    const content = await readFile(target.path, "utf-8").catch((error) => {
-      throw new ApiError(404, "CHAT_EDIT_TARGET_NOT_FOUND", error instanceof Error ? error.message : String(error));
-    });
-    const first = content.indexOf(replacement.oldText);
-    if (first === -1) {
-      throw new ApiError(400, "EDIT_TARGET_NOT_FOUND", "要替换的原文没有在目标文件中找到。");
-    }
-    if (content.indexOf(replacement.oldText, first + replacement.oldText.length) !== -1) {
-      throw new ApiError(400, "EDIT_TARGET_AMBIGUOUS", "要替换的原文出现多次，请给出更具体的一段。");
-    }
-    const updated = content.slice(0, first) + replacement.newText + content.slice(first + replacement.oldText.length);
-
-    const episodeTarget = parseBookEpisodeFromRelativePath(target.rel);
-    if (!episodeTarget && /^books\/[^/]+\/episodes\//.test(target.rel)) {
-      throw new ApiError(400, "UNSUPPORTED_CHAT_EDIT_TARGET", "Chat external edits must use a recognized episode file path.");
-    }
-    if (episodeTarget) {
-      await executeCoreMutation({ state: params.state }, {
-        kind: "save-episode",
-        bookId: episodeTarget.bookId,
-        episodeNumber: episodeTarget.episodeNumber,
-        content: updated,
-      });
-    } else {
-      const truthTarget = parseBookTruthFromRelativePath(target.rel);
-      if (truthTarget) {
-        await executeCoreMutation({ state: params.state }, {
-          kind: "edit-truth",
-          bookId: truthTarget.bookId,
-          fileName: truthTarget.fileName,
-          content: updated,
-        });
-      } else {
-        await writeFile(target.path, updated, "utf-8");
-      }
-    }
-
-    return {
-      activeBookId: episodeTarget?.bookId ?? params.activeBookId ?? undefined,
-      responseText: `已直接编辑 ${target.rel}${episodeTarget ? "，并标记为需要复核" : ""}。`,
-    };
-  }
-
-  if (!params.activeBookId) return null;
-  const episodeNumber = parseEpisodeNumberForEdit(params.instruction);
-  if (!replacement || !episodeNumber) return null;
-
-  const episodePath = await findEpisodeFile(params.root, params.activeBookId, episodeNumber);
-  if (!episodePath) {
-    throw new ApiError(404, "EPISODE_NOT_FOUND", `Episode ${episodeNumber} not found in ${params.activeBookId}`);
-  }
-  if (!CHAT_EDIT_TEXT_EXTENSIONS.test(episodePath)) {
-    throw new ApiError(400, "UNSUPPORTED_EDIT_TARGET", "Chat external edits only support text files.");
-  }
-
-  const content = await readFile(episodePath, "utf-8");
-  const first = content.indexOf(replacement.oldText);
-  if (first === -1) {
-    throw new ApiError(400, "EDIT_TARGET_NOT_FOUND", "要替换的文本没有在目标剧集中找到。");
-  }
-  if (content.indexOf(replacement.oldText, first + replacement.oldText.length) !== -1) {
-    throw new ApiError(400, "EDIT_TARGET_AMBIGUOUS", "要替换的原文出现多次，请给出更具体的一段。");
-  }
-
-  const updated = content.slice(0, first) + replacement.newText + content.slice(first + replacement.oldText.length);
-  await executeCoreMutation({ state: params.state }, {
-    kind: "save-episode",
-    bookId: params.activeBookId,
-    episodeNumber,
-    content: updated,
-  });
-
-  return {
-    activeBookId: params.activeBookId,
-    responseText: `已直接编辑 ${params.activeBookId} 第 ${episodeNumber} 集，并标记为需要复核。`,
-  };
-}
-
 function validateAgentActionExecution(args: {
   readonly instruction: string;
   readonly agentBookId: string | null | undefined;
@@ -834,13 +640,14 @@ function suppressManualTextForTool(exec: CollectedToolExec): boolean {
 function manualToolAssistantMessage(
   responseText: string,
   exec: CollectedToolExec,
+  api: string,
   provider: string,
   model: string,
 ): any {
   return {
     role: "assistant",
     content: [{ type: "text", text: suppressManualTextForTool(exec) ? "" : responseText }],
-    api: "anthropic-messages",
+    api,
     provider,
     model,
     usage: {
@@ -956,21 +763,29 @@ async function executeConfirmedProductionAction(args: {
         });
       },
     );
-    exec.status = "completed";
+    const failed = (result as { isError?: unknown }).isError === true;
+    exec.status = failed ? "error" : "completed";
     exec.completedAt = Date.now();
     exec.result = toolResultText(result, lang);
     exec.details = (result as { details?: unknown } | undefined)?.details;
-    exec.stages = exec.stages?.map(stage => ({ ...stage, status: "completed" as const }));
+    if (!failed) {
+      exec.stages = exec.stages?.map(stage => ({ ...stage, status: "completed" as const }));
+    }
     broadcast("tool:end", {
       sessionId: args.streamSessionId,
       id,
       tool: tool.name,
       result,
       details: exec.details,
-      isError: false,
+      isError: failed,
     });
+    if (failed) {
+      exec.error = exec.result;
+      throw new ConfirmedActionExecutionError(exec.result, exec);
+    }
     return exec;
   } catch (error) {
+    if (error instanceof ConfirmedActionExecutionError) throw error;
     const message = error instanceof Error ? error.message : String(error);
     const result = { content: [{ type: "text", text: message }] };
     exec.status = "error";
@@ -3562,44 +3377,6 @@ export function createStudioServer(
         }
       };
 
-      const externalEdit = requestedIntent === "edit_artifact" || sessionKind === "edit"
-        ? await tryHandleExternalChatEdit({
-            root,
-            state,
-            instruction,
-            activeBookId: agentBookId,
-          })
-        : null;
-      if (externalEdit) {
-        await appendManualSessionMessages(root, bookSession.sessionId, [{
-          role: "assistant",
-          content: [{ type: "text", text: externalEdit.responseText }],
-          api: "anthropic-messages",
-          provider: config.llm.provider,
-          model: config.llm.model,
-          usage: {
-            input: 0,
-            output: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-            totalTokens: 0,
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-          },
-          stopReason: "stop",
-          timestamp: Date.now(),
-        }], instruction, { sessionKind });
-        await refreshBookSessionFromTranscript();
-        broadcast("agent:complete", { instruction, activeBookId: externalEdit.activeBookId, sessionId: bookSession.sessionId, sessionKind });
-        return c.json({
-          response: externalEdit.responseText,
-          session: {
-            sessionId: bookSession.sessionId,
-            sessionKind,
-            ...(externalEdit.activeBookId ? { activeBookId: externalEdit.activeBookId } : {}),
-          },
-        });
-      }
-
       // Resolve model — multi-service resolution
       let resolvedModel: ResolvedModel["model"] | undefined;
       let resolvedApiKey: string | undefined;
@@ -3770,6 +3547,7 @@ export function createStudioServer(
             manualToolAssistantMessage(
               responseText,
               exec,
+              model.api,
               configuredEntry?.service ?? reqService ?? config.llm.provider,
               reqModel ?? config.llm.model,
             ),
@@ -3796,6 +3574,7 @@ export function createStudioServer(
               manualToolAssistantMessage(
                 message,
                 error.exec,
+                model.api,
                 configuredEntry?.service ?? reqService ?? config.llm.provider,
                 reqModel ?? config.llm.model,
               ),
@@ -3826,54 +3605,39 @@ export function createStudioServer(
         });
 
         try {
-          const writeResult = await pipeline.writeNextEpisode(directWriteBookId);
-          const writeNeedsReview = Boolean(writeResult.status && writeResult.status !== "ready-for-review");
-          const zhResponseText = writeNeedsReview
-            ? [
-                `已为 ${directWriteBookId} 写出第 ${writeResult.episodeNumber} 集`,
-                writeResult.title ? `《${writeResult.title}》` : "",
-                `，时长 ${writeResult.episodeDurationSeconds} 秒，但审稿未通过，状态 ${writeResult.status}，需要复核后再继续。`,
-              ].join("")
-            : [
-                `已为 ${directWriteBookId} 完成第 ${writeResult.episodeNumber} 集`,
-                writeResult.title ? `《${writeResult.title}》` : "",
-                `，时长 ${writeResult.episodeDurationSeconds} 秒，状态 ${writeResult.status}。`,
-              ].join("");
-          const enEpisodeRef = writeResult.title
-            ? `episode ${writeResult.episodeNumber} "${writeResult.title}"`
-            : `episode ${writeResult.episodeNumber}`;
-          const enResponseText = writeNeedsReview
-            ? `Wrote ${enEpisodeRef} for ${directWriteBookId}: ${writeResult.episodeDurationSeconds} words, but the review did not pass (status: ${writeResult.status}). Manual review is required before continuing.`
-            : `Completed ${enEpisodeRef} for ${directWriteBookId}: ${writeResult.episodeDurationSeconds} words, status ${writeResult.status}.`;
-          const responseText = pick(language, zhResponseText, enResponseText);
-          const toolResult = {
-            content: [{ type: "text", text: responseText }],
-            details: {
-              kind: "episode_written",
-              bookId: directWriteBookId,
-              episodeNumber: writeResult.episodeNumber,
-              title: writeResult.title,
-              episodeDurationSeconds: writeResult.episodeDurationSeconds,
-              status: writeResult.status,
+          const writerTool = createSubAgentTool(pipeline, directWriteBookId, root, { language });
+          const toolResult = await writerTool.execute(
+            toolCallId,
+            { agent: "writer", bookId: directWriteBookId, instruction } as never,
+            undefined,
+            (partialResult) => {
+              broadcast("tool:update", {
+                sessionId: streamSessionId,
+                tool: writerTool.name,
+                partialResult,
+              });
             },
-          };
+          );
+          const writeFailed = (toolResult as { isError?: unknown }).isError === true;
+          const responseText = toolResultText(toolResult, language);
+          const details = (toolResult as { details?: unknown }).details;
           broadcast("tool:end", {
             sessionId: streamSessionId,
             id: toolCallId,
-            tool: "sub_agent",
+            tool: writerTool.name,
             result: toolResult,
-            details: toolResult.details,
-            isError: writeNeedsReview,
+            details,
+            isError: writeFailed,
           });
           const exec: CollectedToolExec = {
             id: toolCallId,
-            tool: "sub_agent",
+            tool: writerTool.name,
             agent: "writer",
-            label: resolveToolLabel("sub_agent", "writer", language),
-            status: writeNeedsReview ? "error" : "completed",
+            label: resolveToolLabel(writerTool.name, "writer", language),
+            status: writeFailed ? "error" : "completed",
             args: toolArgs,
             result: responseText,
-            details: toolResult.details,
+            details,
             startedAt: Date.now(),
             completedAt: Date.now(),
           };
@@ -3881,11 +3645,26 @@ export function createStudioServer(
             manualToolAssistantMessage(
               responseText,
               exec,
+              model.api,
               configuredEntry?.service ?? reqService ?? config.llm.provider,
               reqModel ?? config.llm.model,
             ),
           ], instruction, manualToolAppendOptions(sessionKind, exec));
           await refreshBookSessionFromTranscript();
+          if (writeFailed) {
+            broadcast("agent:error", {
+              instruction,
+              activeBookId: directWriteBookId,
+              sessionId: bookSession.sessionId,
+              sessionKind,
+              error: responseText,
+            });
+            return c.json({
+              error: { code: "WRITE_NEXT_NOT_READY", message: responseText },
+              response: responseText,
+              details: { toolExecutions: [exec] },
+            }, 409);
+          }
           broadcast("agent:complete", { instruction, activeBookId: directWriteBookId, sessionId: bookSession.sessionId, sessionKind });
           return c.json({
             response: responseText,
@@ -3920,6 +3699,7 @@ export function createStudioServer(
             manualToolAssistantMessage(
               message,
               exec,
+              model.api,
               configuredEntry?.service ?? reqService ?? config.llm.provider,
               reqModel ?? config.llm.model,
             ),

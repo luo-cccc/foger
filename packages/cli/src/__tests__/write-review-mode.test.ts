@@ -165,4 +165,23 @@ describe("inkos write next review mode", () => {
     expect(writeNextEpisodeMock).toHaveBeenCalledTimes(1);
     expect(logMock).toHaveBeenCalledWith("需要先处理审计问题，已停止后续连写。");
   });
+
+  it("stops a manual-mode batch after the first drafted episode", async () => {
+    loadBookConfigMock.mockResolvedValue({ language: "zh", writing: { reviewMode: "manual" } });
+    loadConfigMock.mockResolvedValue({ llm: {}, writing: { reviewRetries: 1, reviewMode: "manual" } });
+    writeNextEpisodeMock.mockResolvedValueOnce({
+      episodeNumber: 1,
+      title: "第一集",
+      episodeDurationSeconds: 90,
+      auditResult: { passed: false, issues: [], summary: "not reviewed" },
+      revised: false,
+      status: "drafted",
+    });
+
+    const { writeCommand } = await import("../commands/write.js");
+    await writeCommand.parseAsync(["node", "write", "next", "demo-book", "--count", "3"], { from: "node" });
+
+    expect(writeNextEpisodeMock).toHaveBeenCalledTimes(1);
+    expect(logMock).toHaveBeenCalledWith("手动审查与批准完成前不能继续，已停止后续连写。");
+  });
 });

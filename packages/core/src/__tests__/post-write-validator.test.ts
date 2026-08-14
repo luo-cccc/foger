@@ -48,10 +48,10 @@ describe("validatePostWrite", () => {
   it("strips a model-generated episode heading from the persisted body", () => {
     expect(normalizePostWriteSurface("# 4\n\n张恒把工具箱放到墙角。"))
       .toBe("张恒把工具箱放到墙角。");
-    expect(normalizePostWriteSurface("# 第5章 防爆门\n\n林默按下门禁键。"))
-      .toBe("林默按下门禁键。");
-    expect(normalizePostWriteSurface("# 第五章 防爆门\n\n林默按下门禁键。"))
-      .toBe("林默按下门禁键。");
+    expect(normalizePostWriteSurface("# 第5章 防爆门\n\n林甲按下门禁键。"))
+      .toBe("林甲按下门禁键。");
+    expect(normalizePostWriteSurface("# 第五章 防爆门\n\n林甲按下门禁键。"))
+      .toBe("林甲按下门禁键。");
     expect(normalizePostWriteSurface("# Episode 5: Blast Door\n\nLin pressed the key.", "en"))
       .toBe("Lin pressed the key.");
   });
@@ -168,7 +168,7 @@ describe("validatePostWrite", () => {
   it("flags a third-person inner-state slip inside an otherwise first-person episode", () => {
     const firstPersonRules = BookRulesSchema.parse({
       narrativePerson: "first",
-      protagonist: { name: "林辞" },
+      protagonist: { name: "林乙" },
     });
     const content = [
       "我把工单折进内层口袋，拉上拉链。",
@@ -190,12 +190,12 @@ describe("validatePostWrite", () => {
   it("does not treat ordinary first-person observation of another person as POV drift", () => {
     const firstPersonRules = BookRulesSchema.parse({
       narrativePerson: "first",
-      protagonist: { name: "林辞" },
+      protagonist: { name: "林乙" },
     });
     const content = [
       "我站在楼道口，雨水顺着袖口往下淌。",
       "",
-      "老周从门里探出头。他看了看我，又看了看电表箱，脸色一点点沉下去。",
+      "周甲从门里探出头。他看了看我，又看了看电表箱，脸色一点点沉下去。",
       "",
       "我没有催他，只把工具包放到脚边，等他先开口。",
     ].join("\n");
@@ -217,7 +217,7 @@ describe("validatePostWrite", () => {
     const content = "这不是勇气，而是愚蠢。他知道这一点。";
     const result = validatePostWrite(content, baseProfile, null);
     expect(findRule(result, "禁止句式")).toBeDefined();
-    expect(findRule(result, "禁止句式")!.severity).toBe("error");
+    expect(findRule(result, "禁止句式")!.severity).toBe("warning");
     expect(findRule(result, "禁止句式")!.repairScope).toBe("local");
   });
 
@@ -225,7 +225,7 @@ describe("validatePostWrite", () => {
     const content = "他走了过去——然后停下来。";
     const result = validatePostWrite(content, baseProfile, null);
     expect(findRule(result, "禁止破折号")).toBeDefined();
-    expect(findRule(result, "禁止破折号")!.severity).toBe("error");
+    expect(findRule(result, "禁止破折号")!.severity).toBe("warning");
   });
 
   it("skips Chinese-only rules when the book language override is English", () => {
@@ -275,7 +275,7 @@ describe("validatePostWrite", () => {
     const result = validatePostWrite(content, baseProfile, null);
     const v = findRule(result, "报告术语");
     expect(v).toBeDefined();
-    expect(v!.severity).toBe("error");
+    expect(v!.severity).toBe("warning");
     expect(v!.description).toContain("核心动机");
     expect(v!.description).toContain("信息边界");
   });

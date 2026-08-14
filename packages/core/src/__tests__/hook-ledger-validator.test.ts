@@ -6,21 +6,21 @@ import {
 } from "../utils/hook-ledger-validator.js";
 
 const ZH_MEMO = `## 当前任务
-林秋潜入账房取回账册。
+林丁潜入账房取回账册。
 
 ## 本章 hook 账
 open:
 - [new] 旧港眼线盯梢 || 理由：留给下一卷
 
 advance:
-- H007 "胖虎借条" → planted → pressured
-- H012 "雷架焦痕" → pressured → near_payoff
+- H007 "虎子借条" → planted → pressured
+- H012 "电弧架焦痕" → pressured → near_payoff
 
 resolve:
-- H003 "杂役腰牌" → 林秋主动摘下
+- H003 "杂役腰牌" → 林丁主动摘下
 
 defer:
-- H009 "守拙诀来历" → 本章不动
+- H009 "藏锋诀来历" → 本章不动
 
 ## 不要做
 - 不要点破母亲身份`;
@@ -61,13 +61,13 @@ describe("parseHookLedger", () => {
       "- 无",
       "",
       "**advance:**",
-      "- H001 \"虞允文玉佩\" → 沈砚用它叩开襄阳城门（deferred → activated）",
+      "- H001 \"虞允文玉佩\" → 沈甲用它叩开临州城门（deferred → activated）",
       "",
       "**resolve:**",
       "- H002 \"系统真相\" → 火种渡海，真相落地（resolved）",
       "",
       "**defer:**",
-      "- H009 \"火种营扩编\" → 本集不动",
+      "- H009 \"赤旗营扩编\" → 本集不动",
       "",
     ].join("\n");
     const ledger = parseHookLedger(memo);
@@ -80,8 +80,8 @@ describe("parseHookLedger", () => {
     const ledger = parseHookLedger(ZH_MEMO);
     const h007 = ledger.advance[0]!;
     expect(h007.id).toBe("H007");
-    expect(h007.descriptor).toContain("胖虎借条");
-    expect(h007.keywords).toContain("胖虎");
+    expect(h007.descriptor).toContain("虎子借条");
+    expect(h007.keywords).toContain("虎子");
     expect(h007.keywords).toContain("借条");
 
     const h003 = ledger.resolve[0]!;
@@ -93,7 +93,7 @@ describe("parseHookLedger", () => {
     const hookId = "mystery-废弃十三号信-号塔为何在-不可修复";
     const memo = `## 本章 hook 账
 advance:
-- ${hookId} → 林澈发现塔内设备被改造为信号中继节点，废弃状态为伪造
+- ${hookId} → 林丙发现塔内设备被改造为信号中继节点，废弃状态为伪造
 `;
     const draft = "便携检测仪确认塔内设备仍在供电，这里实际是一处信号中继节点。";
 
@@ -196,7 +196,7 @@ defer:
 
   it("preserves long generated hook ids instead of truncating them", () => {
     const mysteryId = "mystery-废弃十三号信-号塔为何在-不可修复";
-    const relationshipId = "relationship-林澈发现三年-前未提交的加-密算法被升级";
+    const relationshipId = "relationship-林丙发现三年-前未提交的加-密算法被升级";
     const memo = `## 本章 hook 账
 advance:
 - ${mysteryId} "十三号信号塔" → 发现新证据
@@ -216,11 +216,11 @@ defer:
     const memo = `## 本集 Hook ledger
 advance:
 - H010 "午夜电话规则" → 林岚接听最后一次电话，装置关闭，规则终结（pressured → resolved）
-- H012 "雷架焦痕" → 安全局核查员到场，周沉面临职务处置（pressured → near_payoff）
+- H012 "电弧架焦痕" → 安全局核查员到场，周乙面临职务处置（pressured → near_payoff）
 resolve:
-- H003 "杂役腰牌" → 林秋主动摘下（clear）
+- H003 "杂役腰牌" → 林丁主动摘下（clear）
 defer:
-- H009 "守拙诀来历" → 本集不动
+- H009 "藏锋诀来历" → 本集不动
 `;
     const ledger = parseHookLedger(memo);
     expect(ledger.advance.map((entry) => entry.id)).toEqual(["H012"]);
@@ -336,7 +336,7 @@ advance:
 
   it("accepts exact long generated ids from the durable hook registry", () => {
     const mysteryId = "mystery-废弃十三号信-号塔为何在-不可修复";
-    const relationshipId = "relationship-林澈发现三年-前未提交的加-密算法被升级";
+    const relationshipId = "relationship-林丙发现三年-前未提交的加-密算法被升级";
     const memo = `## 本章 hook 账
 advance:
 - ${mysteryId} "十三号信号塔" → 发现新证据
@@ -367,16 +367,16 @@ defer:
 
 describe("validateHookLedger", () => {
   it("passes when draft echoes keyword from each committed ledger entry", () => {
-    // Draft mentions 胖虎/借条 (→H007), 雷架 or 焦痕 (→H012), 杂役 or 腰牌 (→H003).
+    // Draft mentions 虎子/借条 (→H007), 电弧架 or 焦痕 (→H012), 杂役 or 腰牌 (→H003).
     const draft =
-      "林秋在账房找到胖虎借条，又在后巷被雷架焦痕刮到眼角。他摘下杂役腰牌后退入暗处。";
+      "林丁在账房找到虎子借条，又在后巷被电弧架焦痕刮到眼角。他摘下杂役腰牌后退入暗处。";
     const violations = validateHookLedger(ZH_MEMO, draft);
     expect(violations).toEqual([]);
   });
 
   it("flags a warning for each un-echoed advance/resolve entry", () => {
-    // Only 胖虎 (H007) present; 雷架/焦痕 (H012) and 杂役/腰牌 (H003) missing.
-    const draft = "林秋只摸出胖虎借条，其他都没写。";
+    // Only 虎子 (H007) present; 电弧架/焦痕 (H012) and 杂役/腰牌 (H003) missing.
+    const draft = "林丁只摸出虎子借条，其他都没写。";
     const violations = validateHookLedger(ZH_MEMO, draft);
     expect(violations).toHaveLength(2);
     expect(violations.every((v) => v.severity === "warning")).toBe(true);
@@ -387,9 +387,9 @@ describe("validateHookLedger", () => {
   it("blocks an explicit evidence commitment when the carrier is absent", () => {
     const memo = `## 本章 hook 账
 advance:
-- H007 "胖虎借条" → 本章拿到原件｜证据：原始借条、胖虎签名
+- H007 "虎子借条" → 本章拿到原件｜证据：原始借条、虎子签名
 `;
-    const violations = validateHookLedger(memo, "林秋只听说胖虎欠了钱。");
+    const violations = validateHookLedger(memo, "林丁只听说虎子欠了钱。");
     expect(violations[0]).toMatchObject({ severity: "critical", category: "hook-evidence-missing" });
   });
 
@@ -406,8 +406,8 @@ advance:
   });
 
   it("does NOT flag hooks that are only under defer", () => {
-    // H009 is deferred — keyword 守拙诀 absence is fine.
-    const draft = "林秋翻出胖虎借条与雷架焦痕推进情节，随后摘下杂役腰牌。";
+    // H009 is deferred — keyword 藏锋诀 absence is fine.
+    const draft = "林丁翻出虎子借条与电弧架焦痕推进情节，随后摘下杂役腰牌。";
     const violations = validateHookLedger(ZH_MEMO, draft);
     expect(violations).toEqual([]);
   });
@@ -452,11 +452,11 @@ advance:
   it("flags 揭 1 埋 1 violation when a episode resolves hooks without opening any", () => {
     const memo = `## 本章 hook 账
 advance:
-- H007 "胖虎借条" → planted
+- H007 "虎子借条" → planted
 resolve:
-- H003 "杂役腰牌" → 林秋主动摘下
+- H003 "杂役腰牌" → 林丁主动摘下
 `;
-    const draft = "林秋翻看胖虎借条，随后摘下杂役腰牌。";
+    const draft = "林丁翻看虎子借条，随后摘下杂役腰牌。";
     const violations = validateHookLedger(memo, draft);
     expect(violations).toHaveLength(0);
   });
@@ -466,11 +466,11 @@ resolve:
 open:
 - [new] 母亲留下的半枚玉佩 || 理由：下一卷线索
 advance:
-- H007 "胖虎借条" → planted
+- H007 "虎子借条" → planted
 resolve:
-- H003 "杂役腰牌" → 林秋主动摘下
+- H003 "杂役腰牌" → 林丁主动摘下
 `;
-    const draft = "林秋翻看胖虎借条，随后摘下杂役腰牌。";
+    const draft = "林丁翻看虎子借条，随后摘下杂役腰牌。";
     const violations = validateHookLedger(memo, draft);
     expect(violations).toEqual([]);
   });
@@ -494,8 +494,52 @@ resolve:
 advance:
 - H007 "被定位的安全威胁" → evoked → pressured
 `;
-    const draft = "旧手机弹出定位结果，林知夏发现店外有人盯梢，安全空间塌了。";
+    const draft = "旧手机弹出定位结果，林知秋发现店外有人盯梢，安全空间塌了。";
     const violations = validateHookLedger(memo, draft);
     expect(violations).toEqual([]);
+  });
+});
+
+describe("validateHookLedger explicit evidence matching", () => {
+  it("accepts descriptive carrier evidence when the action lands in different words", () => {
+    const memo = `## 本集 Hook ledger
+advance:
+- H001 "初始世界状态" → progressing｜证据：谢策递饼的动作、渡船分批放行的画面
+`;
+    const draft = "谢策从怀里掏出一块干饼，递到谢安面前。渡船靠岸后按批次放行，人群开始登船。";
+    const violations = validateHookLedger(memo, draft);
+    expect(violations).toEqual([]);
+  });
+
+  it("keeps quoted dialogue lines as standalone evidence items", () => {
+    // The quoted line survives as its own item instead of fusing with a
+    // suffix ("明天跟我走的对白") that can never appear in prose.
+    const memo = `## 本集 Hook ledger
+advance:
+- H002 "初始敌我关系" → progressing｜证据：谢策递饼的动作、"明天跟我走"的对白
+`;
+    const draft = "谢策把饼递过去，说：吃了，明天跟我走。";
+    const violations = validateHookLedger(memo, draft);
+    expect(violations).toEqual([]);
+  });
+
+  it("still blocks an evidence commitment with zero overlap", () => {
+    const memo = `## 本集 Hook ledger
+advance:
+- H001 "初始世界状态" → progressing｜证据：谢策递饼的动作、渡船分批放行的画面
+`;
+    const violations = validateHookLedger(memo, "谢安在官道上走了一整天。");
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({ severity: "critical", category: "hook-evidence-missing" });
+  });
+
+  it("does not accept an object mention without the committed action", () => {
+    const memo = `## 本集 Hook ledger
+advance:
+- H001 "初始世界状态" → progressing｜证据：渡船分批放行的画面
+`;
+    const violations = validateHookLedger(memo, "渡船停在雾里，一动不动。");
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({ severity: "critical", category: "hook-evidence-missing" });
   });
 });

@@ -382,7 +382,7 @@ describe("Phase 5 cleanup (3) — book_rules is authoritative Markdown", () => {
       join(storyDir, "book_rules.md"),
       [
         "## 主角",
-        "- 名字：林辞",
+        "- 名字：林乙",
         "- 性格锁：沉默、执拗",
         "- 行为约束：不对长辈失礼",
         "## 禁止事项",
@@ -393,7 +393,7 @@ describe("Phase 5 cleanup (3) — book_rules is authoritative Markdown", () => {
     );
 
     const rendered = await readPlannerBookRules(storyDir);
-    expect(rendered).toContain("林辞");
+    expect(rendered).toContain("林乙");
     expect(rendered).toContain("沉默");
     expect(rendered).toContain("执拗");
     expect(rendered).toContain("不得美化体制暴力");
@@ -408,7 +408,7 @@ describe("Phase 5 cleanup (3) — book_rules is authoritative Markdown", () => {
       join(storyDir, "book_rules.md"),
       [
         "## 主角",
-        "- 名字：林辞",
+        "- 名字：林乙",
         "- 性格锁：沉默、执拗",
         "- 行为约束：不对长辈失礼",
         "## 数值/资源规则",

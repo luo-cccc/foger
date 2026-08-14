@@ -180,6 +180,41 @@ describe("persistEpisodeArtifacts", () => {
     expect(syncCurrentStateFactHistory).not.toHaveBeenCalled();
   });
 
+  it("stages manual-mode drafts without advancing truth or snapshots", async () => {
+    const saveEpisode = vi.fn().mockResolvedValue(undefined);
+    const saveTruthFiles = vi.fn().mockResolvedValue(undefined);
+    const saveEpisodeIndex = vi.fn().mockResolvedValue(undefined);
+    const snapshotState = vi.fn().mockResolvedValue(undefined);
+
+    await persistEpisodeArtifacts({
+      episodeNumber: 1,
+      episodeTitle: "Manual Draft",
+      episodeContent: "Unaudited draft.",
+      status: "drafted",
+      auditResult: createAuditResult({ passed: false, issues: [], summary: "not reviewed" }),
+      recoveryIssues: [],
+      finalWordCount: 90,
+      lengthWarnings: [],
+      degradedIssues: [],
+      loadEpisodeIndex: async () => [],
+      saveEpisode,
+      saveTruthFiles,
+      saveEpisodeIndex,
+      markBookActiveIfNeeded: vi.fn().mockResolvedValue(undefined),
+      persistAuditDriftGuidance: vi.fn().mockResolvedValue(undefined),
+      snapshotState,
+      syncCurrentStateFactHistory: vi.fn().mockResolvedValue(undefined),
+      logSnapshotStage: vi.fn(),
+    });
+
+    expect(saveEpisode).toHaveBeenCalledWith({ persistTruth: false });
+    expect(saveTruthFiles).not.toHaveBeenCalled();
+    expect(snapshotState).not.toHaveBeenCalled();
+    expect(saveEpisodeIndex).toHaveBeenCalledWith([
+      expect.objectContaining({ status: "drafted" }),
+    ]);
+  });
+
   it("skips truth persistence and snapshots for state-degraded episodes while preserving review note", async () => {
     const saveEpisode = vi.fn().mockResolvedValue(undefined);
     const saveTruthFiles = vi.fn().mockResolvedValue(undefined);

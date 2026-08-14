@@ -342,7 +342,7 @@ export async function readCurrentStateWithFallback(
     return raw.trim() ? raw : fallbackPlaceholder;
   }
 
-  const parts: string[] = ["# 初始状态（第 0 章，由 roles + 种子伏笔派生）"];
+  const parts: string[] = ["# 初始状态（第 0 集，由 roles + 种子伏笔派生）"];
   if (roleLines.length > 0) {
     parts.push("\n## 角色初始位置 / 处境");
     parts.push(...roleLines);

@@ -31,7 +31,6 @@ export * from "./agents/claim-validator.js";
 export * from './interaction/action-envelope.js';
 export * from './interaction/book-session-store.js';
 export * from './interaction/draft-directive-parser.js';
-export * from './interaction/edit-controller.js';
 export * from './interaction/events.js';
 export * from './interaction/export-artifact.js';
 export * from './interaction/intents.js';

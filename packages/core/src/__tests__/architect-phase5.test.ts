@@ -91,7 +91,7 @@ const SAMPLE_RESPONSE = [
   "=== SECTION: roles ===",
   "---ROLE---",
   "tier: major",
-  "name: 林辞",
+  "name: 林乙",
   "---CONTENT---",
   "## 核心标签",
   "沉默、执拗、过度理性",
@@ -114,13 +114,13 @@ const SAMPLE_RESPONSE = [
   "## 核心标签",
   "精致、疏离、惯于算计",
   "## 反差细节",
-  "唯独对林辞从不说谎",
+  "唯独对林乙从不说谎",
   "## 人物小传",
   "出身体制内家庭。",
   "## 当前现状",
   "新任区域办公室副职。",
   "## 关系网络",
-  "与林辞关系复杂。",
+  "与林乙关系复杂。",
   "## 内在驱动",
   "想在规则内做到最好。",
   "## 成长弧光",
@@ -142,7 +142,7 @@ const SAMPLE_RESPONSE = [
   "---",
   "version: \"1.0\"",
   "protagonist:",
-  "  name: 林辞",
+  "  name: 林乙",
   "  personalityLock: [沉默, 执拗, 理性]",
   "  behavioralConstraints: [不对长辈失礼]",
   "genreLock:",
@@ -204,7 +204,7 @@ describe("ArchitectAgent — Phase 5 prose output", () => {
 
     const majors = (result.roles ?? []).filter((role) => role.tier === "major");
     const minors = (result.roles ?? []).filter((role) => role.tier === "minor");
-    expect(majors.map((role) => role.name)).toEqual(["林辞", "沈默"]);
+    expect(majors.map((role) => role.name)).toEqual(["林乙", "沈默"]);
     expect(minors.map((role) => role.name)).toEqual(["老张"]);
     expect(majors[0]?.content).toContain("核心标签");
     expect(majors[0]?.content).toContain("反差细节");
@@ -230,7 +230,7 @@ describe("ArchitectAgent — Phase 5 prose output", () => {
 
     // Role files — one per character, grouped by tier
     const majorFiles = await readdir(join(storyDir, "roles", "主要角色"));
-    expect(majorFiles.sort()).toEqual(["林辞.md", "沈默.md"]);
+    expect(majorFiles.sort()).toEqual(["林乙.md", "沈默.md"]);
     const minorFiles = await readdir(join(storyDir, "roles", "次要角色"));
     expect(minorFiles).toEqual(["老张.md"]);
 
@@ -242,7 +242,7 @@ describe("ArchitectAgent — Phase 5 prose output", () => {
     // Compat shim: character_matrix.md points at roles/ directory
     const matrixShim = await readFile(join(storyDir, "character_matrix.md"), "utf-8");
     expect(matrixShim).toContain("兼容指针");
-    expect(matrixShim).toContain("roles/主要角色/林辞.md");
+    expect(matrixShim).toContain("roles/主要角色/林乙.md");
     expect(matrixShim).toContain("roles/次要角色/老张.md");
 
     // Runtime state files still produced
@@ -332,13 +332,13 @@ describe("ArchitectAgent — Phase 5 prose output", () => {
           "# 角色设定",
           "---角色---",
           "级别：主要",
-          "姓名：林辞",
+          "姓名：林乙",
           "---内容---",
           "## 核心标签",
           "沉默但较真的账房。",
           "# 本书规则",
           "## 主角",
-          "- 名字：林辞",
+          "- 名字：林乙",
         ].join("\n"),
         usage: ZERO_USAGE,
       });
@@ -347,8 +347,8 @@ describe("ArchitectAgent — Phase 5 prose output", () => {
 
     expect(out.storyFrame).toContain("original frame");
     expect(out.volumeMap).toContain("original map");
-    expect(out.roles?.map((role) => role.name)).toContain("林辞");
-    expect(out.bookRules).toContain("名字：林辞");
+    expect(out.roles?.map((role) => role.name)).toContain("林乙");
+    expect(out.bookRules).toContain("名字：林乙");
   });
 
   it("repairs a non-empty roles section when it contains no parseable role cards", async () => {
@@ -358,11 +358,11 @@ describe("ArchitectAgent — Phase 5 prose output", () => {
       "=== SECTION: volume_map ===",
       "# map",
       "=== SECTION: roles ===",
-      "## 林辞",
+      "## 林乙",
       "主角，但没有使用角色卡分隔格式。",
       "=== SECTION: book_rules ===",
       "## 主角",
-      "- 名字：林辞",
+      "- 名字：林乙",
       "=== SECTION: pending_hooks ===",
       "| hook_id | 起始章节 | 类型 | 状态 | 最近推进 | 预期回收 | 回收节奏 | 备注 |",
     ].join("\n");
@@ -478,7 +478,7 @@ describe("writeFoundationFiles — rhythm file is skipped when rhythmPrinciples 
       "=== SECTION: roles ===",
       "---ROLE---",
       "tier: major",
-      "name: 林辞",
+      "name: 林乙",
       "---CONTENT---",
       "## 核心标签",
       "沉默",

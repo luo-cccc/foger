@@ -208,8 +208,8 @@ describe("Issue 2 — per-episode promotion persists to pending_hooks.md", () =>
     await writeFile(join(storyDir, "episode_summaries.md"), [
       "| 章节 | 标题 | 出场人物 | 关键事件 | 状态变化 | 伏笔动态 | 情绪基调 | 章节类型 |",
       "| --- | --- | --- | --- | --- | --- | --- | --- |",
-      "| 4 | 旧信 | 林辞 | 收到家书 | 回忆 | H05 推进 | 压抑 | 铺垫 |",
-      "| 7 | 码头 | 林辞 | 查账 | 汇合 | H05 推进 | 紧绷 | 推进 |",
+      "| 4 | 旧信 | 林乙 | 收到家书 | 回忆 | H05 推进 | 压抑 | 铺垫 |",
+      "| 7 | 码头 | 林乙 | 查账 | 汇合 | H05 推进 | 紧绷 | 推进 |",
     ].join("\n"), "utf-8");
 
     // Run the promotion pass (same logic as runner.ts step 3c)
